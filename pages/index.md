@@ -13,7 +13,7 @@ permalink: /
     </div>
     {% include macros/gettingStarted.md %}
     <div class="center">
-        <a class="landing-btn" href="/documentation">Show me the docs</a>
+        <a class="landing-btn" href="/documentation#getting-started">Getting Started</a>
     </div>
 </div>
 
