@@ -45,11 +45,11 @@ nav ul li a:hover {
     background: #0F6679;
     background: radial-gradient(#7FBAB4, #0F6679);
     padding: 80px 20px;
-    box-shadow: 0 0 35px rgba(0, 0, 0, 0.1) inset;
+    box-shadow: 0 0 35px rgba(255, 255, 255, 0.1) inset;
 }
 
 .bluepart:first-of-type {
-    box-shadow: 0 -20px 35px -10px rgba(0, 0, 0, 0.1) inset;
+    box-shadow: 0 -20px 35px -10px rgba(255, 255, 255, 0.1) inset;
 }
 
 .bluepart .multitab-code {
@@ -58,16 +58,16 @@ nav ul li a:hover {
 }
 
 .bluepart .multitab-code ul {
-    background: rgba(0, 0, 0, 0.15);
+    background:  rgba(255, 255, 255, 0.9);
 }
 
 .bluepart .multitab-code pre {
-    background: rgba(0, 0, 0, 0.15);
+    background: rgba(255, 255, 255, 0.9);
 }
 
 .bluepart .multitab-code pre code {
     line-height: 1.4;
-    text-shadow: 1px 1px rgba(0, 0, 0, 0.3);
+    /*text-shadow: 1px 1px rgba(181, 137, 0, 0.3);*/
 }
 
 .bluepart .multitab-code pre code .token.number {
@@ -75,7 +75,11 @@ nav ul li a:hover {
 }
 
 .bluepart .multitab-code pre code .token.function {
-    color: #ffe200;
+    color: #0fb3d2;
+}
+
+.bluepart .multitab-code pre code .token.class-name {
+    color: #0fb3d2;
 }
 
 .bluepart .multitab-code pre code .token.string {
@@ -95,7 +99,7 @@ nav ul li a:hover {
     color: white;
     font-weight: 500;
     margin: 0;
-    text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.25);
+    text-shadow: 1px 1px 1px rgba(181, 137, 0, 0.25);
 }
 
 .bluepart > p {
@@ -127,7 +131,7 @@ nav ul li a:hover {
     text-align: center;
     display: inline-block;
     background: rgba(255, 255, 255, 0.15);
-    border-bottom: 2px solid rgba(0, 0, 0, 0.4);
+    border-bottom: 2px solid rgba(181, 137, 0, 0.4);
     color: white;
     cursor: pointer;
     border-radius: 50px;
@@ -154,7 +158,7 @@ nav ul li a:hover {
     font-size: 16px;
     margin-bottom: 32px;
     border-radius: 5px;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 1px 3px rgba(181, 137, 0, 0.25);
 }
 
 .boxes .box h3 {
@@ -190,7 +194,7 @@ nav ul li a:hover {
     margin: 20px;
     border-radius: 5px;
     background: #fff;
-    box-shadow: 0 1px 5px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 1px 5px rgba(181, 137, 0, 0.5);
     object-fit: contain;
 }
 
