@@ -248,7 +248,7 @@ eventStore.write("account1", events)
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 <div class="comment">Note that typically the domain model, Account in this example, would not return CloudEvents but rather a stream or list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvent's. 
-This is not shown in the example above for brevity, look at the <a href="#commands">command bus</a> section for a more real-life example.</div>
+This is not shown in the example above for brevity, look at the <a href="#commands">command</a> section for a more real-life example.</div>
 
 To avoid the problem above we want to make use of conditional writes. Let's see how:
 
