@@ -434,7 +434,7 @@ While this is a trivial example it shouldn't be difficult to create a view that 
 ## Commands
 
 Occurrent doesn't contain a built-in command bus. The reason for this is that I'm not convinced that it's needed in a majority of cases :)
-To send "commands" to another service (remotely) one could make a REST API or an RPC invocation instead of using a proprietary command bus.  
+To send "commands" to another service (remotely) one could call a REST API or make an RPC invocation instead of using a proprietary command bus.  
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
 routed to a function in your domain model. It's not uncommon to to use a framework in which you define your domain model like this:
