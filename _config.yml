@@ -1,7 +1,6 @@
 occurrentversion: 0.1.0
-slf4jversion: 1.7.30
 repourl: https://github.com/occurrent/occurrent.github.io
-description: Occurrent - A lightweight Java and Kotlin web framework. Create REST APIs in Java or Kotlin easily.
+description: Occurrent -  Event Sourcing Utilities for the JVM based on the CloudEvent specification
 baseurl: "" # the subpath of your site, e.g. /blog
 
 # Build settings
