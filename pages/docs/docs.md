@@ -116,7 +116,7 @@ public class ApplicationService {
         this.eventStore = eventStore;
     }
 
-    public void runUseCase(String streamId, Function<Stream<CloudEvent>, Stream<CloudEvent>> functionThatCallsDomainModel) {
+    public void execute(String streamId, Function<Stream<CloudEvent>, Stream<CloudEvent>> functionThatCallsDomainModel) {
         // Read all events from the event store for a particular stream
         EventStream<CloudEvent> eventStream = eventStore.read(streamId);
 
@@ -131,7 +131,7 @@ public class ApplicationService {
 {% capture kotlin %}
 class ApplicationService constructor (val eventStore : EventStore) {
 
-    fun runUseCase(streamId : String, functionThatCallsDomainModel : (Stream<CloudEvent>) -> Stream<CloudEvent>) {
+    fun execute(streamId : String, functionThatCallsDomainModel : (Stream<CloudEvent>) -> Stream<CloudEvent>) {
         // Read all events from the event store for a particular stream
         val  eventStream : EventStream<CloudEvent> = eventStore.read(streamId)
         
@@ -155,14 +155,14 @@ String gameId = ...
 String wordToGuess = ...;
 
 // Then we invoke the application service to start a game:
-applicationService.runUseCase(gameId, __ -> WordGuessingGame.startNewGame(gameId, wordToGuess));  
+applicationService.execute(gameId, __ -> WordGuessingGame.startNewGame(gameId, wordToGuess));  
 
 // Later a player guess a word:
 String gameId = ...
 String guess = ...;
 
 // We thus invoke the application service again to guess the word:
-applicationService.runUseCase(gameId, events -> WordGuessingGame.guessWord(events, gameId, guess));
+applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, gameId, guess));
 {% endcapture %}
 {% capture kotlin %}
 // Here we image that we have received the data required to start a new game, e.g. from a REST endpoint. 
@@ -170,7 +170,7 @@ val gameId : String = ...
 val wordToGuess : String = ...;
 
 // Then we invoke the application service to start a game:
-applicationService.runUseCase(gameId) { 
+applicationService.execute(gameId) { 
     WordGuessingGame.startNewGame(gameId, wordToGuess)
 }  
 
@@ -179,7 +179,7 @@ val gameId : String = ...
 val guess : String = ...;
 
 // We thus invoke the application service again to guess the word:
-applicationService.runUseCase(gameId, events -> WordGuessingGame.guessWord(events, gameId, guess));
+applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, gameId, guess));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
