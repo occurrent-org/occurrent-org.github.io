@@ -8,7 +8,7 @@ permalink: /news/
 {% include notificationBanner.html %}
 
 <h1 class="no-margin-top">News</h1>
-Occurrent is released frequently (once or twice a month). Please follow us on [Twitter](https://twitter.com/occurrent_io)
+Occurrent is released frequently (once or twice a month). Please follow us on [Twitter](https://twitter.com/occurrent_org)
 or [Facebook](https://www.facebook.com/occurrent.org) to get notified about new releases.
 
 {% assign newsposts = (site.posts | where: "category" , "news") | sort: 'date' | reverse %}
