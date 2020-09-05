@@ -19,6 +19,7 @@ permalink: /documentation
 * * [Views](#views)
 * * [Commands](#commands)
 * * [Sagas](#sagas)
+* * [Snapshots](#snapshots)
 * [Getting Started](#getting-started)
 * [Choosing An EventStore](#choosing-an-eventstore)
 * * [MongoDB](#mongodb)
@@ -681,6 +682,8 @@ applicationService(gameId) { events ->
 
 
 ## Sagas
+
+## Snapshots
 
 # Getting started
 
