@@ -23,6 +23,7 @@ permalink: /documentation
 * [Choosing An EventStore](#choosing-an-eventstore)
 * * [MongoDB](#mongodb)
 * * * [Schema](#mongodb-schema)
+* * * [Time Representation](#mongodb-time-representation)
 * * * [Implementations](#mongodb-eventstore-implementations)
 * * * * [Native Driver](#eventstore-with-mongodb-native-driver)
 * * * * [Spring (Blocking)](#eventstore-with-spring-mongotemplate-blocking) 
@@ -188,7 +189,6 @@ applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, 
 Writing application services like this is both powerful and simple (once you get used to it). There's less need for explicit commands and command handlers (the application service is a kind of command handler). 
 You can also use other functional techniques such as partial application to make the code look, arguably, even nicer. It's also easy to compose several calls to the domain model into one by using standard functional composition techniques. 
 For example in this case you might consider both starting a game and let the player make her first guess from a single request to the REST API. No need to change the domain model to do this, just use function composition.
-
 
 
 ### Write Condition
@@ -711,11 +711,11 @@ These indexes can also be used in queries against the EventStore (see [EventStor
 
 All MongoDB `EventStore` implementations tries to stay as close as possible to the <a href="https://cloudevents.io/">CloudEvent's</a> specification even in the persitence layer.
 Occurrent, by default, automatically adds a custom "Occurrent extension" to each cloud event that is written to an `EventStore`.
-The Occurrent CloudEvent Extension consists of these properties:
+The Occurrent CloudEvent Extension consists of these attributes:
 
 <br>
 
-| Property Name | Type  | Description |
+| Attribute Name | Type  | Description |
 |:----|:-----:|:----|
 | `streamId` | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;String&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;| An id the uniquely identifies a particular event stream.<br>It's used to determine which events belong to which stream. |     
 | `streamVersion` | Long | The id of the stream version for a particular event.<br>It's used for optimistic concurrency control.  |     
@@ -723,8 +723,8 @@ The Occurrent CloudEvent Extension consists of these properties:
 A json schema describing a complete Occurrent CloudEvent, as it will be persisted to a MongoDB collection, can be found [here](https://github.com/johanhaleby/occurrent/blob/master/cloudevents-schema-occurrent.json) 
 (a "raw" cloud event json schema can be found [here](https://github.com/tsurdilo/cloudevents-schema-vscode/blob/master/schemas/cloudevents-schema.json) for comparison).
 
-Note that MongoDB will automatically add an [_id](https://docs.mongodb.com/manual/reference/method/ObjectId/) field (which is not used by Occurrent). 
-The reason why the CloudEvent `id` property is not stored as `_id` in MongoDB is that the `id` of a CloudEvent is not globally unique! 
+Note that MongoDB will automatically add an [\_id](https://docs.mongodb.com/manual/reference/method/ObjectId/) field (which is not used by Occurrent). 
+The reason why the CloudEvent `id` attribute is not stored as `_id` in MongoDB is that the `id` of a CloudEvent is not globally unique! 
 The combination of `id` and `source` is a globally unique CloudEvent. Note also that `_id` will _not_ be included a `CloudEvent` when read from an `EventStore`.    
 
 Here's an example of what you can expect to see the "events" collection when storing events in an `EventStore` backed by MongoDB
@@ -763,6 +763,51 @@ Here's an example of what you can expect to see the "events" collection when sto
 	"streamVersion" : NumberLong(2)
 }
 ``` 
+
+### MongoDB Time Representation
+
+The CloudEvents specification says that the [time attribute](https://github.com/cloudevents/spec/blob/v1.0/spec.md#time), if present, must adhere to the [RFC 3339 specification](https://tools.ietf.org/html/rfc3339).
+To accommodate this in MongoDB, the `time` attribute must be persisted as a `String`. This by itself is not a problem, a problem only arise 
+if you want to make time-based queries on the events persisted to a MongoDB-backed `EventStore` (using the [EventStoreQueries](#eventstore-queries) interface).
+This is, quite obviously, because time-based queries on `String`'s are suboptimal (to say the least) and may lead to surprising results.
+What we _would_ like to do is to persist the `time` attribute as a `Date` in MongoDB, but MongoDB internally represents a Date with only millisecond resolution 
+(see [here](https://docs.mongodb.com/manual/reference/method/Date/#behavior)) and then the CloudEvent cannot be compliant with the RFC 3339 specification in _all_ circumstances.
+
+Because of the reasons described above, users of a MongoDB-backed `EventStore` implementation, must decide how the `time` attribute is to be represented in MongoDB
+when instantiating an `EventStore` implementation. This is done by passing a value from the `org.occurrent.mongodb.timerepresentation.TimeRepresentation` enum to an
+`EventStoreConfig` object that is then passed to the `EventStore` implementation. `TimeRepresentation` has these values: 
+
+| Value |  Description |
+|:----|:-----|
+| `RFC_3339_STRING`&nbsp;&nbsp;&nbsp;&nbsp;| Persist the time attribute as an RFC 3339 string. This string is able to represent both nanoseconds and a timezone so this is recommended for apps that need to store this information or if you are uncertain of whether this is required in the future. |
+| <br>`DATE` | <br>Persist the time attribute as a MongoDB [Date](https://docs.mongodb.com/manual/reference/method/Date/#behavior). The benefit of using this approach is that you can do range queries etc on the "time" field on the cloud event. This can be really useful for certain types on analytics or projections (such as show the 10 latest number of started games) without writing any custom code. |
+
+Note that if you choose to go with `RFC_3339_STRING` you always have the optional of adding a custom attribute, named for example "date", in which you represent the "time" attribute as a `Date` when writing the events to an `EventStore`.
+This way you have the ability to use the "time" attribute to re-construct the CloudEvent time attribute exactly as well as the ability to do _custom_ time-queries on the "date" attribute. However, you cannot use the methods involving time-based queries when using the [EventStoreQueries](#eventstore-queries) interface.
+
+**Important**: There's yet another option! If you don't need nanotime precision (i.e you're fine with millisecond precision) _and_ you're OK with always representing the "time" attribute in UTC, then you can use
+`TimeRepresentation.DATE` without loss of precision! This is why, if `DATE` is configured for the `EventStore`, Occurrent will refuse to store a `CloudEvent` that specifies nanotime 
+and is not defined in UTC (so that there won't be any surprises). I.e. using `DATE` and then doing this will throw an `IllegalArgumentException`:
+
+```java          
+var cloudEvent = new CloudEventBuilder().time(ZonedDateTime.now()). .. .build()
+
+// Will throw exception since ZonedDateTime.now() will include nanoseconds by default in Java 9+
+eventStore.write(Stream.of(cloudEvent));
+```
+
+Instead, you need to remove nano seconds do like this explicitly:
+
+```java
+// Remove millis and make sure to use UTC as timezone                                          
+var now = ZonedDateTime.now().truncatedTo(ChronoUnit.MILLIS).withZoneSameInstant(ZoneOffset.UTC);
+var cloudEvent = new CloudEventBuilder().time(now). .. .build()
+
+// Now you can write the cloud event
+eventStore.write(Stream.of(cloudEvent));
+```
+
+For more thoughts about on this, refer to the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/master/doc/architecture/decisions/0004-mongodb-datetime-representation.md) on time representation in MongoDB. 
 
 ### MongoDB EventStore Implementations
 
