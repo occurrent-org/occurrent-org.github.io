@@ -683,7 +683,15 @@ applicationService(gameId) { events ->
 
 ## Sagas
 
+* Link to [zio-saga](https://github.com/VladKopanev/zio-saga) if using Scala
+* Describe TODO-list pattern (or routing slip)
+* Show a reactor/policy using subscription
+
 ## Snapshots
+
+* Async using subscriptions
+* Sync using `@Transactional`
+* "Closing the books" using a periodic snapshot
 
 # Getting started
 
