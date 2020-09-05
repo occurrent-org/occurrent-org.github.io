@@ -793,7 +793,7 @@ This way you have the ability to use the "time" attribute to re-construct the Cl
 and is not defined in UTC (so that there won't be any surprises). I.e. using `DATE` and then doing this will throw an `IllegalArgumentException`:
 
 ```java          
-var cloudEvent = new CloudEventBuilder().time(ZonedDateTime.now()). .. .build()
+var cloudEvent = new CloudEventBuilder().time(ZonedDateTime.now()). .. .build();
 
 // Will throw exception since ZonedDateTime.now() will include nanoseconds by default in Java 9+
 eventStore.write(Stream.of(cloudEvent));
@@ -804,7 +804,7 @@ Instead, you need to remove nano seconds do like this explicitly:
 ```java
 // Remove millis and make sure to use UTC as timezone                                          
 var now = ZonedDateTime.now().truncatedTo(ChronoUnit.MILLIS).withZoneSameInstant(ZoneOffset.UTC);
-var cloudEvent = new CloudEventBuilder().time(now). .. .build()
+var cloudEvent = new CloudEventBuilder().time(now). .. .build();
 
 // Now you can write the cloud event
 eventStore.write(Stream.of(cloudEvent));
