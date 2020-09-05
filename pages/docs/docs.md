@@ -22,9 +22,11 @@ permalink: /documentation
 * [Getting Started](#getting-started)
 * [Choosing An EventStore](#choosing-an-eventstore)
 * * [MongoDB](#mongodb)
-* * * [Native Driver](#eventstore-with-mongodb-native-driver)
-* * * [Spring (Blocking)](#eventstore-with-spring-mongotemplate-blocking) 
-* * * [Spring (Reactive)](#eventstore-with-spring-reactivemongotemplate-reactive) 
+* * * [Schema](#mongodb-schema)
+* * * [Implementations](#mongodb-eventstore-implementations)
+* * * * [Native Driver](#eventstore-with-mongodb-native-driver)
+* * * * [Spring (Blocking)](#eventstore-with-spring-mongotemplate-blocking) 
+* * * * [Spring (Reactive)](#eventstore-with-spring-reactivemongotemplate-reactive) 
 * * [In-Memory](#in-memory)
 * [Using Subscriptions](#using-subscriptions)
 * * [Blocking](#blocking-subscription)
@@ -703,10 +705,68 @@ Uses MongoDB, version 4.2 or above, as  the underlying datastore for the CloudEv
 Each EventStore will automatically create a few indexes (TODO describe these) on startup to allow for fast consistent writes, optimistic concurrency control and to avoid duplicated events.
 These indexes can also be used in queries against the EventStore (see [EventStoreQueries](#eventstore-queries)). (TODO Also suggest wildcard indexes if `EventStoreQueries` is used)  
  
-There are three different MongoDB EventStore implementations to choose from:
-* [Native Driver](#eventstore-with-mongodb-native-driver)
-* [Spring (Blocking)](#eventstore-with-spring-mongotemplate-blocking) 
-* [Spring (Reactive)](#eventstore-with-spring-reactivemongotemplate-reactive) 
+{% include macros/eventstore/mongodb/mongodb-eventstore-implementations.md %}
+
+### MongoDB Schema
+
+All MongoDB `EventStore` implementations tries to stay as close as possible to the <a href="https://cloudevents.io/">CloudEvent's</a> specification even in the persitence layer.
+Occurrent, by default, automatically adds a custom "Occurrent extension" to each cloud event that is written to an `EventStore`.
+The Occurrent CloudEvent Extension consists of these properties:
+
+<br>
+
+| Property Name | Type  | Description |
+|:----|:-----:|:----|
+| `streamId` | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;String&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;| An id the uniquely identifies a particular event stream.<br>It's used to determine which events belong to which stream. |     
+| `streamVersion` | Long | The id of the stream version for a particular event.<br>It's used for optimistic concurrency control.  |     
+
+A json schema describing a complete Occurrent CloudEvent, as it will be persisted to a MongoDB collection, can be found [here](https://github.com/johanhaleby/occurrent/blob/master/cloudevents-schema-occurrent.json) 
+(a "raw" cloud event json schema can be found [here](https://github.com/tsurdilo/cloudevents-schema-vscode/blob/master/schemas/cloudevents-schema.json) for comparison).
+
+Note that MongoDB will automatically add an [_id](https://docs.mongodb.com/manual/reference/method/ObjectId/) field (which is not used by Occurrent). 
+The reason why the CloudEvent `id` property is not stored as `_id` in MongoDB is that the `id` of a CloudEvent is not globally unique! 
+The combination of `id` and `source` is a globally unique CloudEvent. Note also that `_id` will _not_ be included a `CloudEvent` when read from an `EventStore`.    
+
+Here's an example of what you can expect to see the "events" collection when storing events in an `EventStore` backed by MongoDB
+(given that `TimeRepresentation` is set to `DATE`):
+
+```javascript
+{
+	"_id" : ObjectId("5f4112a348b8da5305e41f57"),
+	"specversion" : "1.0",
+	"id" : "bdb8481f-9e8e-443b-80a4-5ef787f0f227",
+	"source" : "urn:occurrent:domain:numberguessinggame",
+	"type" : "NumberGuessingGameWasStarted",
+	"subject" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
+	"time" : ISODate("2020-08-22T14:42:11.712Z"),
+	"data" : {
+		"secretNumberToGuess" : 8,
+		"startedBy" : "003ab97b-df79-4bf1-8c0c-08a5dd3701cf",
+		"maxNumberOfGuesses" : 5
+	},
+	"streamId" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
+	"streamVersion" : NumberLong(1)
+}
+{
+	"_id" : ObjectId("5f4112a548b8da5305e41f58"),
+	"specversion" : "1.0",
+	"id" : "c1bfc3a5-1716-43ae-88a6-297189b1b5c7",
+	"source" : "urn:occurrent:domain:numberguessinggame",
+	"type" : "PlayerGuessedANumberThatWasTooSmall",
+	"subject" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
+	"time" : ISODate("2020-08-22T14:42:13.336Z"),
+	"data" : {
+		"guessedNumber" : 1,
+		"playerId" : "003ab97b-df79-4bf1-8c0c-08a5dd3701cf"
+	},
+	"streamId" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
+	"streamVersion" : NumberLong(2)
+}
+``` 
+
+### MongoDB EventStore Implementations
+
+{% include macros/eventstore/mongodb/mongodb-eventstore-implementations.md %}
 
 ### EventStore with MongoDB Native Driver
 
