@@ -689,7 +689,7 @@ applicationService(gameId) { events ->
 
 ## Snapshots
 
-* Async using subscriptions
+* Async using subscriptions (if you don't want to update snapshot for every event then use `streamVersion` modulo `n`) 
 * Sync using `@Transactional`
 * "Closing the books" using a periodic snapshot
 
