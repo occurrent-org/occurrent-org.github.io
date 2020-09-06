@@ -32,8 +32,13 @@ permalink: /documentation
 * * * * [Spring (Reactive)](#eventstore-with-spring-reactivemongotemplate-reactive) 
 * * [In-Memory](#in-memory-eventstore)
 * [Using Subscriptions](#using-subscriptions)
-* * [Blocking](#blocking-subscription)
-* * [Reactive](#reactive-subscription)
+* * [Blocking](#blocking-subscriptions)
+* * * [Filters](#blocking-subscription-filters)
+* * * [Start Position](#blocking-subscription-stream-start-position)
+* * * [Stream Position Storage](#blocking-subscription-stream-position-storage)
+* * [Reactive](#reactive-subscriptions)
+* [Contact & Support](#contact--support)
+* [Credits](#credits)
 </div>
 
 <h1 class="no-margin-top">Documentation</h1>
@@ -744,7 +749,7 @@ Here's an example of what you can expect to see the "events" collection when sto
 
 ```javascript
 {
-	"_id" : ObjectId("5f4112a348b8da5305e41f57"),
+	"_id : ObjectId("5f4112a348b8da5305e41f57"),
 	"specversion" : "1.0",
 	"id" : "bdb8481f-9e8e-443b-80a4-5ef787f0f227",
 	"source" : "urn:occurrent:domain:numberguessinggame",
@@ -971,7 +976,84 @@ Note that `InMemoryEventStore` doesn't support [EventStoreQueries](#eventstore-q
 # Using Subscriptions
 <div class="comment">Before you start using subscriptions you should read up on what they are <a href="#subscriptions">here</a>.</div>
 
-### Blocking Subscription
+## Blocking Subscriptions
 
+A "blocking subscription" is a subscription that uses the normal Java threading mechanism for IO operations, i.e. reading changes from an [EventStore](#choosing-an-eventstore) 
+will block the thread. This is arguably the easiest and most familiar way to use subscriptions for the typical Java developer, 
+and it's probably good-enough for most scenarios. If high throughput, low CPU and memory-consumption is critical then consider using
+[reactive subscription](#reactive-subscription) instead. Reactive subscriptions are also better suited if you want to work with streaming data.   
+ 
+All blocking subscriptions implements the `org.occurrent.subscription.api.blocking.BlockingSubscription` 
+interface. This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
-### Reactive Subscription
+{% capture java %}
+subscription.subscribe("mySubscriptionId", System.out::println);
+{% endcapture %}
+{% capture kotlin %}
+subscription.subscribe("mySubscriptionId", ::println)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+This will simply print each cloud event written to the event store to the console.
+
+### Blocking Subscription Filters
+
+You can also provide a subscription filter, applied at the datastore level so that it's really efficient, if you're only interested in
+certain events:
+
+{% capture java %}
+subscription.subscribe("mySubscriptionId", filter(type("GameEnded")), System.out::println);
+{% endcapture %}
+{% capture kotlin %}
+subscription.subscribe("mySubscriptionId", filter(type("GameEnded")), ::println)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+This will  print each cloud event written to the event store, and has type equal to "GameEnded", to the console.
+The `filter` method is statically imported from `org.occurrent.subscription.OccurrentSubscriptionFilter` and `type` is statically imported from `org.occurrent.condition.Condition`.
+The `OccurrentSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations
+may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
+
+{% capture java %}
+subscription.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")), System.out::println);
+{% endcapture %}
+{% capture kotlin %}
+subscription.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")), ::println)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Now `filter` is statically imported from `org.occurrent.subscription.mongodb.MongoDBFilterSpecification` and `Filters` is imported from 
+`com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended always start with an `OccurrentSubscriptionFilter`
+and only pick a more specific implementation if you cannot express your filter using the capabilities of `OccurrentSubscriptionFilter`.  
+
+### Blocking Subscription Stream Start Position
+
+### Blocking Subscription Stream Position Storage 
+
+There are two _non-durable_ implementations of this interface for [MongoDB](#mongodb-eventstore-implementations) event stores:
+
+* [Blocking subscription using the "native" Java MongoDB driver](#)
+* [Blocking subscription using Spring MongoTemplate](#)
+
+By "non-durable" we mean implementations doesn't store the stream position in a durable storage automatically.  
+It might be that the datastore does this automatically _or_ that stream position storage is not required.
+If the datastore _doesn't_ support storing the stream position automatically a subscription will typically implement the
+`org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface.
+
+  
+
+   
+Typically, if you want
+the stream to continue where it left off on application restart you want to store away the stream position. You can do this anyway you like,
+but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`.
+Subscriptions that implement this interface will automatically store the stream position to a datastore. These implementations are currently
+provided by Occurrent:
+
+   
+## Reactive Subscriptions
+
+# Contact & Support
+
+Mailing-list etc
+
+# Credits
