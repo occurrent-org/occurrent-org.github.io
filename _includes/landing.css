@@ -33,6 +33,27 @@ nav ul li a:hover {
     text-align: center;
 }
 
+.occurrent-header {
+    font-size: 75px;
+    font-weight: bold;
+}
+
+.underlined {
+  position: relative;
+  margin-right: 1rem;
+}
+.underlined:after {
+  content: "";
+  position: absolute;
+  bottom: -10px;
+  left: 0;
+  height: 7px;
+  width: 100%;
+  border: solid 2px #E5ECEE;
+  border-color: #E5ECEE transparent transparent transparent;
+  border-radius: 50%;
+}
+
 .bluepart::selection {
     background: #027aa3;
 }
