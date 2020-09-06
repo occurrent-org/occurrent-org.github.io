@@ -877,7 +877,7 @@ Each MongoDB `EventStore` [implementation](#mongodb-eventstore-implementations) 
 
 To allow for fast queries, for example when using [EventStoreQueries](#eventstore-queries), it's recommended to create additional indexes tailored to the querying behavior of 
 your application. See [MongoDB indexes](https://docs.mongodb.com/manual/indexes/) for more information on how to do this. If you have many adhoc queries it's also worth 
-checking out [wild-card indexes](https://docs.mongodb.com/manual/core/index-wildcard/) which is a new feature in MongoDB 4.2. These allow you to create indexes 
+checking out [wildcard indexes](https://docs.mongodb.com/manual/core/index-wildcard/) which is a new feature in MongoDB 4.2. These allow you to create indexes 
 that allow for arbitrary queries on e.g. the data attribute of a cloud event (if data is stored in json/bson format).    
  
 ### MongoDB EventStore Implementations
