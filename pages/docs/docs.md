@@ -25,6 +25,7 @@ permalink: /documentation
 * * [MongoDB](#mongodb)
 * * * [Schema](#mongodb-schema)
 * * * [Time Representation](#mongodb-time-representation)
+* * * [Indexes](#mongodb-indexes)
 * * * [Implementations](#mongodb-eventstore-implementations)
 * * * * [Native Driver](#eventstore-with-mongodb-native-driver)
 * * * * [Spring (Blocking)](#eventstore-with-spring-mongotemplate-blocking) 
@@ -440,7 +441,7 @@ Occurrent doesn't contain a built-in command bus. The reason for this is that I'
 To send "commands" to another service (remotely) one could call a REST API or make an RPC invocation instead of using a proprietary command bus.  
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
-routed to a function in your domain model. It's not uncommon to to use a framework in which you define your domain model like this:
+routed to a function in your domain model. It's not uncommon to use a framework in which you define your domain model like this:
 
 {% capture java %}
 public class WordGuessingGame extends AggregateRoot {
@@ -713,8 +714,8 @@ There are currently two different datastores to choose from, [MongoDB](#mongodb)
 ## MongoDB
 
 Uses MongoDB, version 4.2 or above, as  the underlying datastore for the CloudEvents. All implementations use transactions to guarantee consistent writes (see [WriteCondition](#write-condition)).
-Each EventStore will automatically create a few indexes (TODO describe these) on startup to allow for fast consistent writes, optimistic concurrency control and to avoid duplicated events.
-These indexes can also be used in queries against the EventStore (see [EventStoreQueries](#eventstore-queries)). (TODO Also suggest wildcard indexes if `EventStoreQueries` is used)  
+Each EventStore will automatically create a few [indexes](#mongodb-indexes) on startup to allow for fast consistent writes, optimistic concurrency control and to avoid duplicated events.
+These indexes can also be used in queries against the EventStore (see [EventStoreQueries](#eventstore-queries)).  
  
 {% include macros/eventstore/mongodb/mongodb-eventstore-implementations.md %}
 
@@ -820,6 +821,21 @@ eventStore.write(Stream.of(cloudEvent));
 
 For more thoughts about on this, refer to the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/master/doc/architecture/decisions/0004-mongodb-datetime-representation.md) on time representation in MongoDB. 
 
+### MongoDB Indexes
+
+Each MongoDB `EventStore` [implementation](#mongodb-eventstore-implementations) creates a few indexes for the "events collection" the first time they're instantiated. These are:
+
+|  Name | Properties | Description |
+|:----|:------|:-----|
+| `streamId`| ascending | An index for the `streamId` property. Allows for fast reads of all events in a particular stream. |     
+| `id` + `source` | ascending `id`,<br>descending&nbsp;`source`,&nbsp;&nbsp;<br>unique<br><br> | Compound index of `id` and `source` to comply with the [specification](https://github.com/cloudevents/spec/blob/v1.0/spec.md) that the `id`+`source` combination must be unique. |     
+| `streamId` + `streamVersion`&nbsp;&nbsp;| ascending `streamId`,<br>descending `streamVersion`,<br>unique | Compound index of `streamId` and `streamVersion` (Occurrent CloudEvent extension) used for fast retrieval of the latest cloud event in a stream. |     
+
+To allow for fast queries, for example when using [EventStoreQueries](#eventstore-queries), it's recommended to create additional indexes tailored to the querying behavior of 
+your application. See [MongoDB indexes](https://docs.mongodb.com/manual/indexes/) for more information on how to do this. If you have many adhoc queries it's also worth 
+checking out [wild-card indexes](https://docs.mongodb.com/manual/core/index-wildcard/) which is a new feature in MongoDB 4.2. These allow you to create indexes 
+that allow for arbitrary queries on e.g. the data attribute of a cloud event (if data is stored in json/bson format).    
+ 
 ### MongoDB EventStore Implementations
 
 {% include macros/eventstore/mongodb/mongodb-eventstore-implementations.md %}
