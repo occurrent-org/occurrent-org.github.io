@@ -819,7 +819,7 @@ var cloudEvent = new CloudEventBuilder().time(now). .. .build();
 eventStore.write(Stream.of(cloudEvent));
 ```
 
-For more thoughts about on this, refer to the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/master/doc/architecture/decisions/0004-mongodb-datetime-representation.md) on time representation in MongoDB. 
+For more thoughts on this, refer to the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/master/doc/architecture/decisions/0004-mongodb-datetime-representation.md) on time representation in MongoDB. 
 
 ### MongoDB Indexes
 
