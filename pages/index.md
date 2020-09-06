@@ -7,7 +7,7 @@ permalink: /
 <style>{% include landing.css %}</style>
 
 <div class="landing bluepart">
-    <h1>- Occurrent -<br>Event Sourcing Utilities <br>for the JVM</h1>
+    <h1><span style="font-size: 75px; font-weight: bold;">Occurrent</span><br>Event Sourcing Utilities for the JVM</h1>
     <div class="center">
             <div class="whitetext">Based on the <a href="https://cloudevents.io/">cloud events</a> specification</div>
     </div>
