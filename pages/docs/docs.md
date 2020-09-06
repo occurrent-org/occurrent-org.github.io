@@ -399,8 +399,8 @@ To get started with an event store refer to [Choosing An EventStore](#choosing-a
 ## Subscriptions
 
 A subscription is a way get notified when new events are written to an event store. Typically, a subscription will forward the event to another piece of infrastructure such as
-a message bus, or to create views from the events (such as projections, sagas, snapshots etc). There are two different kinds of API's, the first one is a blocking 
-API represented by the `BlockingSubscription` interface (in the `org.occurrent:subscription-api-blocking` module), and second one is a reactive API 
+a message bus, or to create views from the events (such as projections, sagas, snapshots etc). There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
+represented by the `BlockingSubscription` interface (in the `org.occurrent:subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
 represented by the `ReactorSubscription` interface (in the `org.occurrent:subscription-api-reactor` module). 
 
 
@@ -1062,7 +1062,7 @@ subscription.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 Now `filter` is statically imported from `org.occurrent.subscription.mongodb.MongoDBFilterSpecification` and `Filters` is imported from 
-`com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended always start with an `OccurrentSubscriptionFilter`
+`com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with an `OccurrentSubscriptionFilter`
 and only pick a more specific implementation if you cannot express your filter using the capabilities of `OccurrentSubscriptionFilter`.  
 
 ### Blocking Subscription Stream Start Position
