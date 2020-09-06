@@ -30,7 +30,7 @@ permalink: /documentation
 * * * * [Native Driver](#eventstore-with-mongodb-native-driver)
 * * * * [Spring (Blocking)](#eventstore-with-spring-mongotemplate-blocking) 
 * * * * [Spring (Reactive)](#eventstore-with-spring-reactivemongotemplate-reactive) 
-* * [In-Memory](#in-memory)
+* * [In-Memory](#in-memory-eventstore)
 * [Using Subscriptions](#using-subscriptions)
 * * [Blocking](#blocking-subscription)
 * * [Reactive](#reactive-subscription)
@@ -943,6 +943,30 @@ Now you can start reading and writing events to the EventStore:
 | Name  | Description  | 
 |:----|:-----|  
 | [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringBlockingMongoEventStore` using custom MongoDB aggregations. |
+
+# In-Memory EventStore 
+
+#### What is it?
+A simple in-memory implementation of the `EventStore` interface. 
+
+#### When to use?
+Mainly for testing purposes or for integration tests that doesn't require a durable event store.  
+
+#### Dependencies
+
+{% include macros/eventstore/in-memory/maven.md %}
+
+#### Getting Started
+
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.inmemory.InMemoryEventStore`. For example:  
+
+{% include macros/eventstore/in-memory/example-configuration.md %}
+
+Now you can start reading and writing events to the EventStore:
+
+{% include macros/eventstore/in-memory/read-and-write-events.md %}
+
+Note that `InMemoryEventStore` doesn't support [EventStoreQueries](#eventstore-queries).
 
 # Using Subscriptions
 <div class="comment">Before you start using subscriptions you should read up on what they are <a href="#subscriptions">here</a>.</div>
