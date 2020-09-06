@@ -35,8 +35,8 @@ permalink: /documentation
 * [Using Subscriptions](#using-subscriptions)
 * * [Blocking](#blocking-subscriptions)
 * * * [Filters](#blocking-subscription-filters)
-* * * [Start Position](#blocking-subscription-stream-start-position)
-* * * [Stream Position Storage](#blocking-subscription-stream-position-storage)
+* * * [Start Position](#blocking-subscription-start-position)
+* * * [Position Storage](#blocking-subscription-position-storage)
 * * [Reactive](#reactive-subscriptions)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
@@ -1065,9 +1065,9 @@ Now `filter` is statically imported from `org.occurrent.subscription.mongodb.Mon
 `com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with an `OccurrentSubscriptionFilter`
 and only pick a more specific implementation if you cannot express your filter using the capabilities of `OccurrentSubscriptionFilter`.  
 
-### Blocking Subscription Stream Start Position
+### Blocking Subscription Start Position
 
-### Blocking Subscription Stream Position Storage 
+### Blocking Subscription Position Storage 
 
 There are two _non-durable_ implementations of this interface for [MongoDB](#mongodb-eventstore-implementations) event stores:
 
