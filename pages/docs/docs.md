@@ -15,6 +15,7 @@ permalink: /documentation
 * * * [EventStream](#eventstream)
 * * * [WriteCondition](#write-condition)
 * * * [Queries](#eventstore-queries)
+* * * [Operations](#eventstore-operations)
 * * [Subscriptions](#subscriptions)
 * * [Views](#views)
 * * [Commands](#commands)
@@ -412,6 +413,44 @@ If the datastore allows it, you can also run subscriptions in a different proces
 
 To get started with subscriptions refer to [Using Subscriptions](#using-subscriptions).
 
+### EventStore Operations
+
+Occurrent event store implementations may optionally also implement the `EventStoreOperations` interface. It provides means to delete a specific event, or an entire 
+event stream. For example:
+
+{% capture java %}
+// Delete an entire event stream
+eventStoreOperations.deleteEventStream("streamId");
+// Delete a specific event
+eventStoreOperations.deleteEvent("cloudEventId", cloudEventSource);
+{% endcapture %}
+{% capture kotlin %}
+// Delete an entire event stream
+eventStoreOperations.deleteEventStream("streamId")
+// Delete a specific event
+eventStoreOperations.deleteEvent("cloudEventId", cloudEventSource)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+These are probably operations that you want to use sparingly. Typically, you never want to remove any events, but there are some cases, such as GDPR or other regulations, 
+that requires the deletion of an event or an entire event stream. You should be aware that there are other ways to solve this though. One way would be to encrypt personal data
+and throw away the key when the user no longer uses the service. Another would be to store personal data outside the event store.
+
+Another feature provided by `EventStoreOperations` is the ability to update an event. Again, this is not something you normally want to do, but it can be useful for 
+certain strategies of GDPR compliance. For example maybe you want to remove or update personal data in an event when a users unregisters from your service. Here's an example:
+
+{% capture java %}
+eventStoreOperations.updateEvent("cloudEventId", cloudEventSource, cloudEvent -> {
+    return CloudEventBuilder.v1(cloudEvent).withData(removePersonalDetailsFrom(cloudEvent)).build();
+});
+{% endcapture %}
+{% capture kotlin %}
+eventStoreOperations.updateEvent("cloudEventId", cloudEventSource) { cloudEvent -> 
+    CloudEventBuilder.v1(cloudEvent).withData(removePersonalDetailsFrom(cloudEvent)).build()
+})
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+     
 ## Views
 
 Occurrent has no built-in support for views/projections, it's up to you to create and store views as you find fit. But this doesn't have to be difficult!
