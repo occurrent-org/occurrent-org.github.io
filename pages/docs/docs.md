@@ -1035,6 +1035,11 @@ subscription.subscribe("mySubscriptionId", ::println)
 
 This will simply print each cloud event written to the event store to the console.
 
+Someone, either you as the client or the datastore, needs to keep track of the position that each individual subscriber has ("mySubscriptionId"). If datastore doesn't
+do this automatically the subscription will implement `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`. This means that you are responsible for [keeping track of the position](#blocking-subscription-position-storage),  
+so that it's possible to resume a subscription from the last known position on application restart. This interface also provides a mean to get the current global subscription position, 
+by calling the `globalSubscriptionPosition` method which can be useful when subscribing for the first time. // TODO Clarify!    
+
 ### Blocking Subscription Filters
 
 You can also provide a subscription filter, applied at the datastore level so that it's really efficient, if you're only interested in
@@ -1063,7 +1068,7 @@ subscription.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4
 
 Now `filter` is statically imported from `org.occurrent.subscription.mongodb.MongoDBFilterSpecification` and `Filters` is imported from 
 `com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with an `OccurrentSubscriptionFilter`
-and only pick a more specific implementation if you cannot express your filter using the capabilities of `OccurrentSubscriptionFilter`.  
+and only pick a more specific implementation if you cannot express your filter using the capabilities of `OccurrentSubscriptionFilter`. 
 
 ### Blocking Subscription Start Position
 
