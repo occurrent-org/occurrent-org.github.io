@@ -1067,7 +1067,19 @@ and only pick a more specific implementation if you cannot express your filter u
 
 ### Blocking Subscription Start Position
 
+A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
+`org.occurrent.subscription.StartAt` instance. It provides two ways to specify the start position, either by using `StartAt.now()` (default if `StartAt` is not defined when 
+calling the `subscribe` function), or `StartAt.subscriptionPosition(<subscriptionPosition>)`, where `<subscriptionPosition>` is a datastore-specific 
+implementation of the `org.occurrent.subscription.SubscriptionPosition` interface which provides the start position as a `String`. You may want to store the 
+`String` returned by a `SubscriptionPosition` in a database so that it's possible to resume a subscription from the last processed position on application restart.
+You can do this anyway you like, but for most cases you probably should consider if there's a [Subscription Position Storage](#blocking-subscription-position-storage)
+available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
+
+   
 ### Blocking Subscription Position Storage 
+
+
+### Implementations
 
 There are two _non-durable_ implementations of this interface for [MongoDB](#mongodb-eventstore-implementations) event stores:
 
@@ -1079,11 +1091,8 @@ It might be that the datastore does this automatically _or_ that stream position
 If the datastore _doesn't_ support storing the stream position automatically a subscription will typically implement the
 `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface.
 
-  
-
    
-Typically, if you want
-the stream to continue where it left off on application restart you want to store away the stream position. You can do this anyway you like,
+Typically, if you want the stream to continue where it left off on application restart you want to store away the stream position. You can do this anyway you like,
 but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`.
 Subscriptions that implement this interface will automatically store the stream position to a datastore. These implementations are currently
 provided by Occurrent:
