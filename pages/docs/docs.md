@@ -350,7 +350,7 @@ where `lt`, `ne` and `and` is statically imported from `org.occurrent.condition.
 ### EventStore Queries
 
 Since Occurrent builds on-top of existing databases it's ok, given that you know what you're doing<span>&#42;</span>, to use the strengths of these databases.
-One such strength is that typically databases have good querying support. Occurrent exposes this with the `EventStoreQueries` interface
+One such strength is that databases typically have good querying support. Occurrent exposes this with the `EventStoreQueries` interface
 that an `EventStore` implementation may implement to expose querying capabilities. For example:
 
 {% capture java %}
