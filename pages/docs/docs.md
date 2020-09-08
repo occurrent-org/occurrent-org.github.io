@@ -1035,11 +1035,44 @@ subscription.subscribe("mySubscriptionId", ::println)
 
 This will simply print each cloud event written to the event store to the console.
 
-Someone, either you as the client or the datastore, needs to keep track of the position that each individual subscriber has ("mySubscriptionId"). If the datastore doesn't
-do this automatically the subscription provider (the "service" that implements `BlockingSubscription`) will also implement `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`. 
-This means that you are responsible for [keeping track of the position](#blocking-subscription-position-storage), so 
-that it's possible to resume a subscription from the last known position on application restart. This interface also provides a mean to get the so called "current global subscription position", 
-by calling the `globalSubscriptionPosition` method which can be useful when subscribing for the first time. // TODO Clarify!    
+Note that the signature of `subscribe` is defined like this:
+
+```java
+public interface BlockingSubscription<T extends CloudEvent> {
+    /**
+     * Start listening to cloud events persisted to the event store using the supplied start position and <code>filter</code>.
+     *
+     * @param subscriptionId  The id of the subscription, must be unique!
+     * @param filter          The filter used to limit which events that are of interest from the EventStore.
+     * @param startAtSupplier A supplier that returns the start position to start the subscription from.
+     *                        This is a useful alternative to just passing a fixed "StartAt" value if the stream is broken and re-subscribed to.
+     *                        In these cases, streams should be restarted from the latest persisted position and not the start position as it
+     *                        were when the application was first started.
+     * @param action          This action will be invoked for each cloud event that is stored in the EventStore.
+     */
+    Subscription subscribe(String subscriptionId, SubscriptionFilter filter, Supplier<StartAt> startAtSupplier, Consumer<T> action);
+
+    // Default methods 
+
+}
+``` 
+
+The type `<T>`, define the type of the `CloudEvent` that the subscription produce. It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
+the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
+for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `BlockingSubscription` implementation that also implement the 
+`org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface. The `PositionAwareBlockingSubscription`  is an example of a `BlockingSubscription` that returns a wrapper around 
+`io.cloudevents.CloudEvent` called `org.occurrent.subscription.CloudEventWithSubscriptionPosition` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
+the current stream position. Note that `CloudEventWithSubscriptionPosition` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
+you're subscribing from a `PositionAwareBlockingSubscription`, you are responsible for [keeping track of the subscription position](#blocking-subscription-position-storage), so 
+that it's possible to resume this subscription from the last known position on application restart. This interface also provides means to get the so called "current global subscription position", 
+by calling the `globalSubscriptionPosition` method which can be useful when starting a new subscription. 
+
+For example, consider the case when subscription "A" starts 
+subscribing at the current time (T1). Event E1 is written to the `EventStore` and propagated to subscription "A". But imagine there's a bug in "A" that prevents it
+from performing its action. Later, the bug is fixed and the application is restarted at the "current time" (T2). But since T2 is after T1, E1 will not sent to "A" again since
+it happened before T2. Thus this event is missed! Whether or not this is actually a problem depends on your use case. But to avoid it you should not start the subscription
+at the "current time", but rather from the "global subscription position". This position should be written to a [stream position storage]((#blocking-subscription-position-storage)
+_before_ subscription "A" is started. Thus the subscription can continue from this position on application restart and no events will be missed.               
 
 ### Blocking Subscription Filters
 
