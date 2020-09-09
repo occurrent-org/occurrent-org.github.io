@@ -37,6 +37,7 @@ permalink: /documentation
 * * * [Filters](#blocking-subscription-filters)
 * * * [Start Position](#blocking-subscription-start-position)
 * * * [Position Storage](#blocking-subscription-position-storage)
+* * * [Implementations](#Blocking-subscription-implementations)
 * * [Reactive](#reactive-subscriptions)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
@@ -1115,10 +1116,36 @@ You can do this anyway you like, but for most cases you probably should consider
 available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
 
    
-### Blocking Subscription Position Storage 
+### Blocking Subscription Position Storage
+
+It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the stream position
+provided by a [blocking subscription](#blocking-subscriptions) any way you like, Occurrent provides an interface
+called `org.occurrent.subscription.api.blocking.BlockingSubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `BlockingSubscriptionPositionStorage` 
+is defined like this:
+
+```java
+public interface BlockingSubscriptionPositionStorage {
+    SubscriptionPosition read(String subscriptionId);
+    SubscriptionPosition save(String subscriptionId, SubscriptionPosition subscriptionPosition);
+    void delete(String subscriptionId);
+}
+```
+
+I.e. it's a way to read/write/delete the `SubscriptionPosition` for a given subscription. Occurrent ships with three pre-defined implementations:
+
+1. **BlockingSubscriptionPositionStorageForMongoDB**<br>
+    Uses the vanilla MongoDB Java (sync) driver to store `SubscriptionPosition`'s in MongoDB.
+    {% include macros/subscription/blocking/mongodb/native/storage/maven.md %}   
+1. SpringBlockingSubscriptionPositionStorageForMongoDB
+1. SpringBlockingSubscriptionPositionStorageForRedis 
 
 
-### Implementations
+
+If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "blocking subscription API" which contains the `BlockingSubscriptionPositionStorage` interface:
+
+{% include macros/subscription/blocking/api/maven.md %}
+
+### Blocking Subscription Implementations
 
 There are two _non-durable_ implementations of this interface for [MongoDB](#mongodb-eventstore-implementations) event stores:
 
