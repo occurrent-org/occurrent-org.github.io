@@ -37,7 +37,7 @@ permalink: /documentation
 * * * [Filters](#blocking-subscription-filters)
 * * * [Start Position](#blocking-subscription-start-position)
 * * * [Position Storage](#blocking-subscription-position-storage)
-* * * [Implementations](#Blocking-subscription-implementations)
+* * * [Implementations](#blocking-subscription-implementations)
 * * [Reactive](#reactive-subscriptions)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
