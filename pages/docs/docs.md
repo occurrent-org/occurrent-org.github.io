@@ -1016,6 +1016,10 @@ Note that `InMemoryEventStore` doesn't support [EventStoreQueries](#eventstore-q
 # Using Subscriptions
 <div class="comment">Before you start using subscriptions you should read up on what they are <a href="#subscriptions">here</a>.</div>
 
+There a two different kinds of subscriptions, [blocking subscriptions](#blocking-subscriptions) and [reactive subscriptions](#reactive-subscriptions).
+For blocking subscription implementations see [here](#blocking-subscription-implementations) and for reactive subscription implementations see [here](#reactive-subscription-implementations). 
+
+
 ## Blocking Subscriptions
 
 A "blocking subscription" is a subscription that uses the normal Java threading mechanism for IO operations, i.e. reading changes from an [EventStore](#choosing-an-eventstore) 
@@ -1063,7 +1067,7 @@ the subscription position (if the datastore doesn't maintain the subscription po
 for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `BlockingSubscription` implementation that also implement the 
 `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface. The `PositionAwareBlockingSubscription`  is an example of a `BlockingSubscription` that returns a wrapper around 
 `io.cloudevents.CloudEvent` called `org.occurrent.subscription.CloudEventWithSubscriptionPosition` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
-the current stream position. Note that `CloudEventWithSubscriptionPosition` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
+the current subscription position. Note that `CloudEventWithSubscriptionPosition` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
 you're subscribing from a `PositionAwareBlockingSubscription`, you are responsible for [keeping track of the subscription position](#blocking-subscription-position-storage), so 
 that it's possible to resume this subscription from the last known position on application restart. This interface also provides means to get the so called "current global subscription position", 
 by calling the `globalSubscriptionPosition` method which can be useful when starting a new subscription. 
@@ -1072,7 +1076,7 @@ For example, consider the case when subscription "A" starts
 subscribing at the current time (T1). Event E1 is written to the `EventStore` and propagated to subscription "A". But imagine there's a bug in "A" that prevents it
 from performing its action. Later, the bug is fixed and the application is restarted at the "current time" (T2). But since T2 is after T1, E1 will not sent to "A" again since
 it happened before T2. Thus this event is missed! Whether or not this is actually a problem depends on your use case. But to avoid it you should not start the subscription
-at the "current time", but rather from the "global subscription position". This position should be written to a [stream position storage]((#blocking-subscription-position-storage)
+at the "current time", but rather from the "global subscription position". This position should be written to a [subscription position storage]((#blocking-subscription-position-storage)
 _before_ subscription "A" is started. Thus the subscription can continue from this position on application restart and no events will be missed.               
 
 ### Blocking Subscription Filters
@@ -1118,7 +1122,7 @@ available that suits your needs. If not, you can still have a look at them for i
    
 ### Blocking Subscription Position Storage
 
-It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the stream position
+It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the subscription position
 provided by a [blocking subscription](#blocking-subscriptions) any way you like, Occurrent provides an interface
 called `org.occurrent.subscription.api.blocking.BlockingSubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `BlockingSubscriptionPositionStorage` 
 is defined like this:
@@ -1137,7 +1141,11 @@ I.e. it's a way to read/write/delete the `SubscriptionPosition` for a given subs
     Uses the vanilla MongoDB Java (sync) driver to store `SubscriptionPosition`'s in MongoDB.
     {% include macros/subscription/blocking/mongodb/native/storage/maven.md %}   
 1. SpringBlockingSubscriptionPositionStorageForMongoDB
-1. SpringBlockingSubscriptionPositionStorageForRedis 
+    Uses the Spring MongoTemplate to store `SubscriptionPosition`'s in MongoDB.    
+    {% include macros/subscription/blocking/mongodb/spring/storage/maven.md %}
+1. SpringBlockingSubscriptionPositionStorageForRedis
+    Uses the Spring RedisTemplate to store `SubscriptionPosition`'s in Redis.    
+    {% include macros/subscription/blocking/redis/spring/storage/maven.md %} 
 
 
 
@@ -1152,17 +1160,22 @@ There are two _non-durable_ implementations of this interface for [MongoDB](#mon
 * [Blocking subscription using the "native" Java MongoDB driver](#)
 * [Blocking subscription using Spring MongoTemplate](#)
 
-By "non-durable" we mean implementations doesn't store the stream position in a durable storage automatically.  
-It might be that the datastore does this automatically _or_ that stream position storage is not required.
-If the datastore _doesn't_ support storing the stream position automatically a subscription will typically implement the
-`org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface.
+By "non-durable" we mean implementations doesn't store the subscription position in a durable storage automatically.  
+It might be that the datastore does this automatically _or_ that [subscription position storage](#blocking-subscription-position-storage) is not required.
+If the datastore _doesn't_ support storing the subscription position automatically a subscription will typically implement the
+`org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface (since these types of subscriptions doesn't need to be aware of the position).
 
    
-Typically, if you want the stream to continue where it left off on application restart you want to store away the stream position. You can do this anyway you like,
+Typically, if you want the stream to continue where it left off on application restart you want to store away the subscription position. You can do this anyway you like,
 but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`.
-Subscriptions that implement this interface will automatically store the stream position to a datastore. These implementations are currently
-provided by Occurrent:
+Subscriptions that implement this interface will automatically store the subscription position to a datastore _after each processed event_. These implementations are currently provided by Occurrent:
 
+* [SpringBlockingSubscriptionWithPositionPersistenceForMongoDB](#)
+* [SpringBlockingSubscriptionWithPositionPersistenceForRedis](#)
+
+
+If you don't want to persist the position after every event, the recommended approach is pick a [subscription position storage](#blocking-subscription-position-storage) implementation, 
+and write the position when you find fit.
    
 ## Reactive Subscriptions
 
