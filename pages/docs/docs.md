@@ -734,6 +734,7 @@ applicationService(gameId) { events ->
 ## Sagas
 
 * Link to [zio-saga](https://github.com/VladKopanev/zio-saga) if using Scala
+* Link to [apache camel saga](https://camel.apache.org/components/latest/eips/saga-eip.html) 
 * Describe TODO-list pattern (or routing slip)
 * Show a reactor/policy using subscription
 
