@@ -360,12 +360,12 @@ One such strength is that databases typically have good querying support. Occurr
 that an `EventStore` implementation may implement to expose querying capabilities. For example:
 
 {% capture java %}
-ZonedDateTime lastTwoHours = ZonedDateTime.now().minusHours(2); 
+OffsetDateTime lastTwoHours = OffsetDateTime.now().minusHours(2); 
 // Query the database for all events the last two hours that have "subject" equal to "123" and sort these in descending order
 Stream<CloudEvent> events = eventStore.query(time(lte(lastTwoHours)).and(subject("123")), SortBy.TIME_DESC);
 {% endcapture %}
 {% capture kotlin %}
-val lastTwoHours = ZonedDateTime.now().minusHours(2);
+val lastTwoHours = OffsetDateTime.now().minusHours(2);
 // Query the database for all events the last two hours that have "subject" equal to "123" and sort these in descending order
 val events : Stream<CloudEvent> = eventStore.query(time(lte(lastTwoHours)).and(subject("123")), SortBy.TIME_DESC)
 {% endcapture %}
@@ -858,9 +858,9 @@ This way you have the ability to use the "time" attribute to re-construct the Cl
 and is not defined in UTC (so that there won't be any surprises). I.e. using `DATE` and then doing this will throw an `IllegalArgumentException`:
 
 ```java          
-var cloudEvent = new CloudEventBuilder().time(ZonedDateTime.now()). .. .build();
+var cloudEvent = new CloudEventBuilder().time(OffsetDateTime.now()). .. .build();
 
-// Will throw exception since ZonedDateTime.now() will include nanoseconds by default in Java 9+
+// Will throw exception since OffsetDateTime.now() will include nanoseconds by default in Java 9+
 eventStore.write(Stream.of(cloudEvent));
 ```
 
@@ -868,7 +868,7 @@ Instead, you need to remove nano seconds do like this explicitly:
 
 ```java
 // Remove millis and make sure to use UTC as timezone                                          
-var now = ZonedDateTime.now().truncatedTo(ChronoUnit.MILLIS).withZoneSameInstant(ZoneOffset.UTC);
+var now = OffsetDateTime.now().truncatedTo(ChronoUnit.MILLIS).withOffsetSameInstant(ZoneOffset.UTC);
 var cloudEvent = new CloudEventBuilder().time(now). .. .build();
 
 // Now you can write the cloud event
