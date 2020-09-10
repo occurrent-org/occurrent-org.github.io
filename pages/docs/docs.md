@@ -357,7 +357,7 @@ where `lt`, `ne` and `and` is statically imported from `org.occurrent.condition.
 
 Since Occurrent builds on-top of existing databases it's ok, given that you know what you're doing<span>&#42;</span>, to use the strengths of these databases.
 One such strength is that databases typically have good querying support. Occurrent exposes this with the `EventStoreQueries` interface
-that an `EventStore` implementation may implement to expose querying capabilities. For example:
+that an EventStore implementation may implement to expose querying capabilities. For example:
 
 {% capture java %}
 OffsetDateTime lastTwoHours = OffsetDateTime.now().minusHours(2); 
@@ -777,7 +777,7 @@ These indexes can also be used in queries against the EventStore (see [EventStor
 
 ### MongoDB Schema
 
-All MongoDB `EventStore` implementations tries to stay as close as possible to the <a href="https://cloudevents.io/">CloudEvent's</a> specification even in the persitence layer.
+All MongoDB EventStore implementations tries to stay as close as possible to the <a href="https://cloudevents.io/">CloudEvent's</a> specification even in the persitence layer.
 Occurrent, by default, automatically adds a custom "Occurrent extension" to each cloud event that is written to an `EventStore`.
 The Occurrent CloudEvent Extension consists of these attributes:
 
@@ -841,9 +841,9 @@ This is, quite obviously, because time-based queries on `String`'s are suboptima
 What we _would_ like to do is to persist the `time` attribute as a `Date` in MongoDB, but MongoDB internally represents a Date with only millisecond resolution 
 (see [here](https://docs.mongodb.com/manual/reference/method/Date/#behavior)) and then the CloudEvent cannot be compliant with the RFC 3339 specification in _all_ circumstances.
 
-Because of the reasons described above, users of a MongoDB-backed `EventStore` implementation, must decide how the `time` attribute is to be represented in MongoDB
-when instantiating an `EventStore` implementation. This is done by passing a value from the `org.occurrent.mongodb.timerepresentation.TimeRepresentation` enum to an
-`EventStoreConfig` object that is then passed to the `EventStore` implementation. `TimeRepresentation` has these values: 
+Because of the reasons described above, users of a MongoDB-backed EventStore implementation, must decide how the `time` attribute is to be represented in MongoDB
+when instantiating an EventStore implementation. This is done by passing a value from the `org.occurrent.mongodb.timerepresentation.TimeRepresentation` enum to an
+`EventStoreConfig` object that is then passed to the EventStore implementation. `TimeRepresentation` has these values: 
 
 | Value |  Description |
 |:----|:-----|
