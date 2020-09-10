@@ -38,6 +38,10 @@ permalink: /documentation
 * * * [Start Position](#blocking-subscription-start-position)
 * * * [Position Storage](#blocking-subscription-position-storage)
 * * * [Implementations](#blocking-subscription-implementations)
+* * * * [MongoDB Native Driver](#blocking-subscription-using-the-native-java-mongodb-driver)
+* * * * [MongoDB with Spring](#blocking-subscription-using-spring-mongotemplate)
+* * * * [Position Persistence in MongoDB w/ Spring](#blocking-subscription-with-position-persistence-in-mongodb)
+* * * * [Position Persistence in Redis w/ Spring](#blocking-subscription-with-position-persistence-in-redis)
 * * [Reactive](#reactive-subscriptions)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
@@ -1155,27 +1159,43 @@ If you want to roll your own implementation (feel free to contribute to the proj
 
 ### Blocking Subscription Implementations
 
-There are two _non-durable_ implementations of this interface for [MongoDB](#mongodb-eventstore-implementations) event stores:
+These are the _non-durable_ [blocking subscription implementations](#blocking-subscriptions): 
 
-* [Blocking subscription using the "native" Java MongoDB driver](#)
-* [Blocking subscription using Spring MongoTemplate](#)
+**MongoDB**
 
-By "non-durable" we mean implementations doesn't store the subscription position in a durable storage automatically.  
-It might be that the datastore does this automatically _or_ that [subscription position storage](#blocking-subscription-position-storage) is not required.
-If the datastore _doesn't_ support storing the subscription position automatically a subscription will typically implement the
+* [Blocking subscription using the "native" Java MongoDB driver](#blocking-subscription-using-the-native-java-mongodb-driver)
+* [Blocking subscription using Spring MongoTemplate](#blocking-subscription-using-spring-mongotemplate)
+
+By "non-durable" we mean implementations that doesn't store the subscription position in a durable storage automatically.  
+It might be that the datastore does this automatically _or_ that [subscription position storage](#blocking-subscription-position-storage) is not required
+for your use case. If the datastore _doesn't_ support storing the subscription position automatically, a subscription will typically implement the
 `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface (since these types of subscriptions doesn't need to be aware of the position).
 
    
 Typically, if you want the stream to continue where it left off on application restart you want to store away the subscription position. You can do this anyway you like,
 but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`.
-Subscriptions that implement this interface will automatically store the subscription position to a datastore _after each processed event_. These implementations are currently provided by Occurrent:
+These subscriptions can be combined with a [subscription position storage](#blocking-subscription-position-storage) implementation to store the position in a durable 
+datastore. Typically, a subscription storage location module also provides an implementation of `PositionAwareBlockingSubscription` that automatically stores 
+the position _after each processed event_. These storage implementations are currently provided by Occurrent:
 
-* [SpringBlockingSubscriptionWithPositionPersistenceForMongoDB](#)
-* [SpringBlockingSubscriptionWithPositionPersistenceForRedis](#)
+**MongoDB**
+
+* [Blocking subscription with position persistence in MongoDB](#blocking-subscription-with-position-persistence-in-mongodb)
+
+**Redis**
+* [Blocking subscription with position persistence in Redis](#blocking-subscription-with-position-persistence-in-redis)
 
 
-If you don't want to persist the position after every event, the recommended approach is pick a [subscription position storage](#blocking-subscription-position-storage) implementation, 
+If you don't want the position to be persisted after _every_ event, it's recommended to pick a [subscription position storage](#blocking-subscription-position-storage) implementation, 
 and write the position when you find fit.
+
+#### Blocking Subscription using the "Native" Java MongoDB Driver
+
+#### Blocking Subscription using Spring MongoTemplate
+
+#### Blocking Subscription with Position Persistence in MongoDB
+
+#### Blocking Subscription with Position Persistence in Redis
    
 ## Reactive Subscriptions
 
