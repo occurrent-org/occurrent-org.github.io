@@ -20,6 +20,7 @@ permalink: /documentation
 * * [Views](#views)
 * * [Commands](#commands)
 * * [Sagas](#sagas)
+* * [Policy](#policy)
 * * [Snapshots](#snapshots)
 * [Getting Started](#getting-started)
 * [Choosing An EventStore](#choosing-an-eventstore)
@@ -734,8 +735,13 @@ applicationService(gameId) { events ->
 ## Sagas
 
 * Link to [zio-saga](https://github.com/VladKopanev/zio-saga) if using Scala
-* Link to [apache camel saga](https://camel.apache.org/components/latest/eips/saga-eip.html) 
+* Link to [apache camel saga](https://camel.apache.org/components/latest/eips/saga-eip.html)
+* [nflow](https://github.com/NitorCreations/nflow)
+* [saga-coordinator-java](https://github.com/fernandoBRS/saga-coordinator-java) 
 * Describe TODO-list pattern (or routing slip)
+
+## Policy
+
 * Show a reactor/policy using subscription
 
 ## Snapshots
