@@ -13,7 +13,7 @@ public class ApplicationService {
     public void execute(String streamId, BiFunction<Snapshot, Stream<CloudEvent>, Stream<CloudEvent>> functionThatCallsDomainModel) {
         // Read snapshot from a the snapshot repsitory 
         Snapshot snapshot = snapshotRepsitory.findByStreamId(streamId);
-        long snapshotVersion = snapshot.streamVersion();        
+        long snapshotVersion = snapshot.version();        
     
         // Read all events for "streamId" from snapshotVersion  
         EventStream<CloudEvent> eventStream = eventStore.read(streamId, snapshotVersion, Long.MAX_VALUE);
