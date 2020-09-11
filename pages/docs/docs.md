@@ -41,8 +41,7 @@ permalink: /documentation
 * * * [Implementations](#blocking-subscription-implementations)
 * * * * [MongoDB Native Driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * * * * [MongoDB with Spring](#blocking-subscription-using-spring-mongotemplate)
-* * * * [Position Persistence in MongoDB w/ Spring](#blocking-subscription-with-position-persistence-in-mongodb)
-* * * * [Position Persistence in Redis w/ Spring](#blocking-subscription-with-position-persistence-in-redis)
+* * * * [Automatic Position Persistence Utility](#automatic-subscription-position-persistence-blocking)
 * * [Reactive](#reactive-subscriptions)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
@@ -605,7 +604,7 @@ commandbus.dispatch(StartNewGameCommand("someGameId", "Secret word"))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-From a typically Java perspective one could argue that this is not too bad. But it does have a few things one could improve upon from a broader perspective:
+From a typical Java perspective one could argue that this is not too bad. But it does have a few things one could improve upon from a broader perspective:
 
 1. The `WordGuessingGame` is [complecting](https://www.infoq.com/presentations/Simple-Made-Easy/) several things that may be modelled separately. 
    Data, state, behavior, command- and event routing and event publishing are all defined in the same model (the `WordGuessingGame` class). 
@@ -703,12 +702,11 @@ BiConsumer<String, Function<Stream<DomainEvent>, Stream<DomainEvent>> applicatio
 {% capture kotlin %}
 // This example is using an imaginary FP library for Kotlin that has methods such as "partially" and "andThen". 
 // You might want to look into the Kotlin "arrow" library which include these functions.
-val applicationService = (String, (Stream<DomainEvent>) -> Stream<DomainEvent>)) = { streamId, domainFn -> 
+fun applicationService(String, (Stream<DomainEvent>) -> Stream<DomainEvent>) : Unit =  
          partially(ApplicationService::execute, evenStore, streamId)
          .andThen { domainEventsInStream -> domainEventsInStream.map(convertCloudEventToDomainEvent)) }
          .andThen(domainFn)
          .andThen { newDomainEvents -> newDomainEvents.map(convertDomainEventToCloudEvent) }
-}
 
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
@@ -1148,13 +1146,13 @@ public interface BlockingSubscriptionPositionStorage {
 
 I.e. it's a way to read/write/delete the `SubscriptionPosition` for a given subscription. Occurrent ships with three pre-defined implementations:
 
-1. **BlockingSubscriptionPositionStorageForMongoDB**<br>
+1\. **BlockingSubscriptionPositionStorageForMongoDB**<br>
     Uses the vanilla MongoDB Java (sync) driver to store `SubscriptionPosition`'s in MongoDB.
     {% include macros/subscription/blocking/mongodb/native/storage/maven.md %}   
-1. SpringBlockingSubscriptionPositionStorageForMongoDB
+2\. **SpringBlockingSubscriptionPositionStorageForMongoDB**<br>
     Uses the Spring MongoTemplate to store `SubscriptionPosition`'s in MongoDB.    
     {% include macros/subscription/blocking/mongodb/spring/storage/maven.md %}
-1. SpringBlockingSubscriptionPositionStorageForRedis
+3\. **SpringBlockingSubscriptionPositionStorageForRedis**<br>
     Uses the Spring RedisTemplate to store `SubscriptionPosition`'s in Redis.    
     {% include macros/subscription/blocking/redis/spring/storage/maven.md %} 
 
@@ -1172,6 +1170,10 @@ These are the _non-durable_ [blocking subscription implementations](#blocking-su
 
 * [Blocking subscription using the "native" Java MongoDB driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * [Blocking subscription using Spring MongoTemplate](#blocking-subscription-using-spring-mongotemplate)
+<div class="comment">It's important to recognize that MongoDB subscriptions are using the <a href="https://docs.mongodb.com/manual/core/replica-set-oplog/">oplog</a> so you need to make sure that 
+you have enough oplog capacity to support your use case. You can also read more about this <a href="https://docs.mongodb.com/manual/changeStreams/#startafter-for-change-streams">here</a>.
+Typically this shouldn't be a problem, but if you have subscribers that risk falling behind, you may consider piping the events to e.g. Kafka and leverage it for these types of subscriptions.</div>
+
 
 By "non-durable" we mean implementations that doesn't store the subscription position in a durable storage automatically.  
 It might be that the datastore does this automatically _or_ that [subscription position storage](#blocking-subscription-position-storage) is not required
@@ -1180,30 +1182,131 @@ for your use case. If the datastore _doesn't_ support storing the subscription p
 
    
 Typically, if you want the stream to continue where it left off on application restart you want to store away the subscription position. You can do this anyway you like,
-but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`.
+but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`. 
 These subscriptions can be combined with a [subscription position storage](#blocking-subscription-position-storage) implementation to store the position in a durable 
-datastore. Typically, a subscription storage location module also provides an implementation of `PositionAwareBlockingSubscription` that automatically stores 
-the position _after each processed event_. These storage implementations are currently provided by Occurrent:
+datastore. 
 
-**MongoDB**
-
-* [Blocking subscription with position persistence in MongoDB](#blocking-subscription-with-position-persistence-in-mongodb)
-
-**Redis**
-* [Blocking subscription with position persistence in Redis](#blocking-subscription-with-position-persistence-in-redis)
-
-
-If you don't want the position to be persisted after _every_ event, it's recommended to pick a [subscription position storage](#blocking-subscription-position-storage) implementation, 
-and write the position when you find fit.
+Occurrent provides a [utility](#automatic-subscription-position-persistence-blocking) that combines a `PositionAwareBlockingSubscription` and 
+a `BlockingSubscriptionPositionStorage` (see [here](#blocking-subscription-position-storage)) to automatically store the subscription position   
+_after each processed event_. If you don't want the position to be persisted after _every_ event, it's recommended to pick a 
+[subscription position storage](#blocking-subscription-position-storage) implementation, and store the position yourself when you find fit.
 
 #### Blocking Subscription using the "Native" Java MongoDB Driver
 
+Uses the vanilla Java MongoDB synchronous driver (no Spring dependency is required).
+
+To get started first include the following dependency:
+
+{% include macros/subscription/blocking/mongodb/native/impl/maven.md %}
+
+Then create a new instance of `BlockingSubscriptionForMongoDB` and start subscribing: 
+
+{% include macros/subscription/blocking/mongodb/native/impl/example.md %}
+<div class="comment">BlockingSubscriptionForMongoDB can be imported from the "org.occurrent.subscription.mongodb.nativedriver.blocking" package.</div>
+
+There are a few things to note here that needs explaining. First we have the `TimeRepresentation.DATE` that is passed as the third constructor argument which you can read more about 
+[here](#mongodb-time-representation). Secondly we have the `Executors.newCachedThreadPool()`. A thread will be created from this executor for each call to 
+"subscribe" (i.e. for each subscription). Make sure that you have enough threads to cover all your subscriptions or the "BlockingSubscription" may hang.
+Last we have the `RetryStrategy` which defines what should happen if there's e.g. a connection issue during the life-time of a subscription or if subscription fails to process a cloud event
+(i.e. the `action` throws an exception). These retry strategies are available:
+
+| Name | Description |
+|:----|:----|
+| `none` | Don't retry! Instead the subscription will fail fast and not continue if there's an error. |     
+| `fixed` | Retry operation after a fixed number of milliseconds or `Duration`.  |     
+| `backoff` &nbsp;&nbsp;&nbsp; | Retry after with exponential backoff if an action throws an exception.  |     
+
+Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [position persistence](#blocking-subscription-position-storage) for this subscription implementation. 
+
 #### Blocking Subscription using Spring MongoTemplate
 
-#### Blocking Subscription with Position Persistence in MongoDB
+An implementation that uses Spring's [MongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/MongoTemplate.html) for 
+event subscriptions. 
 
-#### Blocking Subscription with Position Persistence in Redis
+First include the following dependency:
+
+{% include macros/subscription/blocking/mongodb/spring/impl/maven.md %}
+
+Then create a new instance of `SpringBlockingSubscriptionForMongoDB` and start subscribing:
+
+{% include macros/subscription/blocking/mongodb/spring/impl/example.md %}
+<div class="comment">SpringBlockingSubscriptionForMongoDB can be imported from the "org.occurrent.subscription.mongodb.spring.blocking" package.</div>
+
+The "eventCollectionName" specifies the event collection in MongoDB where events are stored. It's important that this collection is the same as the collection
+used by the `EventStore` implementation. Secondly, we have the `TimeRepresentation.RFC_3339_STRING` that is passed as the third constructor argument, which you can read more about 
+[here](#mongodb-time-representation). It's also very important that this is configured the same way as the `EventStore`.
+
+It should also be noted that Spring takes care of re-attaching to MongoDB if there's a connection issue or other transient errors. This can be configured when creating the `MongoTemplate` instance. 
+
+When it comes to retries, if the "action" fails (i.e. if the higher-order function you provide when calling `subscribe` throws an exception), Occurrent doesn't provide retries out of the box.
+This is most likely something you want to add, and since you're using Spring you probably want to look into [Spring Retry](https://github.com/spring-projects/spring-retry). For example
+consider that you have a simple Spring bean that writes each cloud event to a repository:
+
+```java
+@Component
+public class WriteToRepository {
+
+	private final SomeRepository someRepository;
+
+	public WriteToRepository(SomeRepository someRepository) {
+		this.someRepository = someRepository;
+	}
+
+	public void write(CloudEvent cloudEvent) {
+		someRepository.persist(cloudEvent);
+	}
+}
+```   
+ 
+And you want to subscribe to all "GameStarted" events and write them to the repository:
+
+```java                                    
+WriteToRepository writeToRepository = ...
+subscriptions.subscribe("gameStartedLog", writeToRepository::write);
+```   
    
+But if the connection to `someRepository` is flaky you can add [Spring Retry](https://github.com/spring-projects/spring-retry) so allow for retry with exponential backoff:
+
+```java
+@Component
+public class WriteToRepository {
+
+	private final SomeRepository someRepository;
+
+	public WriteToRepository(SomeRepository someRepository) {
+		this.someRepository = someRepository;
+	}
+
+    @Retryable(backoff = @Backoff(delay = 200, multiplier = 2, maxDelay = 30000))
+	public void write(CloudEvent cloudEvent) {
+		someRepository.persist(cloudEvent);
+	}
+}
+```   
+     
+Don't forget to add `@EnableRetry` in to your Spring Boot application as well.
+
+Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [position persistence](#blocking-subscription-position-storage) for this subscription implementation.
+
+#### Automatic Subscription Position Persistence (Blocking)
+
+A utility that implements `BlockingSubscription` and combines a `PositionAwareBlockingSubscription` and a `BlockingSubscriptionPositionStorage` implementation 
+(see [here](#blocking-subscription-position-storage)) to automatically store the subscription position   
+_after each processed event_. If you don't want the position to be persisted after _every_ event, it's recommended to pick a 
+[subscription position storage](#blocking-subscription-position-storage) implementation, and store the position yourself when you find fit.
+
+
+Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application.
+
+First we need to add the dependency:
+
+{% include macros/subscription/blocking/util/autopersistence/maven.md %}
+
+Then we should instantiate a `PositionAwareBlockingSubscription`, that subscribes to the events from the event store, and an instance of a `BlockingSubscriptionPositionStorage`, 
+that stores the subscription position, and combine them to a `BlockingSubscriptionWithAutomaticPositionPersistence`: 
+
+{% include macros/subscription/blocking/util/autopersistence/example.md %}  
+
 ## Reactive Subscriptions
 
 # Contact & Support
