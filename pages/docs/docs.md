@@ -1565,3 +1565,6 @@ that stores the subscription position, and combine them to a `BlockingSubscripti
 Mailing-list etc
 
 # Credits
+
+Thanks to [Per Ökvist](https://github.com/perokvist) for discussions and ideas, and [David Åse](https://www.linkedin.com/in/davidaase/) for letting me fork 
+the awesome [javalin](https://javalin.io/) website. 
