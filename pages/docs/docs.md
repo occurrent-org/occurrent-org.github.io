@@ -22,6 +22,9 @@ permalink: /documentation
 * * [Sagas](#sagas)
 * * [Policy](#policy)
 * * [Snapshots](#snapshots)
+* * * [Synchronous](#synchronous-snapshots)
+* * * [Asynchronous](#asynchronous-snapshots)
+* * * [Closing the Books](#closing-the-books)
 * [Getting Started](#getting-started)
 * [Choosing An EventStore](#choosing-an-eventstore)
 * * [MongoDB](#mongodb)
@@ -766,10 +769,50 @@ or [Spring's event infrastructure](https://www.baeldung.com/spring-events), and 
 You may also want to look into the "todo-list" pattern described in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation) on the in the [event modeling](https://eventmodeling.org/) website.  
 
 ## Snapshots
+<div class="comment">Using snapshots is an advanced technique and it shouldn't be used unless it's really necessary.</div>
 
-* Async using subscriptions (if you don't want to update snapshot for every event then use `streamVersion` modulo `n`) 
-* Sync using `@Transactional`
-* "Closing the books" using a periodic snapshot
+Snapshotting is an optimization technique that can be applied if it takes too long to derive the current state from an event stream for each [command](#commands).
+There are several ways to do this and Occurrent doesn't enforce any particular strategy. One strategy is to write to use so called "snapshot events" (special events that contains 
+a pre-calculated view of the state of an event stream at a particular time) and another technique is to write snapshots to another datastore than the event store.
+
+The [application service](#commands) need to be modified to first load the up the snapshot and then load events that have not yet been materialized in the snapshot (if any). 
+
+### Synchronous Snapshots
+
+With Occurrent you can trade-off write speed for understandability. For example, let's say that you want to update the snapshot on every write and it should be consistent 
+with the writes to the event store. One way to do this is to use Spring's transactional support:
+ 
+{% include macros/snapshot/spring/sync-example.md %}
+<div class="comment">This is a somewhat simplified example but the idea is hopefully made clear.</div>
+
+{% include macros/snapshot/every-n.md %}
+```java
+if (eventStream.version() - snapshot.version() >= 3) {
+    Snapshot updatedSnapshot = snapshot.updateFrom(newEvents.stream(), eventStream.version());
+    snapshotRepsitory.save(updatedSnapshot);
+}
+```
+
+### Asynchronous Snapshots
+
+As an alternative to [synchronous](#synchronous-snapshots) and fully-consistent snapshots, you can update snapshots asynchronously. You do this by creating a [subscription](#subscriptions) 
+that updates the snapshot. For example:
+
+{% include macros/snapshot/spring/async-example.md %}
+
+{% include macros/snapshot/every-n.md version="streamVersion" %}
+```java
+if (streamVersion - snapshot.version() >= 3) {
+    Snapshot updatedSnapshot = snapshot.updateFrom(newEvents.stream(), eventStream.version());
+    snapshotRepsitory.save(updatedSnapshot);
+}
+```  
+
+### Closing the Books 
+
+This is a pattern that can be applied instead of updating [snapshots](#snapshots) for every `n` event. The idea is to try to keep event streams short and
+instead create snapshots periodically. For example, once every month we run a job that creates snapshots for certain the event streams. This is especially well suited for problem domains where "closing the books"
+is a concept in the domain (such as accounting).     
 
 # Getting started
 
