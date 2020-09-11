@@ -464,8 +464,8 @@ eventStoreOperations.updateEvent("cloudEventId", cloudEventSource) { cloudEvent 
      
 ## Views
 
-Occurrent has no built-in support for views/projections, it's up to you to create and store views as you find fit. But this doesn't have to be difficult!
-All you need to do is to create a [subscription](#subscriptions) and write something to a DB. Here's a trivial example of a view that maintains the number of
+Occurrent doesn't have any special components for creating views/projections. Instead, you simply create a [subscription](#subscriptions) in which you can create and store 
+the view as you find fit. But this doesn't have to be difficult! Here's a trivial example of a view that maintains the number of
 ended games. It does so by inceasing the "numberOfEndedGames" field in an (imaginary) database for each "GameEnded" event that is written to the event store:
 
 {% capture java %}
