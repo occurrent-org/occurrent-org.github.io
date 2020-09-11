@@ -1002,7 +1002,7 @@ An implementation that uses Spring's [MongoTemplate](https://docs.spring.io/spri
 to read and write events to/from MongoDB.     
 
 #### When to use?
-If you're already using Spring and you don't need reactive support then this is a good choice. You can make use of the `@Transactional` annotation to write events and views in the same tx (but make sure you understand what you're going before attempting this).
+If you're already using Spring and you don't need reactive support then this is a good choice. You can make use of the `@Transactional` annotation to write events and views in the same transaction (but make sure you understand what you're going before attempting this).
 
 #### Dependencies
 
