@@ -18,9 +18,9 @@ val nonDurableSubscription : PositionAwareBlockingSubscription = ...
 val storage : BlockingSubscriptionPositionStorage = ...
 
 // Now combine the non-durable subscription and the subscription position storage
-val durableSubscription : BlockingSubscription<CloudEvent> = new BlockingSubscriptionWithAutomaticPositionPersistence(nonDurableSubscription, storage);
+val durableSubscription : BlockingSubscription<CloudEvent> = new BlockingSubscriptionWithAutomaticPositionPersistence(nonDurableSubscription, storage)
 
 // Start a subscription
-durableSubscription.subscribe("mySubscriptionId", cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent));
+durableSubscription.subscribe("mySubscriptionId") { cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent) };
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
