@@ -1562,7 +1562,8 @@ that stores the subscription position, and combine them to a `BlockingSubscripti
 
 # Contact & Support
 
-Mailing-list etc
+Would you like to contribute to Occurrent? That's great! You should join the [mailing-list](https://groups.google.com/g/occurrent) or contribute on [github](https://github.com/johanhaleby/occurrent).
+The [mailing-list](https://groups.google.com/g/occurrent) can also be used for support and discussions.
 
 # Credits
 
