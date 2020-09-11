@@ -754,7 +754,16 @@ preferred library/framework/[view](#views).
 
 ## Policy
 
-* Show a reactor/policy using subscription
+A policy (or "reaction") can be used to deal with workflows such as "whenever _this_ happens, do _that_". For example, whenever a game is won, send an email to the winner. For simple workflows
+like this there's typically no need for a full-fledged [saga](#sagas). In Occurrent, you can create simple policies by creating a [subscription](#subscriptions). Let's consider the example above:
+
+{% include macros/policy/email-policy.md %}     
+
+You could also create a generic policy that simply forwards all events to another piece of infrastructure. For example, you may wish to forward all events to [rabbitmq](https://www.rabbitmq.com/) (by publishing them)
+or [Spring's event infrastructure](https://www.baeldung.com/spring-events), and _then_ create policies that subscribes to events from these systems instead. There's an example in the
+[github repository](https://github.com/johanhaleby/occurrent/tree/master/example/forwarder/mongodb-subscription-to-spring-event) that shows an example of how one can achieve this.
+
+You may also want to look into the "todo-list" pattern described in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation) on the in the [event modeling](https://eventmodeling.org/) website.  
 
 ## Snapshots
 
