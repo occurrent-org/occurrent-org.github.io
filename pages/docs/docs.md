@@ -738,11 +738,19 @@ applicationService(gameId) { events ->
 
 ## Sagas
 
-* Link to [zio-saga](https://github.com/VladKopanev/zio-saga) if using Scala
-* Link to [apache camel saga](https://camel.apache.org/components/latest/eips/saga-eip.html)
-* [nflow](https://github.com/NitorCreations/nflow)
-* [saga-coordinator-java](https://github.com/fernandoBRS/saga-coordinator-java) 
-* Describe TODO-list pattern (or routing slip)
+A "saga" can be used to represent and coordinate a long-lived business transaction/process (where "long-lived" is kind of arbitrary). This is an advanced subject
+and you should try to avoid sagas if there are other means available to solve the problem (for example use [policies](#policy) if they are sufficient). Occurrent doesn't provide or enforce any specific
+Saga implementation. But since Occurrent is a library you can hook in already existing solutions, for example:   
+
+* [zio-saga](https://github.com/VladKopanev/zio-saga) - If you're using [Scala](https://scala-lang.org/) and [zio](https://zio.dev/)  (there's also a [cats implementation](https://github.com/VladKopanev/cats-saga))
+* [Apache Camel Saga](https://camel.apache.org/components/latest/eips/saga-eip.html) - If you're using Java and don't mind bringing in [Apache Camel](https://camel.apache.org/) as a dependency
+* [nflow](https://github.com/NitorCreations/nflow) - Battle-proven solution for orchestrating business processes in Java
+* [saga-coordinator-java](https://github.com/fernandoBRS/saga-coordinator-java) - Saga Coordinator as a Finite State Machine (FSM) in Java
+* Use the [routing-slip pattern](https://www.enterpriseintegrationpatterns.com/patterns/messaging/RoutingTable.html) from the [Enterprise Integration Patterns](https://www.enterpriseintegrationpatterns.com/) book.
+* Represent sagas as todo lists. This is described in the [event modeling](https://eventmodeling.org/) documentation in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation).  
+
+The way to integrate Occurrent with any of these libraries/frameworks/patterns is to create a [subscription](#subscriptions) that forwards the events written to the event store to the 
+preferred library/framework/[view](#views). 
 
 ## Policy
 
