@@ -772,7 +772,7 @@ You may also want to look into the "todo-list" pattern described in the [automat
 <div class="comment">Using snapshots is an advanced technique and it shouldn't be used unless it's really necessary.</div>
 
 Snapshotting is an optimization technique that can be applied if it takes too long to derive the current state from an event stream for each [command](#commands).
-There are several ways to do this and Occurrent doesn't enforce any particular strategy. One strategy is to write to use so called "snapshot events" (special events that contains 
+There are several ways to do this and Occurrent doesn't enforce any particular strategy. One strategy is to use so called "snapshot events" (special events that contains 
 a pre-calculated view of the state of an event stream at a particular time) and another technique is to write snapshots to another datastore than the event store.
 
 The [application service](#commands) need to be modified to first load the up the snapshot and then load events that have not yet been materialized in the snapshot (if any). 
