@@ -857,7 +857,7 @@ A json schema describing a complete Occurrent CloudEvent, as it will be persiste
 
 Note that MongoDB will automatically add an [\_id](https://docs.mongodb.com/manual/reference/method/ObjectId/) field (which is not used by Occurrent). 
 The reason why the CloudEvent `id` attribute is not stored as `_id` in MongoDB is that the `id` of a CloudEvent is not globally unique! 
-The combination of `id` and `source` is a globally unique CloudEvent. Note also that `_id` will _not_ be included a `CloudEvent` when read from an `EventStore`.    
+The combination of `id` and `source` is a globally unique CloudEvent. Note also that `_id` will _not_ be included when the `CloudEvent` is read from an `EventStore`.    
 
 Here's an example of what you can expect to see the "events" collection when storing events in an `EventStore` backed by MongoDB
 (given that `TimeRepresentation` is set to `DATE`):
