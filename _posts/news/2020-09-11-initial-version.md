@@ -1,7 +1,7 @@
 ---
 layout: news
 category: news
-date: 2020-09-04
+date: 2020-09-11
 version: 0.1.0
 title: Initial version 
 summary: Initial version is released to maven central
