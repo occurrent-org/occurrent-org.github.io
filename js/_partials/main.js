@@ -46,7 +46,6 @@ function setMenuHeight () {
     const navHeight = document.getElementsByTagName("nav").item(0).offsetHeight;
     const footerHeight = document.getElementsByTagName("footer").item(0).offsetHeight;
     const tocHeight = window.innerHeight - navHeight - footerHeight - 50; // 50 = menu padding
-    console.log(`Nav = ${navHeight}, footer = ${footerHeight}, toc = ${tocHeight}, window=${window.innerHeight}`);
     const spyNav = document.getElementById('spy-nav');
     let style = spyNav.getAttribute("style");
     const indexOfHeight = style.indexOf(" height");
