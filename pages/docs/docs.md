@@ -7,7 +7,7 @@ permalink: /documentation
 
 {% include notificationBanner.html %}
 
-<div id="spy-nav" class="left-menu" markdown="1">
+<div id="spy-nav" class="left-menu" markdown="1"  style="overflow-x: hidden; overflow-y: auto;">
 * [Introduction](#introduction)
 * [Concepts](#concepts)
 * * [Event Sourcing](#event-sourcing)
