@@ -811,7 +811,7 @@ if (streamVersion - snapshot.version() >= 3) {
 ### Closing the Books 
 
 This is a pattern that can be applied instead of updating [snapshots](#snapshots) for every `n` event. The idea is to try to keep event streams short and
-instead create snapshots periodically. For example, once every month we run a job that creates snapshots for certain the event streams. This is especially well suited for problem domains where "closing the books"
+instead create snapshots periodically. For example, once every month we run a job that creates snapshots for certain event streams. This is especially well suited for problem domains where "closing the books"
 is a concept in the domain (such as accounting).     
 
 # Getting started
