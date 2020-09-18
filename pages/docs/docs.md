@@ -617,13 +617,13 @@ From a typical Java perspective one could argue that this is not too bad. But it
 
 1. The `WordGuessingGame` is [complecting](https://www.infoq.com/presentations/Simple-Made-Easy/) several things that may be modelled separately. 
    Data, state, behavior, command- and event routing and event publishing are all defined in the same model (the `WordGuessingGame` class). 
-   For small examples like this it arguably doesn't matter but if you have complex logic it probably will. Keeping state and behavior separate allows
-   for easier testing, referential transparency and function composition. It allows treating the state as a [value](https://www.infoq.com/presentations/Value-Values/)
-   which has many benefits.    
+   For small examples like this it arguably doesn't matter, but if you have complex logic and a large system, it probably will in my experience. 
+   Keeping state and behavior separate allows for easier testing, referential transparency and function composition. 
+   It allows treating the state as a [value](https://www.infoq.com/presentations/Value-Values/) which has many benefits.
 1. Commands are defined as explicit data structures (this is not _necessarily_ a bad thing but it will add to your code base) when arguably they don't have to. 
 
 So how would one dispatch commands in Occurrent? There's actually nothing stopping you from implementation a simple command bus, create explicit commands, 
-and dispatch them the way we did in the example above. Actually it would be relativley easy to implement the imaginary framework above using Occurrent components. But if
+and dispatch them the way we did in the example above. Actually it would be relatively easy to implement the imaginary framework above using Occurrent components. But if
 you've recognized the problems described above you're probably looking for a different approach. Here's another way you can do it. First of all let's refactor 
 our domain model to pure functions, without any state or dependencies to Occurrent or any other library/framework. 
 
