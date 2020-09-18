@@ -1378,7 +1378,7 @@ of data. This is arguably a bit more complex for the typical Java developer, and
 if high throughput, low CPU and memory-consumption is not critical. 
  
 All reactive subscriptions implements the `org.occurrent.subscription.api.reactor.ReactorSubscription` interface which uses 
-components from [project reactor](https://projectreactor.io).T his interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
+components from [project reactor](https://projectreactor.io). This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
 {% capture java %}
 subscription.subscribe("mySubscriptionId").doOnNext(System.out::println).subscribe();
