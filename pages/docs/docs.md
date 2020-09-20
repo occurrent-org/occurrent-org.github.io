@@ -496,7 +496,7 @@ While this is a trivial example it shouldn't be difficult to create a view that 
 ## Commands
 
 Occurrent doesn't contain a built-in command bus. The reason for this is that I'm not convinced that it's needed in a majority of cases.
-To send "commands" to another service (remotely) one could call a REST API or make an RPC invocation instead of using a proprietary command bus.  
+To send "commands" to another service (remotely) one could call a REST API or make an RPC invocation instead of using a proprietary command bus. 
 One exception to this is if you need [location transparency](https://en.wikipedia.org/wiki/Location_transparency).    
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
