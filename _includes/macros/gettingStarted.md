@@ -1,43 +1,43 @@
 {% capture java %}
-public class GameApplicationService {
+public class ApplicationService {
 
     private final EventStore eventStore;
     private final Converter converter;
 
-    public GameApplicationService(EventStore eventStore, Converter converter) {
+    public ApplicationService(EventStore eventStore, Converter converter) {
         this.eventStore = eventStore;
         this.converter = converter;
     }
 
-    public void play(UUID gameId, Function<Stream<GameEvent>, Stream<GameEvent>> functionThatCallsDomainModel) {
+    public void execute(String streamId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel) {
         // Read all events from the event store for a particular stream
-        EventStream<CloudEvent> eventStream = eventStore.read(gameId.toString());
+        EventStream<CloudEvent> eventStream = eventStore.read(streamId.toString());
         // Convert the cloud events into domain events
-        Stream<GameEvent> persistedGameEvents = eventStream.events().map(converter::toDomainEvent);
+        Stream<DomainEvent> persistedDomainEvents = eventStream.events().map(converter::toDomainEvent);
 
         // Call a pure function from the domain model which returns a Stream of domain events  
-        Stream<GameEvent> newGameEvents = functionThatCallsDomainModel.apply(persistedGameEvents);
+        Stream<DomainEvent> newDomainEvents = functionThatCallsDomainModel.apply(persistedDoomainEvents);
 
         // Convert domain events to cloud events and write them to the event store  
-        eventStore.write(gameId.toString(), eventStream.version(), newGameEvents.map(converter::toCloudEvent));
+        eventStore.write(streamId, eventStream.version(), newDomainEvents.map(converter::toCloudEvent));
     }
 }
 {% endcapture %}
 
 {% capture kotlin %}
-class GameApplicationService constructor (val eventStore : EventStore, val converter : Converter) {
+class ApplicationService constructor (val eventStore : EventStore, val converter : Converter) {
 
-    fun play(gameId : UUID, functionThatCallsDomainModel : (Stream<GameEvent>) -> Stream<GameEvent>) {
+    fun execute(streamId : String, functionThatCallsDomainModel : (Stream<DomainEvent>) -> Stream<DomainEvent>) {
         // Read all events from the event store for a particular stream
-        val  eventStream : EventStream<CloudEvent> = eventStore.read(gameId.toString())
+        val  eventStream : EventStream<CloudEvent> = eventStore.read(streamId.toString())
         // Convert the cloud events into domain events
-        val persistedGameEvents : Stream<GameEvent> = eventStream.events().map(converter::toDomainEvent)
+        val persistedDomainEvents : Stream<DomainEvent> = eventStream.events().map(converter::toDomainEvent)
 
         // Call a pure function from the domain model which returns a Stream of domain events
-        val newGameEvents = functionThatCallsDomainModel(persistedGameEvents)
+        val newDomainEvents = functionThatCallsDomainModel(persistedDomainEvents)
 
         // Convert domain events to cloud events and write them to the event store
-        eventStore.write(gameId.toString(), eventStream.version(), newGameEvents.map(converter::toCloudEvent))
+        eventStore.write(streamId, eventStream.version(), newDomainEvents.map(converter::toCloudEvent))
     }
 }
 {% endcapture %}
