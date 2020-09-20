@@ -495,8 +495,9 @@ While this is a trivial example it shouldn't be difficult to create a view that 
 
 ## Commands
 
-Occurrent doesn't contain a built-in command bus. The reason for this is that I'm not convinced that it's needed in a majority of cases :)
+Occurrent doesn't contain a built-in command bus. The reason for this is that I'm not convinced that it's needed in a majority of cases.
 To send "commands" to another service (remotely) one could call a REST API or make an RPC invocation instead of using a proprietary command bus.  
+One exception to this is if you need [location transparency](https://en.wikipedia.org/wiki/Location_transparency).    
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
 routed to a function in your domain model. It's not uncommon to use a framework in which you define your domain model like this:
@@ -632,9 +633,8 @@ our domain model to pure functions, without any state or dependencies to Occurre
 If you define your behavior like this it'll be really easy to test (and also to compose using normal function composition techniques). There are no side-effects 
 (such as publishing events) which also allows for easier testing and [local reasoning](https://www.inner-product.com/posts/fp-what-and-why/).
 
-But where are our commands!? In this example we've decided to represent them as functions! I.e. the "command" is modeled as simple function, e.g. `startNewGame`!
-But wait, how can I dispatch commands to this function? Don't I need to create some custom, problem specific, middleware mumbo-jumbo to achieve this?
-The answer is.... 🥁 no! Just create or copy a generic `ApplicationService` class like the one below if you're using an object-oriented approach:         
+But where are our commands!? In this example we've decided to represent them as functions. I.e. the "command" is modeled as simple function, e.g. `startNewGame`!
+But wait, how can I dispatch commands to this function? Just create or copy a generic `ApplicationService` class like the one below if you're using an object-oriented approach:         
 
 {% include macros/applicationservice/generic-oo-application-service.md %}
 
