@@ -640,7 +640,8 @@ But wait, how can I dispatch commands to this function? Just create or copy a ge
 
 <div class="comment">Why is this "utility" not included in Occurrent? Maybe it will in the future, but one reason is that you might want to do small tweaks to this implementation. 
 When using Spring, you might want to add a "@Transactional" annotation, or if you're using Kotlin you might want to take a higher-order function that returns a "Sequence&lt;DomainEvent&gt;" 
-instead of "Stream&lt;DomainEvent&gt;" etc etc. The reasoning is that copying and pasting this peice of code into your application will not be difficult, and then you're in full control!</div>
+instead of "Stream&lt;DomainEvent&gt;" etc etc. The reasoning is that copying and pasting this peice of code into your application will not be difficult, and then you're in full control! 
+It's also really important to point out the `EventStore` will either write all events atomically or all events will fail! You will never have partial writes.</div>                         
 
 and then use the `ApplicationService` like this:
 
