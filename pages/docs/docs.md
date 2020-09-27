@@ -1354,15 +1354,18 @@ Note that you can provide a [filter](#blocking-subscription-filters), [start pos
 
 #### Automatic Subscription Position Persistence (Blocking)
 
-A utility that implements `BlockingSubscription` and combines a `PositionAwareBlockingSubscription` and a `BlockingSubscriptionPositionStorage` implementation 
-(see [here](#blocking-subscription-position-storage)) to automatically store the subscription position   
-_after each processed event_. If you don't want the position to be persisted after _every_ event, it's recommended to pick a 
-[subscription position storage](#blocking-subscription-position-storage) implementation, and store the position yourself when you find fit.
+Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application. 
+Occurrent provides a utility that implements `BlockingSubscription` and combines a `PositionAwareBlockingSubscription` and a `BlockingSubscriptionPositionStorage` implementation 
+(see [here](#blocking-subscription-position-storage)) to automatically store the subscription position, by default,   
+after each processed event. If you don't want the position to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
+to `BlockingSubscriptionWithAutomaticPositionPersistenceConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
+the position to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new BlockingSubscriptionWithAutomaticPositionPersistenceConfig(3)` that 
+creates an instance of `EveryN` that stores the position for every third event. 
 
+If you want full control, it's recommended to pick a [subscription position storage](#blocking-subscription-position-storage) implementation, 
+and store the position yourself using its API.
 
-Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application.
-
-First we need to add the dependency:
+To use it, first we need to add the dependency:
 
 {% include macros/subscription/blocking/util/autopersistence/maven.md %}
 
@@ -1543,20 +1546,21 @@ It should also be noted that Spring takes care of re-attaching to MongoDB if the
 Note that you can provide a [filter](#reactive-subscription-filters), [start position](#reactive-subscription-start-position) and [position persistence](#reactive-subscription-position-storage) for this subscription implementation.
 
 #### Automatic Subscription Position Persistence (Reactive)
-
-A utility that implements `ReactorSubscription` and combines a `PositionAwareReactorSubscription` and a `ReactorSubscriptionPositionStorage` implementation 
-(see [here](#reactive-subscription-position-storage)) to automatically store the subscription position   
-_after each processed event_. If you don't want the position to be persisted after _every_ event, it's recommended to pick a 
-[subscription position storage](#reactive-subscription-position-storage) implementation, and store the position yourself when you find fit.
-
+ 
 Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application.
+Occurrent provides a utility that implements `ReactorSubscription` and combines a `PositionAwareReactorSubscription` and a `ReactorSubscriptionPositionStorage` implementation 
+(see [here](#reactive-subscription-position-storage)) to automatically store the subscription position, by default,   
+after each processed event. If you don't want the position to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
+to `ReactorSubscriptionWithAutomaticPositionPersistenceConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
+the position to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new ReactorSubscriptionWithAutomaticPositionPersistenceConfig(3)` that 
+creates an instance of `EveryN` that stores the position for every third event. 
 
-First we need to add the dependency:
+To use it, first to add the following dependency:
 
 {% include macros/subscription/reactor/util/autopersistence/maven.md %}
 
-Then we should instantiate a `PositionAwareBlockingSubscription`, that subscribes to the events from the event store, and an instance of a `BlockingSubscriptionPositionStorage`, 
-that stores the subscription position, and combine them to a `BlockingSubscriptionWithAutomaticPositionPersistence`: 
+Then we should instantiate a `PositionAwareReactorSubscription`, that subscribes to the events from the event store, and an instance of a `ReactorSubscriptionPositionStorage`, 
+that stores the subscription position, and combine them to a `ReactorSubscriptionWithAutomaticPositionPersistence`: 
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
 
