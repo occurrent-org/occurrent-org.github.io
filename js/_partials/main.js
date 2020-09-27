@@ -62,6 +62,7 @@ window.onresize = setMenuHeight;
 if (document.location.pathname.includes("/documentation")) {
     // "Added in" labels
     let addedTags = {
+        "catch-up-subscription-blocking" : "0.1.1",
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",

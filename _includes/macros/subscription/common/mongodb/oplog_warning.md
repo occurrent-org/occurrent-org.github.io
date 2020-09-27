@@ -1,3 +1,4 @@
 <div class="comment">It's important to recognize that MongoDB subscriptions are using the <a href="https://docs.mongodb.com/manual/core/replica-set-oplog/">oplog</a> so you need to make sure that 
 you have enough oplog capacity to support your use case. You can also read more about this <a href="https://docs.mongodb.com/manual/changeStreams/#startafter-for-change-streams">here</a>.
-Typically this shouldn't be a problem, but if you have subscribers that risk falling behind, you may consider piping the events to e.g. Kafka and leverage it for these types of subscriptions.</div>
+Typically this shouldn't be a problem, but if you have subscribers that risk falling behind, you may consider piping the events to e.g. Kafka and leverage it for these types of subscriptions.
+Note that you can always use a <a href="#catch-up-subscription-blocking">catch-up subscription</a> to recover if this happens.</div>

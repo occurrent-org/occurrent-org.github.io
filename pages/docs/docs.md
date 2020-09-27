@@ -45,6 +45,7 @@ permalink: /documentation
 * * * * [MongoDB Native Driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * * * * [MongoDB with Spring](#blocking-subscription-using-spring-mongotemplate)
 * * * * [Automatic Position Persistence Utility](#automatic-subscription-position-persistence-blocking)
+* * * * [Catch-up Subscription](#catch-up-subscription-blocking)
 * * [Reactive](#reactive-subscriptions)
 * * * [Filters](#reactive-subscription-filters)
 * * * [Start Position](#reactive-subscription-start-position)
@@ -1372,7 +1373,37 @@ To use it, first we need to add the dependency:
 Then we should instantiate a `PositionAwareBlockingSubscription`, that subscribes to the events from the event store, and an instance of a `BlockingSubscriptionPositionStorage`, 
 that stores the subscription position, and combine them to a `BlockingSubscriptionWithAutomaticPositionPersistence`: 
 
-{% include macros/subscription/blocking/util/autopersistence/example.md %}  
+{% include macros/subscription/blocking/util/autopersistence/example.md %}
+
+#### Catch-up Subscription (Blocking)
+
+When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events
+as the arrive. A catch-up subscription allows for exactly this! It combines the [EventStoreQueries](#eventstore-queries) API with a 
+[subscription](#blocking-subscriptions) and a [subscription storage](#blocking-subscription-position-storage). It starts off by streaming
+historic events from the event store and then automatically switch to continuous streaming mode once the historic events have caught up.
+
+To get start you need to add the following dependency:
+
+{% include macros/subscription/blocking/util/catchup/maven.md %}
+
+For example:
+
+{% include macros/subscription/blocking/util/catchup/example.md %}
+
+`CatchupSupportingBlockingSubscription` maintains an in-memory cache of event ids. The size of this cache is configurable using a `CatchupSupportingBlockingSubscriptionConfig` but it defaults to 100.
+The purpose of the cache is to reduce the likely hood of duplicate events when switching from replay mode to continuous mode. Otherwise, there would be a chance
+that event written _exactly_ when the switch from replay mode to continuous mode takes places, can be lost. To prevent this, the continuous mode subscription 
+starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the 
+switch. If the cache is too small, duplicate events will be sent to the continuous subscription. Typically, you want your application to be idempotent anyways and if so this shouldn't be a problem.        
+
+By default, `CatchupSupportingBlockingSubscription` also stores the subscription position in the supplied storage so that, if the application crashes during replay mode, it doesn't need to 
+start replaying from the beginning again. Note that if you don't want subscription persistence during replay, you can disable this by supplying an `CatchupSupportingBlockingSubscriptionConfig`
+instance to the `CatchupSupportingBlockingSubscription` constructor with a `persistCloudEventPositionPredicate` predicate that never stores the position:
+
+```java                                              
+Predicate<CloudEvent> neverStoreTheSubscriptionPosition = __ -> false;
+CatchupSupportingBlockingSubscriptionConfig config = new CatchupSupportingBlockingSubscriptionConfig(100, neverStoreTheSubscriptionPosition);
+```
 
 ## Reactive Subscriptions
 
