@@ -1548,7 +1548,7 @@ Note that you can provide a [filter](#reactive-subscription-filters), [start pos
 #### Automatic Subscription Position Persistence (Reactive)
  
 Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application.
-Occurrent provides a utility that implements `ReactorSubscription` and combines a `PositionAwareReactorSubscription` and a `ReactorSubscriptionPositionStorage` implementation 
+Occurrent provides a utility that combines a `PositionAwareReactorSubscription` and a `ReactorSubscriptionPositionStorage` implementation 
 (see [here](#reactive-subscription-position-storage)) to automatically store the subscription position, by default,   
 after each processed event. If you don't want the position to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
 to `ReactorSubscriptionWithAutomaticPositionPersistenceConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
