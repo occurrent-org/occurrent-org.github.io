@@ -9,7 +9,7 @@ EventStoreQueries eventStoreQueries = ...
 
 
 // Now combine the continuous subscription and the subscription position storage to allow
-CatchupSupportingBlockingSubscription catchupSubscription = new CatchupSupportingBlockingSubscription(continuousSubscription, mongoEventStore, storage);
+CatchupSupportingBlockingSubscription catchupSubscription = new CatchupSupportingBlockingSubscription(continuousSubscription, eventStoreQueries, storage);
 
 // Start a subscription that starts replaying events of type "GameEnded" from the beginning of time
 catchupSubscription.subscribe("mySubscription", filter(type("GameEnded")), StartAt.subscriptionPosition(TimeBasedSubscriptionPosition.beginningOfTime()), cloudEvent -> System.out.println(cloudEvent));
@@ -25,7 +25,7 @@ PositionAwareBlockingSubscription continuousSubscription = ...
 EventStoreQueries eventStoreQueries = ... 
 
 // Now combine the continuous subscription and the subscription position storage to allow
-val catchupSubscription = CatchupSupportingBlockingSubscription(continuousSubscription, mongoEventStore, storage, config)
+val catchupSubscription = CatchupSupportingBlockingSubscription(continuousSubscription, eventStoreQueries, storage, config)
 
 // Start a subscription that starts replaying events of type "GameEnded" from the beginning of time
 catchupSubscription.subscribe("mySubscription", filter(type("GameEnded")), StartAt.subscriptionPosition(TimeBasedSubscriptionPosition.beginningOfTime())) { cloudEvent ->
