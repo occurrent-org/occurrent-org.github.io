@@ -6,7 +6,7 @@ CloudEvent event = CloudEventBuilder.v1()
                     .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
                     .withSubject("subject")
                     .withDataContentType("application/json")
-                    .withData("{ \"message\" : \"hello\" }")
+                    .withData("{ \"message\" : \"hello\" }".getBytes(StandardCharsets.UTF_8))
                     .build();
 
 // Write                    
@@ -24,7 +24,7 @@ val event = CloudEventBuilder.v1()
                     .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
                     .withSubject("subject")
                     .withDataContentType("application/json")
-                    .withData("{ \"message\" : \"hello\" }")
+                    .withData("{ \"message\" : \"hello\" }".toByteArray())
                     .build();
 
 // Write                    
