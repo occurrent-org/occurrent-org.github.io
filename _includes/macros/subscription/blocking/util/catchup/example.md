@@ -41,7 +41,13 @@ val eventStoreQueries : EventStoreQueries = ...
 // handing over to the continuous subscription once catch-up phase is completed.
 // In this example, we also store the subscription position during catch-up for every third event.
 // This is optional, but useful if you're reading a lot of events and don't want to risk restarting 
-// from the beginning if the application where to crash during the catch-up phase.   
+// from the beginning if the application where to crash during the catch-up phase. If you don't
+// use "andPersistSubscriptionPositionDuringCatchupPhaseForEveryNEvents" but just "useSubscriptionPositionStorage(storage)"
+// then the CatchupSupportingBlockingSubscription will still start from the position in the storage, but not write to it.
+// The continuous subscription (passed as first parameter to CatchupSupportingBlockingSubscription) might write to the store, 
+// which means that once the CatchupSupportingBlockingSubscription has caught up and the continuous subscription starts
+// writing the position, the CatchupSupportingBlockingSubscription will just delegate to continuous subscription if it finds
+// a position in the storage.           
 val catchupSubscription = CatchupSupportingBlockingSubscription(continuousSubscription, eventStoreQueries, 
             CatchupSupportingBlockingSubscriptionConfig(useSubscriptionPositionStorage(storage)
                     .andPersistSubscriptionPositionDuringCatchupPhaseForEveryNEvents(3))

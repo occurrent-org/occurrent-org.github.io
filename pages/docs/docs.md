@@ -1379,7 +1379,7 @@ that stores the subscription position, and combine them to a `BlockingSubscripti
 
 When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events
 as the arrive. A catch-up subscription allows for exactly this! It combines the [EventStoreQueries](#eventstore-queries) API with a 
-[subscription](#blocking-subscriptions) and a [subscription storage](#blocking-subscription-position-storage). It starts off by streaming
+[subscription](#blocking-subscriptions) and an optional [subscription storage](#blocking-subscription-position-storage). It starts off by streaming
 historic events from the event store and then automatically switch to continuous streaming mode once the historic events have caught up.
 
 To get start you need to add the following dependency:
@@ -1396,14 +1396,8 @@ that event written _exactly_ when the switch from replay mode to continuous mode
 starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the 
 switch. If the cache is too small, duplicate events will be sent to the continuous subscription. Typically, you want your application to be idempotent anyways and if so this shouldn't be a problem.        
 
-By default, `CatchupSupportingBlockingSubscription` also stores the subscription position in the supplied storage so that, if the application crashes during replay mode, it doesn't need to 
-start replaying from the beginning again. Note that if you don't want subscription persistence during replay, you can disable this by supplying an `CatchupSupportingBlockingSubscriptionConfig`
-instance to the `CatchupSupportingBlockingSubscription` constructor with a `persistCloudEventPositionPredicate` predicate that never stores the position:
-
-```java                                              
-Predicate<CloudEvent> neverStoreTheSubscriptionPosition = __ -> false;
-CatchupSupportingBlockingSubscriptionConfig config = new CatchupSupportingBlockingSubscriptionConfig(100, neverStoreTheSubscriptionPosition);
-```
+`CatchupSupportingBlockingSubscription` can be configured to store the subscription position in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to 
+start replaying from the beginning again. Note that if you don't want subscription persistence during replay, you can disable this by doing `new CatchupSupportingBlockingSubscriptionConfig(dontUseSubscriptionPositionStorage())`.
 
 ## Reactive Subscriptions
 
