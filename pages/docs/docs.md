@@ -1120,7 +1120,7 @@ This will simply print each cloud event written to the event store to the consol
 Note that the signature of `subscribe` is defined like this:
 
 ```java
-public interface BlockingSubscription<T extends CloudEvent> {
+public interface BlockingSubscription {
     /**
      * Start listening to cloud events persisted to the event store using the supplied start position and <code>filter</code>.
      *
@@ -1132,19 +1132,20 @@ public interface BlockingSubscription<T extends CloudEvent> {
      *                        were when the application was first started.
      * @param action          This action will be invoked for each cloud event that is stored in the EventStore.
      */
-    Subscription subscribe(String subscriptionId, SubscriptionFilter filter, Supplier<StartAt> startAtSupplier, Consumer<T> action);
+    Subscription subscribe(String subscriptionId, SubscriptionFilter filter, Supplier<StartAt> startAtSupplier, Consumer<CloudEvent> action);
 
     // Default methods 
 
 }
 ``` 
 
-The type `<T>`, define the type of the `CloudEvent` that the subscription produce. It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
+It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
 the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
 for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `BlockingSubscription` implementation that also implement the 
 `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface. The `PositionAwareBlockingSubscription`  is an example of a `BlockingSubscription` that returns a wrapper around 
-`io.cloudevents.CloudEvent` called `org.occurrent.subscription.CloudEventWithSubscriptionPosition` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
-the current subscription position. Note that `CloudEventWithSubscriptionPosition` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
+`io.cloudevents.CloudEvent` called `org.occurrent.subscription.PositionAwareCloudEvent` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
+the current subscription position. You can check if a cloud event contains a subscription position by calling `PositionAwareCloudEvent.hasSubscriptionPosition(cloudEvent)`
+and then get the position by using `PositionAwareCloudEvent.getSubscriptionPositionOrThrowIAE(cloudEvent)`. Note that `PositionAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
 you're subscribing from a `PositionAwareBlockingSubscription`, you are responsible for [keeping track of the subscription position](#blocking-subscription-position-storage), so 
 that it's possible to resume this subscription from the last known position on application restart. This interface also provides means to get the so called "current global subscription position", 
 by calling the `globalSubscriptionPosition` method which can be useful when starting a new subscription. 
@@ -1424,27 +1425,28 @@ This will simply print each cloud event written to the event store to the consol
 Note that the signature of `subscribe` is defined like this:
 
 ```java
-public interface ReactorSubscription<T extends CloudEvent> {
+public interface ReactorSubscription {
 
     /**
-     * Stream events from the event store as they arrive and provide a function which allows to configure the
-     * {@link T} that is used. Use this method if want to start streaming from a specific position.
+     * Stream events from the event store as they arrive. Use this method if want to start streaming from a specific position.
      *
      * @return A Flux with cloud events which may also includes the SubscriptionPosition that can be used to resume the stream from the current position.
      */
-    Flux<T> subscribe(SubscriptionFilter filter, StartAt startAt);
+    Flux<CloudEvent> subscribe(SubscriptionFilter filter, StartAt startAt);
 
     // Default methods 
 
 }
 ``` 
 
-The type `<T>`, define the type of the `CloudEvent` that the subscription produce. It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
+It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
 the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
 for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `ReactorSubscription` implementation that also implement the 
 `org.occurrent.subscription.api.reactor.PositionAwareReactorSubscription` interface. The `PositionAwareReactorSubscription`  is an example of a `ReactorSubscription` that returns a wrapper around 
-`io.cloudevents.CloudEvent` called `org.occurrent.subscription.CloudEventWithSubscriptionPosition` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
-the current subscription position. Note that `CloudEventWithSubscriptionPosition` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
+`io.cloudevents.CloudEvent` called `org.occurrent.subscription.PositionAwareCloudEvent` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
+the current subscription position. You can check if a cloud event contains a subscription position by calling `PositionAwareCloudEvent.hasSubscriptionPosition(cloudEvent)`
+and then get the position by using `PositionAwareCloudEvent.getSubscriptionPositionOrThrowIAE(cloudEvent)`. 
+Note that `PositionAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
 you're subscribing from a `PositionAwareReactorSubscription`, you are responsible for [keeping track of the subscription position](#reactive-subscription-position-storage), so 
 that it's possible to resume this subscription from the last known position on application restart. This interface also provides means to get the so called "current global subscription position", 
 by calling the `globalSubscriptionPosition` method which can be useful when starting a new subscription. 
