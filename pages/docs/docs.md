@@ -19,6 +19,8 @@ permalink: /documentation
 * * [Subscriptions](#subscriptions)
 * * [Views](#views)
 * * [Commands](#commands)
+* * [Application Service](#application-service)
+* * * [Kotlin](#application-service-kotlin-extensions)
 * * [Sagas](#sagas)
 * * [Policy](#policy)
 * * [Snapshots](#snapshots)
@@ -740,6 +742,147 @@ applicationService(gameId) { events ->
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+## Application Service
+
+Occurrent provides a generic application service that is a good starting point for most use cases. First add the module as a dependency to your project:
+
+{% include macros/applicationservice/blocking-maven.md %}
+
+This module provides an interface, `org.occurrent.application.service.blocking.ApplicationService`, and a default implementation, 
+`org.occurrent.application.service.blocking.implementation.GenericApplicationService`. The `GenericApplicationService` takes an `EventStore` and 
+a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from 
+cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
+`org.occurrent.application.converter.implementation.GenericCloudEventConverter`. For example:
+
+{% capture java %}
+DomainEventConverter domainEventConverter = new DomainEventConverter(new ObjectMapper());
+CloudEventConverter<DomainEvent> cloudEventConverter = new GenericCloudEventConverter<>(domainEventConverter::convertToDomainEvent, domainEventConverter::convertToCloudEvent);
+{% endcapture %}
+{% capture kotlin %}
+val domainEventConverter = DomainEventConverter(ObjectMapper())
+val cloudEventConverter = GenericCloudEventConverter(domainEventConverter::convertToDomainEvent, domainEventConverter::convertToCloudEvent)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+<div class="comment">ObjectMapper a class from the is Jackson library</div>
+
+Here's an example of a `DomainEventConverter` (this is something you implement yourself):
+
+```java
+import com.fasterxml.jackson.databind.ObjectMapper;
+import io.cloudevents.CloudEvent;
+import io.cloudevents.core.builder.CloudEventBuilder;
+
+import java.io.IOException;
+import java.net.URI;
+
+import static java.time.ZoneOffset.UTC;
+import static org.occurrent.functional.CheckedFunction.unchecked;
+import static org.occurrent.time.TimeConversion.toLocalDateTime;
+
+public class DomainEventConverter {
+
+    private final ObjectMapper objectMapper;
+
+    public DomainEventConverter(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    }
+
+    public CloudEvent convertToCloudEvent(DomainEvent e) {
+        try {
+            return CloudEventBuilder.v1()
+                    .withId(e.getEventId())
+                    .withSource(URI.create("http://name"))
+                    .withType(e.getClass().getName())
+                    .withTime(toLocalDateTime(e.getTimestamp()).atOffset(UTC))
+                    .withSubject(e.getName())
+                    .withDataContentType("application/json")
+                    .withData(objectMapper.writeValueAsBytes(e))
+                    .build();
+        } catch (JsonProcessingException jsonProcessingException) {
+            throw new RuntimeException(jsonProcessingException);
+        }
+    }
+
+    public DomainEvent convertToDomainEvent(CloudEvent cloudEvent) {
+        try {
+            return (DomainEvent) objectMapper.readValue(cloudEvent.getData(), Class.forName(cloudEvent.getType()));
+        } catch (IOException | ClassNotFoundException e) {
+            throw new RuntimeException(e);
+        }
+    }
+}        
+```
+
+See [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/implementation/GenericApplicationServiceTest.java) 
+for an example.  
+
+If your domain model is using a `CloudEvent` (and not a custom domain event) then just pass a `Function.identity()` to the `GenericCloudEventConverter`:
+
+```java
+CloudEventConverter<CloudEvent> cloudEventConverter = new GenericCloudEventConverter<>(Function.identity(), Function.identity());
+```       
+
+Now you can instantiate the (blocking) `GenericApplicationService`:
+
+{% capture java %}
+EventStore eventStore = ..
+CloudEventConverter<DomainEvent> cloudEventConverter = ..
+ApplicationService<DomainEvent> applicationService = new GenericApplicationService<>(eventStore, cloudEventConverter);
+{% endcapture %}
+{% capture kotlin %}
+val eventStore : EventStore = ..
+val cloudEventConverter : CloudEventConverter<DomainEvent> = ..
+val applicationService : ApplicationService<DomainEvent> = GenericApplicationService(eventStore, cloudEventConverter)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+You're now ready to use the generic application service in your application. As an example let's say you have a domain model with a method defined like this:
+
+```java
+public class WordGuessingGame {
+    public static Stream<DomainEvent> guessWord(Stream<DomainEvent> events, String guess) {
+        // Implementation
+    }    
+}
+``` 
+
+You can call it using the application service:
+
+{% capture java %}
+applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess));
+{% endcapture %}
+{% capture kotlin %}
+applicationService.execute(gameId) { events -> 
+WordGuessingGame.guessWord(events, guess)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Application Service Kotlin Extensions
+
+If you're using [Kotlin](https://kotlinlang.org/) chances are that your domain model is using a [Sequence](https://kotlinlang.org/docs/reference/sequences.html)
+instead of a java `Stream`:
+
+```kotlin
+object WordGuessingGame {
+    fun guessWord(events : Sequence<DomainEvent>, guess : String) : Sequence<DomainEvent> {
+        // Implementation
+    }    
+}
+```           
+
+Occurrent provides a set of extension functions for Kotlin in this module:
+
+{% include macros/applicationservice/blocking-maven-kotlin.md %}
+<div class="comment">This module depends on 'org.occurrent:application-service-blocking:{{site.occurrentversion}}' so you don't need to depend on that module explicitly.</div>
+
+You can then use one of the `org.occurrent.application.service.blocking.execute` extension functions to do:
+
+```kotlin
+applicationService.execute(gameId) { events : Sequence<DomainEvent> -> 
+    WordGuessingGame.guessWord(events, guess)
+}
+```
 
 ## Sagas
 
