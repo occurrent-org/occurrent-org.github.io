@@ -1,11 +1,11 @@
 {% capture java %}
 public class WhenGameWonThenSendEmailToWinnerPolicy {
 
-    private final BlockingSubscription<CloudEvent> subscription;
+    private final BlockingSubscription subscription;
     private final EmailClient emailClient;
     private final Players players;
     
-    public WhenGameWonThenSendEmailToWinnerPolicy(BlockingSubscription<CloudEvent> subscription, EmailClient emailClient, Players players) {
+    public WhenGameWonThenSendEmailToWinnerPolicy(BlockingSubscription subscription, EmailClient emailClient, Players players) {
         this.subscription = subscription;
         this.emailClient = emailClient;
         this.players = players;
@@ -22,7 +22,7 @@ public class WhenGameWonThenSendEmailToWinnerPolicy {
 {% endcapture %}
 
 {% capture kotlin %}
-class WhenGameWonThenSendEmailToWinnerPolicy(val subscription : BlockingSubscription<CloudEvent>, 
+class WhenGameWonThenSendEmailToWinnerPolicy(val subscription : BlockingSubscription, 
                                              val emailClient : EmailClient, val players : Players) {
 
     @PostConstruct

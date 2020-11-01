@@ -1,10 +1,10 @@
 {% capture java %}
 public class UpdateSnapshotWhenNewEventsAreWrittenToEventStore {
 
-    private final BlockingSubscription<CloudEvent> subscription;
+    private final BlockingSubscription subscription;
     private final SnapshotRepository snapshotRepository;
     
-    public UpdateSnapshotWhenNewEventsAreWrittenToEventStore(BlockingSubscription<CloudEvent> subscription, SnapshotRepository snapshotRepository) {
+    public UpdateSnapshotWhenNewEventsAreWrittenToEventStore(BlockingSubscription subscription, SnapshotRepository snapshotRepository) {
         this.subscription = subscription;
         this.snapshotRepository = snapshotRepository;
     }
@@ -24,7 +24,7 @@ public class UpdateSnapshotWhenNewEventsAreWrittenToEventStore {
 {% endcapture %}
 
 {% capture kotlin %}
-class UpdateSnapshotWhenNewEventsAreWrittenToEventStore(val subscription : BlockingSubscription<CloudEvent>, 
+class UpdateSnapshotWhenNewEventsAreWrittenToEventStore(val subscription : BlockingSubscription, 
                                                         val snapshotRepository : SnapshotRepository) {
 
     @PostConstruct

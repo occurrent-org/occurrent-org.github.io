@@ -1,7 +1,7 @@
 {% capture java %}
 MongoTemplate mongoTemplate = mongoClient.getDatabase("some-database");
 // Create the blocking subscription
-BlockingSubscription<CloudEvent> subscriptions = new BlockingSubscriptionForMongoDB(database, "eventCollection", TimeRepresentation.DATE, Executors.newCachedThreadPool(), RetryStrategy.fixed(200));
+BlockingSubscription subscriptions = new BlockingSubscriptionForMongoDB(database, "eventCollection", TimeRepresentation.DATE, Executors.newCachedThreadPool(), RetryStrategy.fixed(200));
 
 // Now you can create subscriptions instances that subscribes to new events as they're written to an EventStore
 subscriptions.subscribe("mySubscriptionId", cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent)); 

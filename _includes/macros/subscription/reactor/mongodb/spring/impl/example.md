@@ -1,7 +1,7 @@
 {% capture java %}
 ReactiveMongoTemplate reactiveMongoTemplate = ...
 // Create the blocking subscription
-BlockingSubscription<CloudEvent> subscriptions = new SpringReactorSubscriptionForMongoDB(reactiveMongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING);
+BlockingSubscription subscriptions = new SpringReactorSubscriptionForMongoDB(reactiveMongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING);
 
 // Now you can create subscriptions instances that subscribes to new events as they're written to an EventStore
 // Typically you do this after the Spring application context has finished loading. For example by subscribing to 
