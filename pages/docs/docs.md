@@ -25,6 +25,8 @@ permalink: /documentation
 * * * [Kotlin](#application-service-kotlin-extensions)
 * * [Sagas](#sagas)
 * * [Policy](#policy)
+* * * [Asynchronous](#asynchronous-policy)
+* * * [Synchronous](#synchronous-policy)
 * * [Snapshots](#snapshots)
 * * * [Synchronous](#synchronous-snapshots)
 * * * [Asynchronous](#asynchronous-snapshots)
@@ -952,6 +954,43 @@ applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events
 
 ### Application Service Transactional Side-Effects
 
+In the example above, writing the events to the event store and the execution of policies are not an atomic operation. If your app crashes before after the call to `registerOngoingGame::registerGameAsOngoingWhenGameWasStarted`
+but before `removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded`, you will need to handle idempotency. But if your policies/side-effects are writing data to the same database as the event store
+you can make use of transactions to write everything atomically! This is very easy you're using a [Spring EventStore](#eventstore-with-spring-mongotemplate-blocking). What you need to do is to wrap the `ApplicationService` provided
+by Occurrent in your own application service, something like this:
+
+{% capture java %}
+@Service
+public class CustomApplicationServiceImpl implements ApplicationService<DomainEvent> {
+	private final GenericApplicationService<DomainEvent> occurrentApplicationService;
+
+	public CustomApplicationService(GenericApplicationService<DomainEvent> occurrentApplicationService) {
+		this.occurrentApplicationService = occurrentApplicationService;
+	}
+
+
+	@Transactional
+	@Override
+    public void execute(String streamId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel, Consumer<Stream<DomainEvent>> sideEffect) {
+		occurrentApplicationService.execute(gameId, functionThatCallsDomainModel, sideEffect);
+    }
+}
+{% endcapture %}
+{% capture kotlin %}
+@Service
+class CustomApplicationServiceImpl(val occurrentApplicationService:  GenericApplicationService<DomainEvent>) : ApplicationService<DomainEvent> {
+
+	@Transactional
+    override fun execute(streamId : String, functionThatCallsDomainModel: Function<Stream<DomainEvent>, Stream<DomainEvent>> , sideEffect : Consumer<Stream<DomainEvent>>) {
+		occurrentApplicationService.execute(gameId, functionThatCallsDomainModel, sideEffect)
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Given that you've defined a `MongoTransactionManager` in your Spring Boot configuration (and using this when creating your [event store instance](#eventstore-with-spring-mongotemplate-blocking)) the side-effects and events
+are written atomically in the same transaction! 
+
 ### Application Service Kotlin Extensions
 
 If you're using [Kotlin](https://kotlinlang.org/) chances are that your domain model is using a [Sequence](https://kotlinlang.org/docs/reference/sequences.html)
@@ -997,7 +1036,11 @@ preferred library/framework/[view](#views).
 ## Policy
 
 A policy (or "reaction") can be used to deal with workflows such as "whenever _this_ happens, do _that_". For example, whenever a game is won, send an email to the winner. For simple workflows
-like this there's typically no need for a full-fledged [saga](#sagas). In Occurrent, you can create simple policies by creating a [subscription](#subscriptions). Let's consider the example above:
+like this there's typically no need for a full-fledged [saga](#sagas). 
+
+### Asynchronous Policy
+
+In Occurrent, you can create asynchronous policies by creating a [subscription](#subscriptions). Let's consider the example above:
 
 {% include macros/policy/email-policy.md %}     
 
@@ -1005,7 +1048,12 @@ You could also create a generic policy that simply forwards all events to anothe
 or [Spring's event infrastructure](https://www.baeldung.com/spring-events), and _then_ create policies that subscribes to events from these systems instead. There's an example in the
 [github repository](https://github.com/johanhaleby/occurrent/tree/master/example/forwarder/mongodb-subscription-to-spring-event) that shows an example of how one can achieve this.
 
-You may also want to look into the "todo-list" pattern described in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation) on the in the [event modeling](https://eventmodeling.org/) website.  
+You may also want to look into the "todo-list" pattern described in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation) on the in the [event modeling](https://eventmodeling.org/) website.
+
+### Synchronous Policy
+
+In some cases, for example if you have a simple website and you want views to be updated when a command is dispatched by a REST API, it can be useful to update a policy in a synchronous fashion. The application service
+provided by Occurrent allows for this, please see the [application service documentation](#application-service-side-effects) for an example.    
 
 ## Snapshots
 <div class="comment">Using snapshots is an advanced technique and it shouldn't be used unless it's really necessary.</div>
