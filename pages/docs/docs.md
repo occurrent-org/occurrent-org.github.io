@@ -20,6 +20,8 @@ permalink: /documentation
 * * [Views](#views)
 * * [Commands](#commands)
 * * [Application Service](#application-service)
+* * * [Side-Effects](#application-service-side-effects)
+* * * [Transactional Side-Effects](#application-service-transactional-side-effects)
 * * * [Kotlin](#application-service-kotlin-extensions)
 * * [Sagas](#sagas)
 * * [Policy](#policy)
@@ -793,7 +795,7 @@ public class DomainEventConverter {
                     .withId(e.getEventId())
                     .withSource(URI.create("http://name"))
                     .withType(e.getClass().getName())
-                    .withTime(toLocalDateTime(e.getTimestamp()).atOffset(UTC))
+                    .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC))
                     .withSubject(e.getName())
                     .withDataContentType("application/json")
                     .withData(objectMapper.writeValueAsBytes(e))
@@ -857,6 +859,98 @@ WordGuessingGame.guessWord(events, guess)
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Application Service Side-Effects
+
+The `GenericApplicationService` supports executing side-effects after the events returned from the domain model have been written to the event store.
+This is useful if you need to, for example, update a view _synchronously_ after events have been written to the event store. Note that to perform side-effects (or policies)
+asynchronously you should use a [subscription](#subscriptions). As an example, consider that you want to synchronously register a that a game as ongoing when it is started. 
+It may be defined like this:
+
+{% capture java %}
+public class RegisterOngoingGame {
+    private final DatabaseApi someDatabaseApi;
+    
+    pubic RegisterOngoingGame(DatabaseApi someDatabaseApi) {
+        this.someDatabaseApi = someDatabaseApi;
+    }
+
+    public void registerGameAsOngoingWhenGameWasStarted(GameWasStarted event) {
+        // Add the id of the game started event to a set to handle duplicates and idempotency.
+        someDatabaseApi.addToSet("ongoingGames", Map.of("gameId", e.gameId(), "date", e.getDate()));                
+    }
+}
+{% endcapture %}
+{% capture kotlin %}
+class RegisterOngoingGame(private val someDatabaseApi : DatabaseApi) {
+    fun registerGameAsOngoingWhenGameWasStarted(event : GameWasStarted) {
+        // Add the id of the game started event to a set to handle duplicates and idempotency.
+        someDatabaseApi.addToSet("ongoingGames", Map.of("gameId", e.gameId(), "date", e.getDate()));                
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+There reason for doing this synchronously is, for example, if you have a REST API and the player expects the ongoing games view to be updated once the "start game" 
+command has executed. This can be achieved by other means (RSocket, Websockets, server-sent events, polling) but synchronous updates is simple in many cases.
+
+Now that we have the code that registers ongoing games, we can call it from our from the application service:
+
+{% capture java %}
+RegisterOngoingGame registerOngoingGame = ..
+applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess), events -> {
+    events.filter(event -> event instanceof GameWasStarted)
+         .findFirst()
+         .map(GameWasStarted.class::cast)
+         .ifPresent(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)
+});
+{% endcapture %}
+{% capture kotlin %}
+val registerOngoingGame : RegisterOngoingGame = ..
+applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events, guess) }) { events -> 
+    val gameWasStarted = events.find { event is GameWasStarted }
+    if(gameWasStarted != null) {
+        registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(gameWasStarted) 
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Voila! Now `registerGameAsOngoingWhenGameWasStarted` will be called after the events returned from `WordGuessingGame.guessWord(..)` is written to the event store.
+You can however improve on the code above and make use of the `executePolicy` method shipped with the application service in the `org.occurrent.application.service.blocking.PolicySideEffect`.
+The code can then be refactored to this:
+
+```java
+applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess), executePolicy(GameWasStarted.class, registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)); 
+```                            
+
+If using the [Kotlin extension functions](#application-service-kotlin-extensions) (`org.occurrent.application.service.blocking.executePolicy`) you can write the code like this:
+
+```kotlin
+applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events, guess) }, executePolicy<GameWasStarted>(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted))
+```
+
+Policies can also be composed:
+
+{% capture java %}
+RegisterOngoingGame registerOngoingGame  = ..
+RemoveFromOngoingGamesWhenGameEnded removeFromOngoingGamesWhenGameEnded = ..
+
+applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess), 
+                           executePolicy(GameWasStarted.class, registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)
+                            .andThenExecuteAnotherPolicy(removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded));
+{% endcapture %}
+{% capture kotlin %}
+val registerOngoingGame : RegisterOngoingGame = ..
+val removeFromOngoingGamesWhenGameEnded : RemoveFromOngoingGamesWhenGameEnded = ..
+
+applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events, guess) }, 
+                            executePolicies(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted, 
+                                            removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Application Service Transactional Side-Effects
 
 ### Application Service Kotlin Extensions
 
