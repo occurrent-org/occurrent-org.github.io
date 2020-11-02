@@ -866,7 +866,7 @@ WordGuessingGame.guessWord(events, guess)
 
 The `GenericApplicationService` supports executing side-effects after the events returned from the domain model have been written to the event store.
 This is useful if you need to, for example, update a view _synchronously_ after events have been written to the event store. Note that to perform side-effects (or policies)
-asynchronously you should use a [subscription](#subscriptions). As an example, consider that you want to synchronously register a that a game as ongoing when it is started. 
+asynchronously you should use a [subscription](#subscriptions). As an example, consider that you want to synchronously register a game as ongoing when it is started. 
 It may be defined like this:
 
 {% capture java %}
@@ -894,7 +894,7 @@ class RegisterOngoingGame(private val someDatabaseApi : DatabaseApi) {
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 There reason for doing this synchronously is, for example, if you have a REST API and the player expects the ongoing games view to be updated once the "start game" 
-command has executed. This can be achieved by other means (RSocket, Websockets, server-sent events, polling) but synchronous updates is simple in many cases.
+command has executed. This can be achieved by other means (RSocket, Websockets, server-sent events, polling) but synchronous updates is simple and works quite well in many cases.
 
 Now that we have the code that registers ongoing games, we can call it from our from the application service:
 
@@ -954,9 +954,9 @@ applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events
 
 ### Application Service Transactional Side-Effects
 
-In the example above, writing the events to the event store and the execution of policies are not an atomic operation. If your app crashes before after the call to `registerOngoingGame::registerGameAsOngoingWhenGameWasStarted`
+In the example above, writing the events to the event store and executing policies is not an atomic operation. If your app crashes before after the call to `registerOngoingGame::registerGameAsOngoingWhenGameWasStarted`
 but before `removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded`, you will need to handle idempotency. But if your policies/side-effects are writing data to the same database as the event store
-you can make use of transactions to write everything atomically! This is very easy you're using a [Spring EventStore](#eventstore-with-spring-mongotemplate-blocking). What you need to do is to wrap the `ApplicationService` provided
+you can make use of transactions to write everything atomically! This is very easy if you're using a [Spring EventStore](#eventstore-with-spring-mongotemplate-blocking). What you need to do is to wrap the `ApplicationService` provided
 by Occurrent in your own application service, something like this:
 
 {% capture java %}
@@ -967,7 +967,6 @@ public class CustomApplicationServiceImpl implements ApplicationService<DomainEv
 	public CustomApplicationService(GenericApplicationService<DomainEvent> occurrentApplicationService) {
 		this.occurrentApplicationService = occurrentApplicationService;
 	}
-
 
 	@Transactional
 	@Override
