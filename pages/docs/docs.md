@@ -19,9 +19,10 @@ permalink: /documentation
 * * [Subscriptions](#subscriptions)
 * * [Views](#views)
 * * [Commands](#commands)
-* * * [Command Philosophy](#command-philosophy)
-* * * [Commands in Occurrent](#commands-in-occurrent)
+* * * [Philosophy](#command-philosophy)
+* * * [In Occurrent](#commands-in-occurrent)
 * * * [Composition](#command-composition)
+* * * [Conversion](#command-conversion)
 * * [Application Service](#application-service)
 * * * [Side-Effects](#application-service-side-effects)
 * * * [Transactional Side-Effects](#application-service-transactional-side-effects)
@@ -758,6 +759,36 @@ applicationService(gameId) { events ->
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 ### Command Composition
+
+Many times it's useful to compose multiple commands into a single unit-of-work. While you're free to use any means and/or library to achieve this, Occurrent ships
+with a "command composition" library that you can leverage:
+
+{% include macros/command/composition-maven.md %}
+
+As an example consider this simple domain model:
+
+{% include macros/command/composition-domain.md %}
+
+Imagine that for a specific API you want to allow starting a new game and making a guess in the same request. Instead of changing your domain model, 
+you can use function composition! If you import `org.occurrent.application.composition.command.StreamCommandComposition.composeCommands` you can do like this:
+
+{% include macros/command/composition-example.md %}
+<div class="comment">If you're using an commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "composeCommands"
+from "org.occurrent.application.composition.command.ListCommandComposition".</div>
+
+Events returned from `WordGuessingGame.startNewGame(..)` will be appended to the event stream when calling `WordGuessingGame.makeGuess(..)` and the new domain events
+returned by the two functions will be merged and written in an atomic fashion to the event store.
+
+The command composition library also contains some utilities for [partial function application](https://en.wikipedia.org/wiki/Partial_application) 
+that you can use to further enhance the example above (if you like). If you statically import `partial` method from `org.occurrent.application.composition.command.partial.PartialStreamCommandApplication` 
+you can refactor the code above into this:
+
+{% include macros/command/composition-example-partial.md %}
+<div class="comment">If you're using an commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "partial"
+from "org.occurrent.application.composition.command.partial.PartialListCommandApplication".</div>
+
+### Command Conversion  
+
 
 ## Application Service
 

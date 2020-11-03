@@ -1,0 +1,19 @@
+{% capture java %}
+String gameId = ...
+String wordToGuess = ...
+String guess = ...
+applicationService.execute(gameId, composeCommands(
+    partial(WordGuessingGame::startNewGame, gameId, wordToGuess),
+    partial(WordGuessingGame::makeGuess, guess)
+));
+{% endcapture %}
+{% capture kotlin %}
+val gameId = ...
+val wordToGuess = ...
+val guess = ...
+applicationService.execute(gameId, composeCommands(
+    partial(WordGuessingGame::startNewGame, gameId, wordToGuess)
+    partial(WordGuessingGame::makeGuess, guess) 
+))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
