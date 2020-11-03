@@ -16,7 +16,7 @@ public class ApplicationService {
         Stream<DomainEvent> persistedDomainEvents = eventStream.events().map(converter::toDomainEvent);
 
         // Call a pure function from the domain model which returns a Stream of domain events  
-        Stream<DomainEvent> newDomainEvents = functionThatCallsDomainModel.apply(persistedDoomainEvents);
+        Stream<DomainEvent> newDomainEvents = functionThatCallsDomainModel.apply(persistedDomainEvents);
 
         // Convert domain events to cloud events and write them to the event store  
         eventStore.write(streamId, eventStream.version(), newDomainEvents.map(converter::toCloudEvent));
