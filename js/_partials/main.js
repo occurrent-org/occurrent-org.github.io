@@ -64,6 +64,8 @@ if (document.location.pathname.includes("/documentation")) {
     let addedTags = {
         "catch-up-subscription-blocking" : "0.1.1",
         "application-service" : "0.2.0",
+        "command-composition" : "0.2.0",
+        "command-conversion" : "0.2.0",
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
