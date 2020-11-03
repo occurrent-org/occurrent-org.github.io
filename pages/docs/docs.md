@@ -19,6 +19,9 @@ permalink: /documentation
 * * [Subscriptions](#subscriptions)
 * * [Views](#views)
 * * [Commands](#commands)
+* * * [Command Philosophy](#command-philosophy)
+* * * [Commands in Occurrent](#commands-in-occurrent)
+* * * [Composition](#command-composition)
 * * [Application Service](#application-service)
 * * * [Side-Effects](#application-service-side-effects)
 * * * [Transactional Side-Effects](#application-service-transactional-side-effects)
@@ -502,12 +505,21 @@ While this is a trivial example it shouldn't be difficult to create a view that 
 
 ## Commands
 
+A command is used to represent an _action_ in an event sourced system, i.e. something that you _want_ to do. They're different, in a very important way, from events in that commands 
+can fail or be rejected, where-as events cannot. A typical example of a command would be a data structure whose name is defined as an imperative verb, for example `PlaceOrder`. 
+The resulting event, if the command is processed successfully, could then be `OrderWasPlaced`. However, in Occurrent, as explained in more detail in the [Command Philosophy](#command-philosophy)
+section below, you are encouraged to start off by not using explicit data structures for commands unless you want to. Occurrent instead promotes pure functions 
+to represent commands. Combine this with function composition and you have a powerful way to invoke the domain model (see [application service](#application-service) section to see examples).           
+
+### Command Philosophy
+
 Occurrent doesn't contain a built-in command bus. The reason for this is that I'm not convinced that it's needed in a majority of cases.
 To send "commands" to another service (remotely) one could call a REST API or make an RPC invocation instead of using a proprietary command bus. 
 One exception to this is if you need [location transparency](https://en.wikipedia.org/wiki/Location_transparency).    
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
-routed to a function in your domain model. It's not uncommon to use a framework in which you define your domain model like this:
+routed to a function in your domain model. This is where an [application service](#application-service) becomes useful. However, let's first explore the 
+rationale behind the philosophy of Occurrent. It's not uncommon to use a framework in which you define your domain model like this:
 
 {% capture java %}
 public class WordGuessingGame extends AggregateRoot {
@@ -579,7 +591,7 @@ public class WordGuessingGame extends AggregateRoot {
 <div class="comment">This is a made-up example of an imaginary event sourcing framework, it's not how you're encouraged to implement a domain model 
 using Occurrent.</div>
 
-Let's look at a "command" and see what it typically looks like:
+Let's look at a "command" and see what it typically looks like in these frameworks:
 
 {% capture java %}
 public class StartNewGameCommand {
@@ -624,11 +636,14 @@ commandbus.dispatch(StartNewGameCommand("someGameId", "Secret word"))
 From a typical Java perspective one could argue that this is not too bad. But it does have a few things one could improve upon from a broader perspective:
 
 1. The `WordGuessingGame` is [complecting](https://www.infoq.com/presentations/Simple-Made-Easy/) several things that may be modelled separately. 
-   Data, state, behavior, command- and event routing and event publishing are all defined in the same model (the `WordGuessingGame` class). 
+   Data, state, behavior, command- and event routing and event publishing are all defined in the same model (the `WordGuessingGame` class).
+   It also uses framework specific annotations, classes and inheritance inside your domain model which is something you want to avoid. 
    For small examples like this it arguably doesn't matter, but if you have complex logic and a large system, it probably will in my experience. 
    Keeping state and behavior separate allows for easier testing, referential transparency and function composition. 
    It allows treating the state as a [value](https://www.infoq.com/presentations/Value-Values/) which has many benefits.
 1. Commands are defined as explicit data structures (this is not _necessarily_ a bad thing but it will add to your code base) when arguably they don't have to. 
+
+### Commands in Occurrent 
 
 So how would one dispatch commands in Occurrent? There's actually nothing stopping you from implementation a simple command bus, create explicit commands, 
 and dispatch them the way we did in the example above. Actually it would be relatively easy to implement the imaginary framework above using Occurrent components. But if
@@ -641,14 +656,10 @@ If you define your behavior like this it'll be really easy to test (and also to 
 (such as publishing events) which also allows for easier testing and [local reasoning](https://www.inner-product.com/posts/fp-what-and-why/).
 
 But where are our commands!? In this example we've decided to represent them as functions. I.e. the "command" is modeled as simple function, e.g. `startNewGame`!
-But wait, how can I dispatch commands to this function? Just create or copy a generic `ApplicationService` class like the one below if you're using an object-oriented approach:         
+But wait, how can I dispatch commands to this function? Just create or copy a generic `ApplicationService` class like the one below 
+(or use the generic [application service](#application-service) provided by Occurrent) if you're using an object-oriented approach:         
 
 {% include macros/applicationservice/generic-oo-application-service.md %}
-
-<div class="comment">Why is this "utility" not included in Occurrent? Maybe it will in the future, but one reason is that you might want to do small tweaks to this implementation. 
-When using Spring, you might want to add a "@Transactional" annotation, or if you're using Kotlin you might want to take a higher-order function that returns a "Sequence&lt;DomainEvent&gt;" 
-instead of "Stream&lt;DomainEvent&gt;" etc etc. The reasoning is that copying and pasting this peice of code into your application will not be difficult, and then you're in full control! 
-It's also really important to point out the `EventStore` will either write all events atomically or all events will fail! You will never have partial writes.</div>                         
 
 and then use the `ApplicationService` like this:
 
@@ -745,6 +756,8 @@ applicationService(gameId) { events ->
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Command Composition
 
 ## Application Service
 
