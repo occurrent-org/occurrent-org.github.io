@@ -520,7 +520,7 @@ One exception to this is if you need [location transparency](https://en.wikipedi
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
 routed to a function in your domain model. This is where an [application service](#application-service) becomes useful. However, let's first explore the 
-rationale behind the philosophy of Occurrent. It's not uncommon to use a framework in which you define your domain model like this:
+rationale behind the philosophy of Occurrent. In other frameworks, it's not uncommon that you define your domain model like this:
 
 {% capture java %}
 public class WordGuessingGame extends AggregateRoot {
