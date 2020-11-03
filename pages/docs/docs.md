@@ -789,6 +789,31 @@ from "org.occurrent.application.composition.command.partial.PartialListCommandAp
 
 ### Command Conversion  
 
+If you have an [application service](#application-service) that takes a higher-order function in the form of `Function<Stream<DomainEvent>, Stream<DomainEvent>>` but your 
+domain model is defined with list's (`Function<List<DomainEvent, List<DomainEvent>`) then Occurrent provides means to easily convert between them. First you need 
+to depend on the [Command Composition](#command-composition) library:
+
+{% include macros/command/composition-maven.md %}
+
+Let's say you have a domain model defined like this:
+
+{% include macros/command/conversion-domain.md %}
+
+But you [application service](#application-service) takes a `Function<Stream<DomainEvent>, Stream<DomainEvent>>`:
+
+```java
+public class ApplicationService {
+    public void execute(String streamId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel) {
+        // Implementation
+    }
+}
+```
+
+Then you can make use of the `toStreamCommand` in `org.occurrent.application.composition.command.CommandConversion` to call the domain function:
+
+{% include macros/command/conversion-example.md %}
+<div class="comment">You can also use the "toListCommand" method to convert a "Function&lt;Stream&lt;DomainEvent&gt;, Stream&lt;DomainEvent&gt;&gt;" into a "Function&lt;List&lt;DomainEvent&gt;, List&lt;DomainEvent&gt;&gt;"</div>
+
 
 ## Application Service
 
