@@ -35,6 +35,7 @@ permalink: /documentation
 * * * [Synchronous](#synchronous-snapshots)
 * * * [Asynchronous](#asynchronous-snapshots)
 * * * [Closing the Books](#closing-the-books)
+* * [Scheduling](#scheduling)
 * [Getting Started](#getting-started)
 * [Choosing An EventStore](#choosing-an-eventstore)
 * * [MongoDB](#mongodb)
@@ -1172,6 +1173,20 @@ if (streamVersion - snapshot.version() >= 3) {
 This is a pattern that can be applied instead of updating [snapshots](#snapshots) for every `n` event. The idea is to try to keep event streams short and
 instead create snapshots periodically. For example, once every month we run a job that creates snapshots for certain event streams. This is especially well suited for problem domains where "closing the books"
 is a concept in the domain (such as accounting).     
+
+## Scheduling
+
+Scheduling (aka deadlines, alarm clock) is a very handy technique to schedule to commands to be executed in the future or periodically. 
+Imagine, for example, a multiplayer game (like word guessing game shown in previous examples), where we want to game to end automatically after 
+10 hours of inactivity. This means that as soon as a player has made a guess, we'd like to schedule a "timeout game command" to be executed after 10 hours.
+
+Occurrent doesn't currently have any built-in support for this (but a small wrapper around an existing library is planned), but there are several libraries you can use from the Java ecosystem, such as:
+
+* [JobRunr](https://www.jobrunr.io/) - An easy way to perform background processing in Java. Distributed and backed by persistent storage.
+* [Quartz](http://www.quartz-scheduler.org/) - Can be used to create simple or complex schedules for executing tens, hundreds, or even tens-of-thousands of jobs.
+* [db-scheduler](https://github.com/kagkarlsson/db-scheduler) - Task-scheduler for Java that was inspired by the need for a clustered `java.util.concurrent.ScheduledExecutorService simpler than Quartz.
+* [Spring Scheduling](https://spring.io/guides/gs/scheduling-tasks/) - Worth looking into if you're already using Spring.
+  
 
 # Getting started
 
