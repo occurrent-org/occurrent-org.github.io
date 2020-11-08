@@ -774,7 +774,7 @@ Imagine that for a specific API you want to allow starting a new game and making
 you can use function composition! If you import `org.occurrent.application.composition.command.StreamCommandComposition.composeCommands` you can do like this:
 
 {% include macros/command/composition-example.md %}
-<div class="comment">If you're using an commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "composeCommands"
+<div class="comment">If you're using commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "composeCommands"
 from "org.occurrent.application.composition.command.ListCommandComposition".</div>
 
 Events returned from `WordGuessingGame.startNewGame(..)` will be appended to the event stream when calling `WordGuessingGame.makeGuess(..)` and the new domain events
@@ -785,7 +785,7 @@ that you can use to further enhance the example above (if you like). If you stat
 you can refactor the code above into this:
 
 {% include macros/command/composition-example-partial.md %}
-<div class="comment">If you're using an commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "partial"
+<div class="comment">If you're using commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "partial"
 from "org.occurrent.application.composition.command.partial.PartialListCommandApplication".</div>
 
 ### Command Conversion  
