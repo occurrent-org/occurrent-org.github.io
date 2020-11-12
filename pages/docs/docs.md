@@ -511,7 +511,7 @@ A command is used to represent an _action_ in an event sourced system, i.e. some
 can fail or be rejected, where-as events cannot. A typical example of a command would be a data structure whose name is defined as an imperative verb, for example `PlaceOrder`. 
 The resulting event, if the command is processed successfully, could then be `OrderWasPlaced`. However, in Occurrent, as explained in more detail in the [Command Philosophy](#command-philosophy)
 section below, you are encouraged to start off by not using explicit data structures for commands unless you want to. Occurrent instead promotes pure functions 
-to represent commands. Combine this with function composition and you have a powerful way to invoke the domain model (see [application service](#application-service) section to see examples).           
+to represent commands. Combine this with function composition and you have a powerful way to invoke the domain model (refer to the [application service](#application-service) for examples).           
 
 ### Command Philosophy
 
