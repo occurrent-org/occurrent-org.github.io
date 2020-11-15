@@ -24,6 +24,8 @@ permalink: /documentation
 * * * [Composition](#command-composition)
 * * * [Conversion](#command-conversion)
 * * [Application Service](#application-service)
+* * * [Event Conversion](#application-service-event-conversion)
+* * * [Usage](#using-the-application-service)
 * * * [Side-Effects](#application-service-side-effects)
 * * * [Transactional Side-Effects](#application-service-transactional-side-effects)
 * * * [Kotlin](#application-service-kotlin-extensions)
@@ -828,6 +830,8 @@ a `org.occurrent.application.converter.CloudEventConverter` implementation as pa
 cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
 `org.occurrent.application.converter.implementation.GenericCloudEventConverter`. For example:
 
+### Application Service Event Conversion
+
 {% capture java %}
 DomainEventConverter domainEventConverter = new DomainEventConverter(new ObjectMapper());
 CloudEventConverter<DomainEvent> cloudEventConverter = new GenericCloudEventConverter<>(domainEventConverter::convertToDomainEvent, domainEventConverter::convertToCloudEvent);
@@ -879,7 +883,7 @@ public class DomainEventConverter {
 
     public DomainEvent convertToDomainEvent(CloudEvent cloudEvent) {
         try {
-            return (DomainEvent) objectMapper.readValue(cloudEvent.getData(), Class.forName(cloudEvent.getType()));
+            return (DomainEvent) objectMapper.readValue(cloudEvent.getData().toBytes(), Class.forName(cloudEvent.getType()));
         } catch (IOException | ClassNotFoundException e) {
             throw new RuntimeException(e);
         }
@@ -892,13 +896,72 @@ and the "type" field contains the fully-qualified name of the class which makes 
 might not be serializable to JSON without conversion. For these reasons, it's recommended to create a more custom mapping between a cloud event and domain event.</div>
 
 See [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/implementation/GenericApplicationServiceTest.java) 
-for an example.  
+for an example.
 
 If your domain model is using a `CloudEvent` (and not a custom domain event) then just pass a `Function.identity()` to the `GenericCloudEventConverter`:
 
 ```java
 CloudEventConverter<CloudEvent> cloudEventConverter = new GenericCloudEventConverter<>(Function.identity(), Function.identity());
-```       
+```         
+
+Note that if the data content type in the CloudEvent is specified as "application/json" (or a json compatible content-type) then Occurrent will automatically store it as [Bson](http://bsonspec.org/) in a MongoDB event store.
+The reason for this so that you're able to query the data, either by the [EventStoreQueries](#eventstore-queries) API, or manually using MongoDB queries. 
+In order to do this, the `byte[]` passed to `withData`, will be converted into a `org.bson.Document` that is later written to the database. This is not optimal from a performance perspective.
+A more performant option would be to make use of the `org.occurrent.eventstore.mongodb.cloudevent.DocumentCloudEventData` class. This class implements the `io.cloudevents.CloudEventData` interface and
+allows passing a pre-baked `org.bson.Document` instance to it. Then no additional conversion will need to take place! Here's an example:
+
+```java
+import io.cloudevents.CloudEvent;
+import io.cloudevents.core.builder.CloudEventBuilder;
+import org.occurrent.eventstore.mongodb.cloudevent.DocumentCloudEventData;
+import org.bson.Document;
+
+import java.io.IOException;
+import java.net.URI;
+
+import static java.time.ZoneOffset.UTC;
+import static org.occurrent.functional.CheckedFunction.unchecked;
+import static org.occurrent.time.TimeConversion.toLocalDateTime;
+
+public class DomainEventConverter {
+
+    public CloudEvent convertToCloudEvent(DomainEvent e) {  
+            // Convert the data in the domain event into a Document 
+            Document eventData = convertDataInDomainEventToMap(e);
+            return CloudEventBuilder.v1()
+                    .withId(e.getEventId())
+                    .withSource(URI.create("http://name"))
+                    .withType(e.getClass().getName())
+                    .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC))
+                    .withSubject(e.getName())
+                    .withDataContentType("application/json")  
+                    // Use the "eventData" Document to create an instance of DocumentCloudEventData.
+                    .withData(new DocumentCloudEventData(document))
+                    .build();
+    }
+
+    public DomainEvent convertToDomainEvent(CloudEvent cloudEvent) {
+            Document document = ((DocumentCloudEventData) cloudEvent.getData()).getDocument();
+            return convertToDomainEvent(cloudEvent, document);
+    }       
+    
+    private static Document convertDataInDomainEventToDocument(DomainEvent e) {
+        // Convert the domain event into a Map                
+        Map<String, Object> data = ...
+        return new Document(data);
+    }
+
+    private static DomainEvent convertToDomainEvent(CloudEvent cloudEvent, Document data) {
+        // Re-construct the domain event instance from the cloud event and data
+    }
+}        
+```
+
+The drawback of using this approach is if you need to change to a different [EventStore](#eventstore) you would
+still need to depend on the `org.occurrent:eventstore-mongodb-common` module and make changes to `convertToDomainEvent`. Note that `convertToCloudEvent` doesn't 
+necessarily need to be changed since a `CloudEventData` implementation is always serializable into a `byte[]` that all event stores understands.         
+
+### Using the Application Service
 
 Now you can instantiate the (blocking) `GenericApplicationService`:
 
