@@ -66,6 +66,7 @@ permalink: /documentation
 * * * [Implementations](#reactive-subscription-implementations)
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
 * * * * [Automatic Position Persistence Utility](#automatic-subscription-position-persistence-reactive)
+* [Blogs](#blogs)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
 </div>
@@ -2026,6 +2027,11 @@ that stores the subscription position, and combine them to a `ReactorSubscriptio
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
 
+# Blogs
+
+[Johan](https://github.com/johanhaleby) has created a couple of blog-post on Occurrent on his [blog](https://code.haleby.se):
+
+1. [Occurrent - Event Sourcing for the JVM](https://code.haleby.se/2020/11/21/occurrent-event-sourcing-for-the-jvm/)
 
 # Contact & Support
 
