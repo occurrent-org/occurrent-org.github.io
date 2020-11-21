@@ -427,7 +427,7 @@ To get started with an event store refer to [Choosing An EventStore](#choosing-a
 ## Subscriptions
 
 A subscription is a way to get notified when new events are written to an event store. Typically, a subscription will forward the event to another piece of infrastructure such as
-a message bus, or to create views from the events (such as projections, sagas, snapshots etc). There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
+a message bus, or create views from the events (such as projections, sagas, snapshots etc). There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
 represented by the `BlockingSubscription` interface (in the `org.occurrent:subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
 represented by the `ReactorSubscription` interface (in the `org.occurrent:subscription-api-reactor` module). 
 
