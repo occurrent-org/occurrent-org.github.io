@@ -2029,7 +2029,7 @@ that stores the subscription position, and combine them to a `ReactorSubscriptio
 
 # Blogs
 
-[Johan](https://github.com/johanhaleby) has created a couple of blog-post on Occurrent on his [blog](https://code.haleby.se):
+[Johan](https://github.com/johanhaleby) has created a couple of blog-posts on Occurrent on his [blog](https://code.haleby.se):
 
 1. [Occurrent - Event Sourcing for the JVM](https://code.haleby.se/2020/11/21/occurrent-event-sourcing-for-the-jvm/)
 
