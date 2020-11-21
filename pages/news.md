@@ -17,7 +17,7 @@ Follow the development of Occurrent on <a href="https://twitter.com/johanhaleby"
         {% for post in newsposts %}
             <li class="post-summary">
                 <a href="{{ post.url }}">
-                    <h2>Occurrent - {{ post.title }}</h2>
+                    <h2>{{ post.title }}</h2>
                     <span class="date">
                         <time datetime="{{ post.date | date_to_xmlschema }}" itemprop="datePublished">{{ post.date | date: "%b %-d, %Y" }}</time>
                     </span>
