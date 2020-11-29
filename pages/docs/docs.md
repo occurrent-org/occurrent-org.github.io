@@ -11,6 +11,7 @@ permalink: /documentation
 * [Introduction](#introduction)
 * [Concepts](#concepts)
 * * [Event Sourcing](#event-sourcing)
+* * [CloudEvents](#cloudevents)
 * * [EventStore](#eventstore)
 * * * [EventStream](#eventstream)
 * * * [WriteCondition](#write-condition)
@@ -119,7 +120,53 @@ For example, you might have an entity called `Order` stored in a `order` table i
 to the order, the table is updated with the new information and replacing the previous values. Event Sourcing is a technique that instead stores
 the _changes_, represented by _events_, that occurred for the entity. Events are facts, things that have happened, and they should never be updated. 
 This means that not only can you derive the current state from the set of historic events, but you also know _which_ steps that were involved to reach 
-the current state. 
+the current state.
+
+## CloudEvents
+
+Cloud events is a [CNCF](https://www.cncf.io/) specification for describing event data in a common way. CloudEvents seeks to dramatically simplify event declaration and delivery across services, platforms, and beyond. 
+In Occurrent you don't persist your domain events directly to an event store, instead you convert them in a [cloud event](https://cloudevents.io/). You may regard a CloudEvent as a standardized envelope around your domain event. 
+  
+In practice, this means that instead of storing events in a proprietary or arbitrary format, Occurrent, stores events in accordance with the cloud event specification, even at the data-store level. 
+I.e. you know the structure of your events, even in the database that the event store uses. It's up to you as a user of the library to [convert](#application-service-event-conversion) your domain events into cloud events when 
+writing to the [event store](#eventstore). This is extremely powerful, not only does it allow you to design your domains event in any way you find fit (for example without compromises enforced by a JSON serialization library) but it also allows for easier migration, 
+data consistency and features such as (fully-consistent) [queries](#eventstore-queries) to the event store for certain use cases. A cloud event is made-up by a set of pre-defined attributes described in the [cloud event specification](https://github.com/cloudevents/spec/blob/v1.0/spec.md).
+In the context of event sourcing, we can leverage these attributes in the way suggested below:
+<br><br>
+
+
+| Cloud&nbsp;Event<br>Attribute&nbsp;Name | Event&nbsp;Sourcing Concept&nbsp; | Description |
+|:---------------------------:|:-----:|:----|
+| [id](https://github.com/cloudevents/spec/blob/v1.0/spec.md#id) | event&nbsp;id | The cloud event `id` attribute is used to store the id of a unique event in a particular context ("source"). Note that this id doesn't necessarily need to be _globally_ unique (but the combination of `id` and `source` _must_). Typically this would be a UUID.<br><br> |     
+| [source](https://github.com/cloudevents/spec/blob/v1.0/spec.md#source-1) | "stream&nbsp;type" | You can regard the "source" attribute as the "stream type" or a "category" for certain streams. For example, if you're creating a game, you may have two kinds of aggregates in your bounded context, a "game" and a "player". You can regard these as two different sources (categories). These are represented as URN's, for example the "game" may have the source "urn:mycompany:mygame:game" and "player" may have "urn:mycompany:mygame:player". This allows, for example, [subscriptions](#subscriptions) to subscribe to all events related to any player (by using a [subscription filter](#blocking-subscription-filters) for the `source` attribute).<br><br>|     
+| [subject](https://github.com/cloudevents/spec/blob/v1.0/spec.md#subject) | "subject" (~aggregate&nbsp;id) | A subject describes the event in the context of the source, typically an entity (aggregate) id that all events in the stream are related to. This property is optional (because Occurrent automatically adds the `streamId` attribute) and it's possible that may not need to add it. But it can be quite useful. For example, a stream may not _necessarily_, just hold contents of a single aggregate, and if so the `subject` can be used to distinguish between different aggregates/entities in a stream. Another example would be if you have multiple streams that represents different aspects of the same entity. For example, if you have a game where players are awarded points based on their performance in the game _after_ the game has ended, you may decide to represent "point awarding" and "game play" as different streams, but they refer to the same "game id". You can then use the "game id" as subject.<br><br>|
+| [type](https://github.com/cloudevents/spec/blob/v1.0/spec.md#type) | event&nbsp;type | The type of the event. It may be enough to just use name of the domain event, such as "GameStarted" but you may also consider using a URN (e.g. "urn:mycompany:game:started") or qualify it ("com.mycompany.game.started"). Note that you should try to avoid using the fully-qualified class name of the domain event since you'll run into trouble if you're moving the domain event to a different package.<br><br>|
+| [time](https://github.com/cloudevents/spec/blob/v1.0/spec.md#time) | event&nbsp;time | The time when the event occurred (typically would be the application time and not the processing time) described by [RFC 3339](https://tools.ietf.org/html/rfc3339) (represented as `java.time.OffsetDateTime` by the [CloudEvent SDK](https://github.com/cloudevents/sdk-java)).<br><br>|
+| [datacontenttype](https://github.com/cloudevents/spec/blob/v1.0/spec.md#datacontenttype) | content-type | The content-type of the data attribute, typically you want to use "application/json", which is also the default if you don't specify any content-type at all.<br><br>|
+| [dataschema](https://github.com/cloudevents/spec/blob/v1.0/spec.md#dataschema) | schema | The URI to a schema describing the data in the cloud event (optional).<br><br>|
+| [data](https://github.com/cloudevents/spec/blob/v1.0/spec.md#event-data) | event&nbsp;data | The actual data needed to represent your domain event, for example the contents of a `GameStarted` event. You can leave out this attribute entirely if your event is fully described by other attributes.<br><br>|
+     
+
+Note that the table above is to be regarded as a rule of thumb, it's ok to map things differently if it's better suited for your application, but it's a good idea to keep things consistent throughout your organization.
+To see an example of how this may look in code, refer to the [application service](#application-service-event-conversion) documentation.
+
+
+### Occurrent CloudEvent Extensions
+
+Occurrent automatically adds two [extension attributes](https://github.com/cloudevents/spec/blob/v1.0/spec.md#extension-context-attributes) to each cloud event written to the [event store](#eventstore):<br><br>
+
+{% include macros/occurrent-cloudevent-extension.md %}
+
+These are required for Occurrent to operate. A long-term goal of Occurrent is to come up with a standardized set of cloud event extensions that are agreed upon and used by several different vendors.
+
+In the mean time, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#specify-cloudevent-metadata)), 
+you would typically do this by creating or extending/wrapping an already existing [application service](#application-service).    
+
+### CloudEvent Metadata
+
+You can specify metadata to the cloud event by making use of [extension attributes](https://github.com/cloudevents/spec/blob/v1.0/spec.md#extension-context-attributes). This is the place to add things such as sequence number, correlation id, causation id etc. 
+Actually there's already a standard way of applying [distributed tracing](https://github.com/cloudevents/spec/blob/master/extensions/distributed-tracing.md) and [sequence number generation](https://github.com/cloudevents/spec/blob/master/extensions/sequence.md) 
+extensions to cloud events that might be of interest.  
 
 ## EventStore
 
@@ -230,7 +277,7 @@ For example in this case you might consider both starting a game and let the pla
 
 ### Write Condition
 
-A "write condition" can be used to specify conditional writes to the event store. Typically, the purpose of this would be to achieve [optimistic concurrent control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control) (optimistic locking) of an event stream.
+A "write condition" can be used to specify conditional writes to the event store. Typically, the purpose of this would be to achieve [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control) (optimistic locking) of an event stream.
 
 For example, image you have an `Account` to which you can deposit and withdraw money. A business rule says that it's not allowed to have a negative balance on an account.
 Now imagine an account that is shared between two persons and contains 20 EUR. Person "A" wants to withdraw 15 EUR and person "B" wants to withdraw 10 EUR. 
@@ -829,9 +876,11 @@ This module provides an interface, `org.occurrent.application.service.blocking.A
 `org.occurrent.application.service.blocking.implementation.GenericApplicationService`. The `GenericApplicationService` takes an `EventStore` and 
 a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from 
 cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
-`org.occurrent.application.converter.implementation.GenericCloudEventConverter`. For example:
+`org.occurrent.application.converter.implementation.GenericCloudEventConverter`. You can see an example in the [next](#application-service-event-conversion) section.
 
 ### Application Service Event Conversion
+
+Let's have a look at an example of how we can convert our to domain events to cloud events (and vice versa) when using the [generic application service](#application-service) (the application service implementation provided by Occurrent). 
 
 {% capture java %}
 DomainEventConverter domainEventConverter = new DomainEventConverter(new ObjectMapper());
@@ -870,7 +919,7 @@ public class DomainEventConverter {
         try {
             return CloudEventBuilder.v1()
                     .withId(e.getEventId())
-                    .withSource(URI.create("http://name"))
+                    .withSource(URI.create("urn:myapplication:streamtype"))
                     .withType(e.getClass().getName())
                     .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC))
                     .withSubject(e.getName())
@@ -896,8 +945,9 @@ The reason is that you may not need to serialize all data in the domain event to
 and the "type" field contains the fully-qualified name of the class which makes it more difficult to move without loosing backward compatibility. Also your domain events
 might not be serializable to JSON without conversion. For these reasons, it's recommended to create a more custom mapping between a cloud event and domain event.</div>
 
-See [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/implementation/GenericApplicationServiceTest.java) 
-for an example.
+To see what the attributes means in the context of event sourcing refer to the [CloudEvents](#cloudevents) documentation. 
+You can also have a look at [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/implementation/GenericApplicationServiceTest.java) 
+for an actual code example.
 
 If your domain model is using a `CloudEvent` (and not a custom domain event) then just pass a `Function.identity()` to the `GenericCloudEventConverter`:
 
@@ -1285,10 +1335,7 @@ The Occurrent CloudEvent Extension consists of these attributes:
 
 <br>
 
-| Attribute Name | Type  | Description |
-|:----|:-----:|:----|
-| `streamId` | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;String&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;| An id the uniquely identifies a particular event stream.<br>It's used to determine which events belong to which stream. |     
-| `streamVersion` | Long | The id of the stream version for a particular event.<br>It's used for optimistic concurrency control.  |     
+{% include macros/occurrent-cloudevent-extension.md %}
 
 A json schema describing a complete Occurrent CloudEvent, as it will be persisted to a MongoDB collection, can be found [here](https://github.com/johanhaleby/occurrent/blob/master/cloudevents-schema-occurrent.json) 
 (a "raw" cloud event json schema can be found [here](https://github.com/tsurdilo/cloudevents-schema-vscode/blob/master/schemas/cloudevents-schema.json) for comparison).
@@ -1374,7 +1421,6 @@ var now = OffsetDateTime.now().truncatedTo(ChronoUnit.MILLIS).withOffsetSameInst
 var cloudEvent = new CloudEventBuilder().time(now). .. .build();
 
 // Now you can write the cloud event
-eventStore.write(Stream.of(cloudEvent));
 ```
 
 For more thoughts on this, refer to the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/master/doc/architecture/decisions/0004-mongodb-datetime-representation.md) on time representation in MongoDB. 
