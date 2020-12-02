@@ -135,7 +135,7 @@ In the context of event sourcing, we can leverage these attributes in the way su
 <br><br>
 
 
-| Cloud&nbsp;Event<br>Attribute&nbsp;Name | Event&nbsp;Sourcing Concept&nbsp; | Description |
+| Cloud&nbsp;Event<br>Attribute&nbsp;Name | Event&nbsp;Sourcing Nomenclature&nbsp; | Description |
 |:---------------------------:|:-----:|:----|
 | [id](https://github.com/cloudevents/spec/blob/v1.0/spec.md#id) | event&nbsp;id | The cloud event `id` attribute is used to store the id of a unique event in a particular context ("source"). Note that this id doesn't necessarily need to be _globally_ unique (but the combination of `id` and `source` _must_). Typically this would be a UUID.<br><br> |     
 | [source](https://github.com/cloudevents/spec/blob/v1.0/spec.md#source-1) | category | You can regard the "source" attribute as the "stream type" or a "category" for certain streams. For example, if you're creating a game, you may have two kinds of aggregates in your bounded context, a "game" and a "player". You can regard these as two different sources (categories). These are represented as URN's, for example the "game" may have the source "urn:mycompany:mygame:game" and "player" may have "urn:mycompany:mygame:player". This allows, for example, [subscriptions](#subscriptions) to subscribe to all events related to any player (by using a [subscription filter](#blocking-subscription-filters) for the `source` attribute).<br><br>|     
