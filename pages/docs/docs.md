@@ -139,7 +139,7 @@ In the context of event sourcing, we can leverage these attributes in the way su
 |:---------------------------:|:-----:|:----|
 | [id](https://github.com/cloudevents/spec/blob/v1.0/spec.md#id) | event&nbsp;id | The cloud event `id` attribute is used to store the id of a unique event in a particular context ("source"). Note that this id doesn't necessarily need to be _globally_ unique (but the combination of `id` and `source` _must_). Typically this would be a UUID.<br><br> |     
 | [source](https://github.com/cloudevents/spec/blob/v1.0/spec.md#source-1) | category | You can regard the "source" attribute as the "stream type" or a "category" for certain streams. For example, if you're creating a game, you may have two kinds of aggregates in your bounded context, a "game" and a "player". You can regard these as two different sources (categories). These are represented as URN's, for example the "game" may have the source "urn:mycompany:mygame:game" and "player" may have "urn:mycompany:mygame:player". This allows, for example, [subscriptions](#subscriptions) to subscribe to all events related to any player (by using a [subscription filter](#blocking-subscription-filters) for the `source` attribute).<br><br>|     
-| [subject](https://github.com/cloudevents/spec/blob/v1.0/spec.md#subject) | "subject" (~identifier) | A subject describes the event in the context of the source, typically an entity (aggregate) id that all events in the stream are related to. This property is optional (because Occurrent automatically adds the `streamId` attribute) and it's possible that you may not need to add it. But it can be quite useful. For example, a stream may not _necessarily_, just hold contents of a single aggregate, and if so the `subject` can be used to distinguish between different aggregates/entities in a stream. Another example would be if you have multiple streams that represents different aspects of the same entity. For example, if you have a game where players are awarded points based on their performance in the game _after_ the game has ended, you may decide to represent "point awarding" and "game play" as different streams, but they refer to the same "game id". You can then use the "game id" as subject.<br><br>|
+| [subject](https://github.com/cloudevents/spec/blob/v1.0/spec.md#subject) | "subject" (~identifier) | A subject describes the event in the context of the source, typically an entity (aggregate) id that all events in the stream are related to. This property is optional (because Occurrent automatically adds the `streamid` attribute) and it's possible that you may not need to add it. But it can be quite useful. For example, a stream may not _necessarily_, just hold contents of a single aggregate, and if so the `subject` can be used to distinguish between different aggregates/entities in a stream. Another example would be if you have multiple streams that represents different aspects of the same entity. For example, if you have a game where players are awarded points based on their performance in the game _after_ the game has ended, you may decide to represent "point awarding" and "game play" as different streams, but they refer to the same "game id". You can then use the "game id" as subject.<br><br>|
 | [type](https://github.com/cloudevents/spec/blob/v1.0/spec.md#type) | event&nbsp;type | The type of the event. It may be enough to just use name of the domain event, such as "GameStarted" but you may also consider using a URN (e.g. "urn:mycompany:game:started") or qualify it ("com.mycompany.game.started"). Note that you should try to avoid using the fully-qualified class name of the domain event since you'll run into trouble if you're moving the domain event to a different package.<br><br>|
 | [time](https://github.com/cloudevents/spec/blob/v1.0/spec.md#time) | event&nbsp;time | The time when the event occurred (typically would be the application time and not the processing time) described by [RFC 3339](https://tools.ietf.org/html/rfc3339) (represented as `java.time.OffsetDateTime` by the [CloudEvent SDK](https://github.com/cloudevents/sdk-java)).<br><br>|
 | [datacontenttype](https://github.com/cloudevents/spec/blob/v1.0/spec.md#datacontenttype) | content-type | The content-type of the data attribute, typically you want to use "application/json", which is also the default if you don't specify any content-type at all.<br><br>|
@@ -1361,8 +1361,8 @@ Here's an example of what you can expect to see the "events" collection when sto
 		"startedBy" : "003ab97b-df79-4bf1-8c0c-08a5dd3701cf",
 		"maxNumberOfGuesses" : 5
 	},
-	"streamId" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
-	"streamVersion" : NumberLong(1)
+	"streamid" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
+	"streamversion : NumberLong(1)
 }
 {
 	"_id" : ObjectId("5f4112a548b8da5305e41f58"),
@@ -1376,8 +1376,8 @@ Here's an example of what you can expect to see the "events" collection when sto
 		"guessedNumber" : 1,
 		"playerId" : "003ab97b-df79-4bf1-8c0c-08a5dd3701cf"
 	},
-	"streamId" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
-	"streamVersion" : NumberLong(2)
+	"streamid" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
+	"streamversion : NumberLong(2)
 }
 ``` 
 
@@ -1431,9 +1431,9 @@ Each MongoDB `EventStore` [implementation](#mongodb-eventstore-implementations) 
 
 |  Name | Properties | Description |
 |:----|:------|:-----|
-| `streamId`| ascending | An index for the `streamId` property. Allows for fast reads of all events in a particular stream. |     
+| `streamid`| ascending | An index for the `streamid` property. Allows for fast reads of all events in a particular stream. |     
 | `id` + `source` | ascending `id`,<br>descending&nbsp;`source`,&nbsp;&nbsp;<br>unique<br><br> | Compound index of `id` and `source` to comply with the [specification](https://github.com/cloudevents/spec/blob/v1.0/spec.md) that the `id`+`source` combination must be unique. |     
-| `streamId` + `streamVersion`&nbsp;&nbsp;| ascending `streamId`,<br>descending `streamVersion`,<br>unique | Compound index of `streamId` and `streamVersion` (Occurrent CloudEvent extension) used for fast retrieval of the latest cloud event in a stream. |     
+| `streamid` + `streamversion`&nbsp;&nbsp;| ascending `streamid`,<br>descending `streamversion`,<br>unique | Compound index of `streamid` and `streamversion` (Occurrent CloudEvent extension) used for fast retrieval of the latest cloud event in a stream. |     
 
 To allow for fast queries, for example when using [EventStoreQueries](#eventstore-queries), it's recommended to create additional indexes tailored to the querying behavior of 
 your application. See [MongoDB indexes](https://docs.mongodb.com/manual/indexes/) for more information on how to do this. If you have many adhoc queries it's also worth 
