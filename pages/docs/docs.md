@@ -499,18 +499,24 @@ event stream. For example:
 eventStoreOperations.deleteEventStream("streamId");
 // Delete a specific event
 eventStoreOperations.deleteEvent("cloudEventId", cloudEventSource);
+// This will delete all events in stream "myStream" that has a version less than or equal to 19.
+eventStoreOperations.delete(streamId("myStream").and(streamVersion(lte(19L)));
 {% endcapture %}
 {% capture kotlin %}
 // Delete an entire event stream
 eventStoreOperations.deleteEventStream("streamId")
 // Delete a specific event
 eventStoreOperations.deleteEvent("cloudEventId", cloudEventSource)
+// This will delete all events in stream "myStream" that has a version less than or equal to 19.
+eventStoreOperations.delete(streamId("myStream").and(streamVersion(lte(19L)))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 These are probably operations that you want to use sparingly. Typically, you never want to remove any events, but there are some cases, such as GDPR or other regulations, 
 that requires the deletion of an event or an entire event stream. You should be aware that there are other ways to solve this though. One way would be to encrypt personal data
-and throw away the key when the user no longer uses the service. Another would be to store personal data outside the event store.
+and throw away the key when the user no longer uses the service. Another would be to store personal data outside the event store. 
+
+Another reason for deleting events is if you're implementing something like "closing the books" or certain types of snapshots, and don’t need the old events anymore. 
 
 Another feature provided by `EventStoreOperations` is the ability to update an event. Again, this is not something you normally want to do, but it can be useful for 
 certain strategies of GDPR compliance. For example maybe you want to remove or update personal data in an event when a users unregisters from your service. Here's an example:
