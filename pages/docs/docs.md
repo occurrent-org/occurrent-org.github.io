@@ -745,74 +745,12 @@ applicationService.execute(gameId) { events ->
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-If you're using a more functional approach you can create a function like this that represents an application service:
-
-{% include macros/applicationservice/generic-fp-application-service.md %}
-
-and when you have instantiated an `EventStore` and created functions that converts a CloudEvent to a DomainEvent and vice versa:
-
-{% capture java %}
-// A function that converts a CloudEvent to a "domain event"
-Function<CloudEvent, DomainEvent> convertCloudEventToDomainEvent = ..
-// A function that a "domain event" to a CloudEvent
-Function<DomainEvent, CloudEvent> convertDomainEventToCloudEvent = ..
-// The event store
-EventStore eventStore = ..
-{% endcapture %}
-{% capture kotlin %}
-// A function that converts a CloudEvent to a "domain event"
-val convertCloudEventToDomainEvent : (CloudEvent) -> DomainEvent = 
-// A function that a "domain event" to a CloudEvent
-val convertDomainEventToCloudEvent = (DomainEvent) -> CloudEvent  = ..
-val eventStore : EventStore = ..
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-then you can compose these functions into a generic "application service function":
-
-{% capture java %}
-// This example is using an imaginary FP library for Java that has methods such as "partially". 
-// You might want to look into "Vavr" or "Functional Java" which includes functions like this  
-BiConsumer<String, Function<Stream<DomainEvent>, Stream<DomainEvent>> applicationService = (streamId, domainFn) -> 
-            partially(ApplicationService::execute, evenStore, streamId)
-            .andThen( domainEventsInStream -> domainEventsInStream.map(convertCloudEventToDomainEvent))
-            .andThen(domainFn)
-            .andThen( newDomainEvents -> newDomainEvents.map(convertDomainEventToCloudEvent));       
-{% endcapture %}
-{% capture kotlin %}
-// This example is using an imaginary FP library for Kotlin that has methods such as "partially" and "andThen". 
-// You might want to look into the Kotlin "arrow" library which include these functions.
-fun applicationService(String, (Stream<DomainEvent>) -> Stream<DomainEvent>) : Unit =  
-         partially(ApplicationService::execute, evenStore, streamId)
-         .andThen { domainEventsInStream -> domainEventsInStream.map(convertCloudEventToDomainEvent)) }
-         .andThen(domainFn)
-         .andThen { newDomainEvents -> newDomainEvents.map(convertDomainEventToCloudEvent) }
-
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-and then use the "application service function" like this:
-
-{% capture java %}
-// Now in your REST API use the application service function:
-String gameId = ... // From a form parameter
-String wordToGuess = .. // From a form parameter
-applicationService.consume(gameId, events -> WordGuessingGame.startNewGame(gameId, wordToGuess));
-{% endcapture %}
-{% capture kotlin %}
-// Now in your REST API use the application service function:
-val gameId = ... // From a form parameter
-val wordToGuess = .. // From a form parameter
-applicationService(gameId) { events -> 
-    WordGuessingGame.startNewGame(gameId, wordToGuess)
-}
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
 ### Command Composition
 
-Many times it's useful to compose multiple commands into a single unit-of-work. While you're free to use any means and/or library to achieve this, Occurrent ships
-with a "command composition" library that you can leverage:
+Many times it's useful to compose multiple commands into a single unit-of-work. What this means that you'll "merge" several commands into one, and they will be executed in an atomic fashion. 
+I.e. either _all_ commands succeed, or all commands fail.
+
+While you're free to use any means and/or library to achieve this, Occurrent ships with a "command composition" library that you can leverage:
 
 {% include macros/command/composition-maven.md %}
 
@@ -825,7 +763,17 @@ you can use function composition! If you import `org.occurrent.application.compo
 
 {% include macros/command/composition-example.md %}
 <div class="comment">If you're using commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "composeCommands"
-from "org.occurrent.application.composition.command.ListCommandComposition".</div>
+from "org.occurrent.application.composition.command.ListCommandComposition". If you're using Kotlin you should import the "composeCommands" extension function from 
+"org.occurrent.application.composition.command.composeCommands".</div>
+
+If you're using Kotlin you can also make use of the `andThen` (infix) function for command composition (import `org.occurrent.application.composition.command.andThen`):
+
+```kotlin
+applicationService.execute(gameId,
+    { events -> WordGuessingGame.startNewGame(events, gameId, wordToGuess) }
+        andThen { events -> WordGuessingGame.makeGuess(events, guess) })
+```
+
 
 Events returned from `WordGuessingGame.startNewGame(..)` will be appended to the event stream when calling `WordGuessingGame.makeGuess(..)` and the new domain events
 returned by the two functions will be merged and written in an atomic fashion to the event store.
@@ -836,7 +784,16 @@ you can refactor the code above into this:
 
 {% include macros/command/composition-example-partial.md %}
 <div class="comment">If you're using commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "partial"
-from "org.occurrent.application.composition.command.partial.PartialListCommandApplication".</div>
+from "org.occurrent.application.composition.command.partial.PartialListCommandApplication". If you're using Kotlin, imporant the "partial" extension function
+from "org.occurrent.application.composition.command.partial".</div>
+
+With Kotlin, you can also use `andThen` (described above) to do:
+
+```kotlin
+applicationService.execute(gameId, 
+    WordGuessingGame::startNewGame.partial(gameId, wordToGuess)
+            andThen WordGuessingGame::makeGuess.partial(guess))
+```
 
 ### Command Conversion  
 
@@ -1219,10 +1176,9 @@ object WordGuessingGame {
 }
 ```           
 
-Occurrent provides a set of extension functions for Kotlin in this module:
+Occurrent provides a set of extension functions for Kotlin in the application service module:
 
-{% include macros/applicationservice/blocking-maven-kotlin.md %}
-<div class="comment">This module depends on 'org.occurrent:application-service-blocking:{{site.occurrentversion}}' so you don't need to depend on that module explicitly.</div>
+{% include macros/applicationservice/blocking-maven.md %}
 
 You can then use one of the `org.occurrent.application.service.blocking.execute` extension functions to do:
 

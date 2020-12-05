@@ -12,8 +12,8 @@ val gameId = ...
 val wordToGuess = ...
 val guess = ...
 applicationService.execute(gameId, composeCommands(
-    partial(WordGuessingGame::startNewGame, gameId, wordToGuess)
-    partial(WordGuessingGame::makeGuess, guess) 
+    WordGuessingGame::startNewGame.partial(gameId, wordToGuess)
+    WordGuessingGame::makeGuess.partial(guess) 
 ))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
