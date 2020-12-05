@@ -921,7 +921,8 @@ public class DomainEventConverter {
                     .withId(e.getEventId())
                     .withSource(URI.create("urn:myapplication:streamtype"))
                     .withType(e.getClass().getName())
-                    .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC))
+                    .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC)
+                                           .truncatedTo(ChronoUnit.MILLIS))
                     .withSubject(e.getName())
                     .withDataContentType("application/json")
                     .withData(objectMapper.writeValueAsBytes(e))
@@ -958,13 +959,14 @@ CloudEventConverter<CloudEvent> cloudEventConverter = new GenericCloudEventConve
 Note that if the data content type in the CloudEvent is specified as "application/json" (or a json compatible content-type) then Occurrent will automatically store it as [Bson](http://bsonspec.org/) in a MongoDB event store.
 The reason for this so that you're able to query the data, either by the [EventStoreQueries](#eventstore-queries) API, or manually using MongoDB queries. 
 In order to do this, the `byte[]` passed to `withData`, will be converted into a `org.bson.Document` that is later written to the database. This is not optimal from a performance perspective.
-A more performant option would be to make use of the `org.occurrent.eventstore.mongodb.cloudevent.DocumentCloudEventData` class. This class implements the `io.cloudevents.CloudEventData` interface and
-allows passing a pre-baked `org.bson.Document` instance to it. Then no additional conversion will need to take place! Here's an example:
+A more performant option would be to make use of the `io.cloudevents.core.data.PojoCloudEventData` class. This class implements the `io.cloudevents.CloudEventData` interface and
+allows passing a pre-baked `Map` or `org.bson.Document` instance to it. Then no additional conversion will need to take place! Here's an example:
 
 ```java
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cloudevents.CloudEvent;
 import io.cloudevents.core.builder.CloudEventBuilder;
-import org.occurrent.eventstore.mongodb.cloudevent.DocumentCloudEventData;
+import io.cloudevents.core.data.PojoCloudEventData;
 import org.bson.Document;
 
 import java.io.IOException;
@@ -973,44 +975,70 @@ import java.net.URI;
 import static java.time.ZoneOffset.UTC;
 import static org.occurrent.functional.CheckedFunction.unchecked;
 import static org.occurrent.time.TimeConversion.toLocalDateTime;
+import static java.time.temporal.ChronoUnit.MILLIS;
 
 public class DomainEventConverter {
+    
+    private final ObjectMapper objectMapper;
+    
+    public DomainEventConverter(ObjectMapper objectMapper) {
+        this.objectMapper = objectMapper;
+    } 
 
     public CloudEvent convertToCloudEvent(DomainEvent e) {  
             // Convert the data in the domain event into a Document 
-            Document eventData = convertDataInDomainEventToMap(e);
+            Map<String, Object> eventData = convertDataInDomainEventToMap(e);
             return CloudEventBuilder.v1()
                     .withId(e.getEventId())
                     .withSource(URI.create("http://name"))
                     .withType(e.getClass().getName())
-                    .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC))
+                    .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC)
+                                           .truncatedTo(MILLIS))
                     .withSubject(e.getName())
                     .withDataContentType("application/json")  
-                    // Use the "eventData" Document to create an instance of DocumentCloudEventData.
-                    .withData(new DocumentCloudEventData(document))
+                    // Use the "eventData" map to create an instance of PojoCloudEventData.
+                    // If an event store implementation doesn't know how to handle "Map" data,
+                    // it'll call the higher-order function that converts the map into byte[] 
+                    // (objectMapper::writeValueAsBytes), that it _has_ to understand.
+                    // But since all Occurrent event stores currently knows how to handle maps, 
+                    // the objectMapper::writeValueAsBytes method will never be called.
+                    .withData(PojoCloudEventData.wrap(eventData, objectMapper::writeValueAsBytes))
                     .build();
     }
 
     public DomainEvent convertToDomainEvent(CloudEvent cloudEvent) {
-            Document document = ((DocumentCloudEventData) cloudEvent.getData()).getDocument();
-            return convertToDomainEvent(cloudEvent, document);
+        CloudEventData cloudEventData = cloudEvent.getData();
+        if (cloudEventData instanceof PojoCloudEventData && cloudEventData.getValue() instanceof Map) {
+            Map<String, Object> eventData = ((PojoCloudEventData<Map<String, Object>>) cloudEventData).getValue();
+            return convertToDomainEvent(cloudEvent, eventData);
+        } else {
+            return objectMapper.readValue(cloudEventData.toBytes(), DomainEvent.class); // try-catch omitted
+        }
     }       
     
-    private static Document convertDataInDomainEventToDocument(DomainEvent e) {
+    private static Map<String, Object> convertDataInDomainEventToDocument(DomainEvent e) {
         // Convert the domain event into a Map                
-        Map<String, Object> data = ...
-        return new Document(data);
+        Map<String, Object> data = new HashMap<String, Object>();
+        if (e instanceof GameStarted) {
+           data.put("type", "GameStarted"); 
+           // Put the rest of the values
+        } else if (...) {
+            // More events
+        }
+        return map;
     }
 
-    private static DomainEvent convertToDomainEvent(CloudEvent cloudEvent, Document data) {
+    private static DomainEvent convertToDomainEvent(CloudEvent cloudEvent, Map<String, Object> data) {
         // Re-construct the domain event instance from the cloud event and data
+        switch ((String) data.get("type")) {
+            case "GameStarted" -> // Convert map to GameStartedEvent 
+                break;
+            ...
+        }
     }
 }        
 ```
-
-The drawback of using this approach is if you need to change to a different [EventStore](#eventstore) you would
-still need to depend on the `org.occurrent:eventstore-mongodb-common` module and make changes to `convertToDomainEvent`. Note that `convertToCloudEvent` doesn't 
-necessarily need to be changed since a `CloudEventData` implementation is always serializable into a `byte[]` that all event stores understands.         
+<div class="comment">Tip: Instead of working directly with maps, you can use Jackson to convert a DTO into a Map, by calling "jackson.convertValue(myDTO, new TypeReference&lt;Map&lt;String, Object&gt;&gt;() {});".</div>
 
 ### Using the Application Service
 
