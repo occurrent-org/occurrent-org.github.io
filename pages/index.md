@@ -24,7 +24,7 @@ permalink: /
             <h3>Non-intrusive</h3>
             <p>
                 You should be able to design your domain model without <i>any</i> dependencies to Occurrent or any other library. 
-                Your domain model can be expressed with pure functions that returns events. Use Occurrent to store these events
+                Your domain model can be expressed with pure functions that returns events. Use Occurrent to store these events.
             </p>
         </div>
         <div class="box">
