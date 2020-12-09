@@ -1036,7 +1036,7 @@ applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, 
 {% endcapture %}
 {% capture kotlin %}
 applicationService.execute(gameId) { events -> 
-WordGuessingGame.guessWord(events, guess)
+    WordGuessingGame.guessWord(events, guess)
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
