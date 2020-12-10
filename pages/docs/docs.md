@@ -1072,7 +1072,7 @@ class RegisterOngoingGame(private val someDatabaseApi : DatabaseApi) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-There reason for doing this synchronously is, for example, if you have a REST API and the player expects the ongoing games view to be updated once the "start game" 
+The reason for doing this synchronously is, for example, if you have a REST API and the player expects the ongoing games view to be updated once the "start game" 
 command has executed. This can be achieved by other means (RSocket, Websockets, server-sent events, polling) but synchronous updates is simple and works quite well in many cases.
 
 Now that we have the code that registers ongoing games, we can call it from our from the application service:
