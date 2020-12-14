@@ -1204,6 +1204,7 @@ Saga implementation. But since Occurrent is a library you can hook in already ex
 * [Apache Camel Saga](https://camel.apache.org/components/latest/eips/saga-eip.html) - If you're using Java and don't mind bringing in [Apache Camel](https://camel.apache.org/) as a dependency
 * [nflow](https://github.com/NitorCreations/nflow) - Battle-proven solution for orchestrating business processes in Java
 * [saga-coordinator-java](https://github.com/fernandoBRS/saga-coordinator-java) - Saga Coordinator as a Finite State Machine (FSM) in Java
+* [Baker](https://github.com/ing-bank/baker) - Baker is a library that reduces the effort to orchestrate (micro)service-based process flows.
 * Use the [routing-slip pattern](https://www.enterpriseintegrationpatterns.com/patterns/messaging/RoutingTable.html) from the [Enterprise Integration Patterns](https://www.enterpriseintegrationpatterns.com/) book.
 * Represent sagas as todo lists. This is described in the [event modeling](https://eventmodeling.org/) documentation in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation).  
 
