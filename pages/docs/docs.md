@@ -432,12 +432,12 @@ that an EventStore implementation may implement to expose querying capabilities.
 {% capture java %}
 OffsetDateTime lastTwoHours = OffsetDateTime.now().minusHours(2); 
 // Query the database for all events the last two hours that have "subject" equal to "123" and sort these in descending order
-Stream<CloudEvent> events = eventStore.query(time(lte(lastTwoHours)).and(subject("123")), SortBy.TIME_DESC);
+Stream<CloudEvent> events = eventStore.query(time(gte(lastTwoHours)).and(subject("123")), SortBy.TIME_DESC);
 {% endcapture %}
 {% capture kotlin %}
 val lastTwoHours = OffsetDateTime.now().minusHours(2);
 // Query the database for all events the last two hours that have "subject" equal to "123" and sort these in descending order
-val events : Stream<CloudEvent> = eventStore.query(time(lte(lastTwoHours)).and(subject("123")), SortBy.TIME_DESC)
+val events : Stream<CloudEvent> = eventStore.query(time(gte(lastTwoHours)).and(subject("123")), SortBy.TIME_DESC)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
