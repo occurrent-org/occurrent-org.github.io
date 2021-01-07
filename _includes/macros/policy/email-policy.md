@@ -1,19 +1,19 @@
 {% capture java %}
 public class WhenGameWonThenSendEmailToWinnerPolicy {
 
-    private final BlockingSubscription subscription;
+    private final SubscriptionModel subscriptionModel;
     private final EmailClient emailClient;
     private final Players players;
     
-    public WhenGameWonThenSendEmailToWinnerPolicy(BlockingSubscription subscription, EmailClient emailClient, Players players) {
-        this.subscription = subscription;
+    public WhenGameWonThenSendEmailToWinnerPolicy(SubscriptionModel subscriptionModel, EmailClient emailClient, Players players) {
+        this.subscriptionModel = subscriptionModel;
         this.emailClient = emailClient;
         this.players = players;
     }
     
     @PostConstruct
     public void whenGameWonThenSendEmailToWinner() {
-        subscription.subscribe("whenGameWonThenSendEmailToWinnerPolicy", filter(type("GameWon")), cloudEvent -> {
+        subscriptionModel.subscribe("whenGameWonThenSendEmailToWinnerPolicy", filter(type("GameWon")), cloudEvent -> {
             String playerEmailAddress =  players.whatIsTheEmailAddressOfPlayer(playerIdIn(cloudEvent.getData()));
             emailClient.sendEmail(playerEmailAddress, "You won, yaay!");
         }          
@@ -22,12 +22,12 @@ public class WhenGameWonThenSendEmailToWinnerPolicy {
 {% endcapture %}
 
 {% capture kotlin %}
-class WhenGameWonThenSendEmailToWinnerPolicy(val subscription : BlockingSubscription, 
+class WhenGameWonThenSendEmailToWinnerPolicy(val subscriptionModel : SubscriptionModel, 
                                              val emailClient : EmailClient, val players : Players) {
 
     @PostConstruct
     fun whenGameWonThenSendEmailToWinner() = 
-        subscription.subscribe("whenGameWonThenSendEmailToWinnerPolicy", filter(type("GameWon")) { cloudEvent -> 
+        subscriptionModel.subscribe("whenGameWonThenSendEmailToWinnerPolicy", filter(type("GameWon")) { cloudEvent -> 
             val playerEmailAddress =  players.whatIsTheEmailAddressOfPlayer(playerIdIn(cloudEvent.getData()))
             emailClient.sendEmail(playerEmailAddress, "You won, yaay!")
         }          

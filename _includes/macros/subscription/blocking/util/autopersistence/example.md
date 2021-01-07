@@ -1,26 +1,26 @@
 {% capture java %}
 // Create the non-durable blocking subscription instance 
-PositionAwareBlockingSubscription nonDurableSubscription = ...
+PositionAwareBlockingSubscription nonDurableSubscriptionModel = ...
 // Create the storage
-BlockingSubscriptionPositionStorage storage = ...
+SubscriptionPositionStorage storage = ...
 
-// Now combine the non-durable subscription and the subscription position storage
-BlockingSubscription durableSubscription = new BlockingSubscriptionWithAutomaticPositionPersistence(nonDurableSubscription, storage);
+// Now combine the non-durable subscription model and the subscription position storage
+SubscriptionModel durableSubscriptionModel = new DurableSubscriptionModel(nonDurableSubscriptionModel, storage);
 
 // Start a subscription
-durableSubscription.subscribe("mySubscriptionId", cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent)); 
+durableSubscriptionModel.subscribe("mySubscriptionId", cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent)); 
 {% endcapture %}
 
 {% capture kotlin %}
 // Create the non-durable blocking subscription instance 
-val nonDurableSubscription : PositionAwareBlockingSubscription = ...
+val nonDurableSubscriptionModel : PositionAwareBlockingSubscription = ...
 // Create the storage
-val storage : BlockingSubscriptionPositionStorage = ...
+val storage : SubscriptionPositionStorage = ...
 
-// Now combine the non-durable subscription and the subscription position storage
-val durableSubscription : BlockingSubscription = new BlockingSubscriptionWithAutomaticPositionPersistence(nonDurableSubscription, storage)
+// Now combine the non-durable subscription model and the subscription position storage
+val durableSubscriptionModel : SubscriptionModel = new DurableSubscriptionModel(nonDurableSubscriptionModel, storage)
 
 // Start a subscription
-durableSubscription.subscribe("mySubscriptionId") { cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent) };
+durableSubscriptionModel.subscribe("mySubscriptionId") { cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent) };
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}

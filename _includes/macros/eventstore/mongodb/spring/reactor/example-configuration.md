@@ -11,7 +11,7 @@ EventStoreConfig eventStoreConfig = new EventStoreConfig.Builder()
                                                         .timeRepresentation(TimeRepresentation.RFC_3339_STRING)
                                                         .build();
 
-SpringBlockingMongoEventStore eventStore = new SpringBlockingMongoEventStore(mongoTemplate, eventStoreConfig);
+ReactorMongoEventStore eventStore = new ReactorMongoEventStore(mongoTemplate, eventStoreConfig);
 {% endcapture %}
 
 {% capture kotlin %}
@@ -27,6 +27,6 @@ val eventStoreConfig = EventStoreConfig.Builder()
                                        .timeRepresentation(TimeRepresentation.RFC_3339_STRING)
                                        .build()
 
-val eventStore = SpringBlockingMongoEventStore(mongoTemplate, eventStoreConfig)
+val eventStore = ReactorMongoEventStore(mongoTemplate, eventStoreConfig)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}

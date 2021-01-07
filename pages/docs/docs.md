@@ -58,7 +58,7 @@ permalink: /documentation
 * * * [Implementations](#blocking-subscription-implementations)
 * * * * [MongoDB Native Driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * * * * [MongoDB with Spring](#blocking-subscription-using-spring-mongotemplate)
-* * * * [Automatic Position Persistence Utility](#automatic-subscription-position-persistence-blocking)
+* * * * [Durable Subscriptions](#durable-subscriptions-blocking)
 * * * * [Catch-up Subscription](#catch-up-subscription-blocking)
 * * [Reactive](#reactive-subscriptions)
 * * * [Filters](#reactive-subscription-filters)
@@ -66,7 +66,9 @@ permalink: /documentation
 * * * [Position Storage](#reactive-subscription-position-storage)
 * * * [Implementations](#reactive-subscription-implementations)
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
-* * * * [Automatic Position Persistence Utility](#automatic-subscription-position-persistence-reactive)
+* * * * [Durable Subscriptions](#durable-subscriptions-reactive)
+* [DSL's](#dsls)
+* * [Subscription DSL](#subscription-dsl)
 * [Blogs](#blogs)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
@@ -476,15 +478,15 @@ To get started with an event store refer to [Choosing An EventStore](#choosing-a
 
 A subscription is a way to get notified when new events are written to an event store. Typically, a subscription will forward the event to another piece of infrastructure such as
 a message bus, or create views from the events (such as projections, sagas, snapshots etc). There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
-represented by the `BlockingSubscription` interface (in the `org.occurrent:subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
-represented by the `ReactorSubscription` interface (in the `org.occurrent:subscription-api-reactor` module). 
+represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` interface (in the `org.occurrent:subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
+represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:subscription-api-reactor` module). 
 
 
 The blocking API is callback based, which is fine if you're working with individual events (you can of course write a simple function that aggregates events into batches).
-If you want to work with streams of data, the `ReactorSubscription` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
+If you want to work with streams of data, the `SubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
 publisher from [project reactor](https://projectreactor.io/).
 
-Note that it's fine to use `ReactorSubscription`, even though the event store is implemented using the blocking api, and vice versa.
+Note that it's fine to use `SubscriptionModel`, even though the event store is implemented using the blocking api, and vice versa.
 If the datastore allows it, you can also run subscriptions in a different process than the processes reading and writing to the event store.   
 
 To get started with subscriptions refer to [Using Subscriptions](#using-subscriptions).
@@ -544,14 +546,14 @@ ended games. It does so by inceasing the "numberOfEndedGames" field in an (imagi
 Database someDatabase = ...
 // Subscribe to all "GameEnded" events by starting a subscription named "my-view" 
 // and increase "numberOfEndedGames" for each ended game.   
-subscription.subscribe("my-view", filter(type("GameEnded")), cloudEvent -> someDatabase.inc("numberOfEndedGames"));        
+subscriptionModel.subscribe("my-view", filter(type("GameEnded")), cloudEvent -> someDatabase.inc("numberOfEndedGames"));        
 {% endcapture %}
 {% capture kotlin %}
 // An imaginary database API
 val someDatabase : Database = ...
 // Subscribe to all "GameEnded" events by starting a subscription named "my-view" 
 // and increase "numberOfEndedGames" for each ended game. 
-subscription.subscribe("my-view", filter(type("GameEnded"))) {  
+subscriptionModel.subscribe("my-view", filter(type("GameEnded"))) {  
     someDatabase.inc("numberOfEndedGames")
 }
 {% endcapture %}
@@ -1485,7 +1487,7 @@ If you're already using Spring and you don't need reactive support then this is 
 
 #### Getting Started
 
-Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.blocking.SpringBlockingMongoEventStore`.
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.blocking.SpringMongoEventStore`.
 It takes two arguments, a [MongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/MongoTemplate.html) and 
 an `org.occurrent.eventstore.mongodb.spring.blocking.EventStoreConfig`.
 
@@ -1501,10 +1503,10 @@ Now you can start reading and writing events to the EventStore:
 
 | Name  | Description  | 
 |:----|:-----|  
-| [Number&nbsp;Guessing&nbsp;Game](https://github.com/johanhaleby/occurrent/tree/master/example/domain/number-guessing-game/mongodb/spring/blocking) | A simple game implemented using a pure domain model and stores events in MongoDB using `SpringBlockingMongoEventStore` and Spring Boot. It also generates integration events and publishes these to RabbitMQ. |
+| [Number&nbsp;Guessing&nbsp;Game](https://github.com/johanhaleby/occurrent/tree/master/example/domain/number-guessing-game/mongodb/spring/blocking) | A simple game implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. It also generates integration events and publishes these to RabbitMQ. |
 | [Subscription&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-subscription-based-mongodb-projections/src/main/java/org/occurrent/example/eventstore/mongodb/spring/subscriptionprojections) | An example showing how to create a subscription that listens to certain events stored in the EventStore and updates a view/projection from these events. |
-| [Transactional&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-transactional-projection-mongodb/src/main/java/org/occurrent/example/eventstore/mongodb/spring/transactional) | An example showing how to combine writing events to the `SpringBlockingMongoEventStore` and update a view transactionally using the `@Transactional` annotation. | 
-| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringBlockingMongoEventStore` using custom MongoDB aggregations. |
+| [Transactional&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-transactional-projection-mongodb/src/main/java/org/occurrent/example/eventstore/mongodb/spring/transactional) | An example showing how to combine writing events to the `SpringMongoEventStore` and update a view transactionally using the `@Transactional` annotation. | 
+| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
 
 ### EventStore with Spring ReactiveMongoTemplate (Reactive)
   
@@ -1521,7 +1523,7 @@ If you're already using Spring and want to use the reactive driver ([project rea
 
 #### Getting Started
 
-Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.blocking.SpringBlockingMongoEventStore`.
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.blocking.SpringMongoEventStore`.
 It takes two arguments, a [MongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/MongoTemplate.html) and 
 an `org.occurrent.eventstore.mongodb.spring.blocking.EventStoreConfig`.
 
@@ -1537,7 +1539,7 @@ Now you can start reading and writing events to the EventStore:
 
 | Name  | Description  | 
 |:----|:-----|  
-| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringBlockingMongoEventStore` using custom MongoDB aggregations. |
+| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
 
 # In-Memory EventStore 
 
@@ -1576,15 +1578,16 @@ A "blocking subscription" is a subscription that uses the normal Java threading 
 will block the thread. This is arguably the easiest and most familiar way to use subscriptions for the typical Java developer, 
 and it's probably good-enough for most scenarios. If high throughput, low CPU and memory-consumption is critical then consider using
 [reactive subscription](#reactive-subscriptions) instead. Reactive subscriptions are also better suited if you want to work with streaming data.   
- 
+
+To create a blocking subscription, you first need to choose which "subscription model" to use. You then a create subscription instance from this subscription model.
 All blocking subscriptions implements the `org.occurrent.subscription.api.blocking.SubscriptionModel` 
 interface. This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
 {% capture java %}
-subscription.subscribe("mySubscriptionId", System.out::println);
+subscriptionModel.subscribe("mySubscriptionId", System.out::println);
 {% endcapture %}
 {% capture kotlin %}
-subscription.subscribe("mySubscriptionId", ::println)
+subscriptionModel.subscribe("mySubscriptionId", ::println)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -1593,7 +1596,7 @@ This will simply print each cloud event written to the event store to the consol
 Note that the signature of `subscribe` is defined like this:
 
 ```java
-public interface BlockingSubscription {
+public interface SubscriptionModel {
     /**
      * Start listening to cloud events persisted to the event store using the supplied start position and <code>filter</code>.
      *
@@ -1614,12 +1617,12 @@ public interface BlockingSubscription {
 
 It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
 the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
-for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `BlockingSubscription` implementation that also implement the 
-`org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel` interface. The `PositionAwareBlockingSubscription`  is an example of a `BlockingSubscription` that returns a wrapper around 
+for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `SubscriptionModel` implementation that also implement the 
+`org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel` interface. The `PositionAwareSubscriptionModel`  is an example of a `SubscriptionModel` that returns a wrapper around 
 `io.cloudevents.CloudEvent` called `org.occurrent.subscription.PositionAwareCloudEvent` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
 the current subscription position. You can check if a cloud event contains a subscription position by calling `PositionAwareCloudEvent.hasSubscriptionPosition(cloudEvent)`
 and then get the position by using `PositionAwareCloudEvent.getSubscriptionPositionOrThrowIAE(cloudEvent)`. Note that `PositionAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
-you're subscribing from a `PositionAwareBlockingSubscription`, you are responsible for [keeping track of the subscription position](#blocking-subscription-position-storage), so 
+you're subscribing from a `PositionAwareSubscriptionModel`, you are responsible for [keeping track of the subscription position](#blocking-subscription-position-storage), so 
 that it's possible to resume this subscription from the last known position on application restart. This interface also provides means to get the so called "current global subscription position", 
 by calling the `globalSubscriptionPosition` method which can be useful when starting a new subscription. 
 
@@ -1636,10 +1639,10 @@ You can also provide a subscription filter, applied at the datastore level so th
 certain events:
 
 {% capture java %}
-subscription.subscribe("mySubscriptionId", filter(type("GameEnded")), System.out::println);
+subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")), System.out::println);
 {% endcapture %}
 {% capture kotlin %}
-subscription.subscribe("mySubscriptionId", filter(type("GameEnded")), ::println)
+subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")), ::println)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -1649,10 +1652,10 @@ The `OccurrentSubscriptionFilter` is generic and should be applicable to a wide 
 may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
 
 {% capture java %}
-subscription.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")), System.out::println);
+subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")), System.out::println);
 {% endcapture %}
 {% capture kotlin %}
-subscription.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")), ::println)
+subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")), ::println)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -1675,11 +1678,11 @@ available that suits your needs. If not, you can still have a look at them for i
 
 It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the subscription position
 provided by a [blocking subscription](#blocking-subscriptions) any way you like, Occurrent provides an interface
-called `org.occurrent.subscription.api.blocking.SubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `BlockingSubscriptionPositionStorage` 
+called `org.occurrent.subscription.api.blocking.SubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `SubscriptionPositionStorage` 
 is defined like this:
 
 ```java
-public interface BlockingSubscriptionPositionStorage {
+public interface SubscriptionPositionStorage {
     SubscriptionPosition read(String subscriptionId);
     SubscriptionPosition save(String subscriptionId, SubscriptionPosition subscriptionPosition);
     void delete(String subscriptionId);
@@ -1688,19 +1691,19 @@ public interface BlockingSubscriptionPositionStorage {
 
 I.e. it's a way to read/write/delete the `SubscriptionPosition` for a given subscription. Occurrent ships with three pre-defined implementations:
 
-1\. **BlockingSubscriptionPositionStorageForMongoDB**<br>
+1\. **NativeMongoSubscriptionPositionStorage**<br>
     Uses the vanilla MongoDB Java (sync) driver to store `SubscriptionPosition`'s in MongoDB.
     {% include macros/subscription/blocking/mongodb/native/storage/maven.md %}   
-2\. **SpringBlockingSubscriptionPositionStorageForMongoDB**<br>
+2\. **SpringMongoSubscriptionPositionStorage**<br>
     Uses the Spring MongoTemplate to store `SubscriptionPosition`'s in MongoDB.    
     {% include macros/subscription/blocking/mongodb/spring/storage/maven.md %}
-3\. **SpringBlockingSubscriptionPositionStorageForRedis**<br>
+3\. **SpringRedisSubscriptionPositionStorage**<br>
     Uses the Spring RedisTemplate to store `SubscriptionPosition`'s in Redis.    
     {% include macros/subscription/blocking/redis/spring/storage/maven.md %} 
 
 
 
-If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "blocking subscription API" which contains the `BlockingSubscriptionPositionStorage` interface:
+If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "blocking subscription API" which contains the `SubscriptionPositionStorage` interface:
 
 {% include macros/subscription/blocking/api/maven.md %}
 
@@ -1725,8 +1728,8 @@ but for most cases you probably want to look into implementations of `org.occurr
 These subscriptions can be combined with a [subscription position storage](#blocking-subscription-position-storage) implementation to store the position in a durable 
 datastore. 
 
-Occurrent provides a [utility](#automatic-subscription-position-persistence-blocking) that combines a `PositionAwareBlockingSubscription` and 
-a `BlockingSubscriptionPositionStorage` (see [here](#blocking-subscription-position-storage)) to automatically store the subscription position   
+Occurrent provides a [utility](#durable-subscriptions-blocking) that combines a `PositionAwareSubscriptionModel` and 
+a `SubscriptionPositionStorage` (see [here](#blocking-subscription-position-storage)) to automatically store the subscription position   
 _after each processed event_. If you don't want the position to be persisted after _every_ event, it's recommended to pick a 
 [subscription position storage](#blocking-subscription-position-storage) implementation, and store the position yourself when you find fit.
 
@@ -1738,14 +1741,14 @@ To get started first include the following dependency:
 
 {% include macros/subscription/blocking/mongodb/native/impl/maven.md %}
 
-Then create a new instance of `BlockingSubscriptionForMongoDB` and start subscribing: 
+Then create a new instance of `NativeMongoSubscriptionModel` and start subscribing: 
 
 {% include macros/subscription/blocking/mongodb/native/impl/example.md %}
-<div class="comment">BlockingSubscriptionForMongoDB can be imported from the "org.occurrent.subscription.mongodb.nativedriver.blocking" package.</div>
+<div class="comment">NativeMongoSubscriptionModel can be imported from the "org.occurrent.subscription.mongodb.nativedriver.blocking" package.</div>
 
 There are a few things to note here that needs explaining. First we have the `TimeRepresentation.DATE` that is passed as the third constructor argument which you can read more about 
 [here](#mongodb-time-representation). Secondly we have the `Executors.newCachedThreadPool()`. A thread will be created from this executor for each call to 
-"subscribe" (i.e. for each subscription). Make sure that you have enough threads to cover all your subscriptions or the "BlockingSubscription" may hang.
+"subscribe" (i.e. for each subscription). Make sure that you have enough threads to cover all your subscriptions or the "SubscriptionModel" may hang.
 Last we have the `RetryStrategy` which defines what should happen if there's e.g. a connection issue during the life-time of a subscription or if subscription fails to process a cloud event
 (i.e. the `action` throws an exception). These retry strategies are available:
 
@@ -1766,10 +1769,10 @@ First include the following dependency:
 
 {% include macros/subscription/blocking/mongodb/spring/impl/maven.md %}
 
-Then create a new instance of `SpringBlockingSubscriptionForMongoDB` and start subscribing:
+Then create a new instance of `SpringNativeMongoSubscriptionModel` and start subscribing:
 
 {% include macros/subscription/blocking/mongodb/spring/impl/example.md %}
-<div class="comment">SpringBlockingSubscriptionForMongoDB can be imported from the "org.occurrent.subscription.mongodb.spring.blocking" package.</div>
+<div class="comment">SpringNativeMongoSubscriptionModel can be imported from the "org.occurrent.subscription.mongodb.spring.blocking" package.</div>
 
 The "eventCollectionName" specifies the event collection in MongoDB where events are stored. It's important that this collection is the same as the collection
 used by the `EventStore` implementation. Secondly, we have the `TimeRepresentation.RFC_3339_STRING` that is passed as the third constructor argument, which you can read more about 
@@ -1801,7 +1804,7 @@ And you want to subscribe to all "GameStarted" events and write them to the repo
 
 ```java                                    
 WriteToRepository writeToRepository = ...
-subscriptions.subscribe("gameStartedLog", writeToRepository::write);
+subscriptionModel.subscribe("gameStartedLog", writeToRepository::write);
 ```   
    
 But if the connection to `someRepository` is flaky you can add [Spring Retry](https://github.com/spring-projects/spring-retry) so allow for retry with exponential backoff:
@@ -1827,14 +1830,14 @@ Don't forget to add `@EnableRetry` in to your Spring Boot application as well.
 
 Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [position persistence](#blocking-subscription-position-storage) for this subscription implementation.
 
-#### Automatic Subscription Position Persistence (Blocking)
+#### Durable Subscriptions (Blocking)
 
 Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application. 
-Occurrent provides a utility that implements `BlockingSubscription` and combines a `PositionAwareBlockingSubscription` and a `BlockingSubscriptionPositionStorage` implementation 
+Occurrent provides a utility that implements `SubscriptionModel` and combines a `PositionAwareSubscriptionModel` and a `SubscriptionPositionStorage` implementation 
 (see [here](#blocking-subscription-position-storage)) to automatically store the subscription position, by default,   
 after each processed event. If you don't want the position to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
-to `BlockingSubscriptionWithAutomaticPositionPersistenceConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
-the position to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new BlockingSubscriptionWithAutomaticPositionPersistenceConfig(3)` that 
+to `DurableSubscriptionModelConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
+the position to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new DurableSubscriptionModelConfig(3)` that 
 creates an instance of `EveryN` that stores the position for every third event. 
 
 If you want full control, it's recommended to pick a [subscription position storage](#blocking-subscription-position-storage) implementation, 
@@ -1844,8 +1847,8 @@ To use it, first we need to add the dependency:
 
 {% include macros/subscription/blocking/util/autopersistence/maven.md %}
 
-Then we should instantiate a `PositionAwareBlockingSubscription`, that subscribes to the events from the event store, and an instance of a `BlockingSubscriptionPositionStorage`, 
-that stores the subscription position, and combine them to a `BlockingSubscriptionWithAutomaticPositionPersistence`: 
+Then we should instantiate a `PositionAwareSubscriptionModel`, that subscribes to the events from the event store, and an instance of a `SubscriptionPositionStorage`, 
+that stores the subscription position, and combine them to a `DurableSubscriptionModel`: 
 
 {% include macros/subscription/blocking/util/autopersistence/example.md %}
 
@@ -1864,14 +1867,14 @@ For example:
 
 {% include macros/subscription/blocking/util/catchup/example.md %}
 
-`CatchupSupportingBlockingSubscription` maintains an in-memory cache of event ids. The size of this cache is configurable using a `CatchupSupportingBlockingSubscriptionConfig` but it defaults to 100.
+A `CatchupSubscriptionModel` maintains an in-memory cache of event ids. The size of this cache is configurable using a `CatchupSubscriptionModelConfig` but it defaults to 100.
 The purpose of the cache is to reduce the likely hood of duplicate events when switching from replay mode to continuous mode. Otherwise, there would be a chance
 that event written _exactly_ when the switch from replay mode to continuous mode takes places, can be lost. To prevent this, the continuous mode subscription 
 starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the 
 switch. If the cache is too small, duplicate events will be sent to the continuous subscription. Typically, you want your application to be idempotent anyways and if so this shouldn't be a problem.        
 
-`CatchupSupportingBlockingSubscription` can be configured to store the subscription position in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to 
-start replaying from the beginning again. Note that if you don't want subscription persistence during replay, you can disable this by doing `new CatchupSupportingBlockingSubscriptionConfig(dontUseSubscriptionPositionStorage())`.
+A `CatchupSubscriptionModel` can be configured to store the subscription position in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to 
+start replaying from the beginning again. Note that if you don't want subscription persistence during replay, you can disable this by doing `new CatchupSubscriptionModelConfig(dontUseSubscriptionPositionStorage())`.
 
 ## Reactive Subscriptions
 
@@ -1880,14 +1883,15 @@ will _not_ block a thread. It uses concepts from [reactive programming](https://
 of data. This is arguably a bit more complex for the typical Java developer, and you should consider using [blocking subscriptions](#blocking-subscriptions) 
 if high throughput, low CPU and memory-consumption is not critical. 
  
+To create a reactive subscription you first need to choose which "subscription model" to use. You then a create subscription instance from this subscription model. 
 All reactive subscriptions implements the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface which uses 
 components from [project reactor](https://projectreactor.io). This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
 {% capture java %}
-subscription.subscribe("mySubscriptionId").doOnNext(System.out::println).subscribe();
+subscriptionModel.subscribe("mySubscriptionId").doOnNext(System.out::println).subscribe();
 {% endcapture %}
 {% capture kotlin %}
-subscription.subscribe("mySubscriptionId").doOnNext(::println).subscribe()
+subscriptionModel.subscribe("mySubscriptionId").doOnNext(::println).subscribe()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 <div class="comment">The "subscribe" method returns an instance of "Flux&lt;CloudEvent&gt;".</div>
@@ -1898,7 +1902,7 @@ This will simply print each cloud event written to the event store to the consol
 Note that the signature of `subscribe` is defined like this:
 
 ```java
-public interface ReactorSubscription {
+public interface SubscriptionModel {
 
     /**
      * Stream events from the event store as they arrive. Use this method if want to start streaming from a specific position.
@@ -1914,13 +1918,13 @@ public interface ReactorSubscription {
 
 It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
 the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
-for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `ReactorSubscription` implementation that also implement the 
-`org.occurrent.subscription.api.reactor.PositionAwareSubscriptionModel` interface. The `PositionAwareReactorSubscription`  is an example of a `ReactorSubscription` that returns a wrapper around 
+for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `SubscriptionModel` implementation that also implement the 
+`org.occurrent.subscription.api.reactor.PositionAwareSubscriptionModel` interface. The `PositionAwareSubscriptionModel`  is an example of a `SubscriptionModel` that returns a wrapper around 
 `io.cloudevents.CloudEvent` called `org.occurrent.subscription.PositionAwareCloudEvent` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
 the current subscription position. You can check if a cloud event contains a subscription position by calling `PositionAwareCloudEvent.hasSubscriptionPosition(cloudEvent)`
 and then get the position by using `PositionAwareCloudEvent.getSubscriptionPositionOrThrowIAE(cloudEvent)`. 
 Note that `PositionAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
-you're subscribing from a `PositionAwareReactorSubscription`, you are responsible for [keeping track of the subscription position](#reactive-subscription-position-storage), so 
+you're subscribing from a `PositionAwareSubscriptionModel`, you are responsible for [keeping track of the subscription position](#reactive-subscription-position-storage), so 
 that it's possible to resume this subscription from the last known position on application restart. This interface also provides means to get the so called "current global subscription position", 
 by calling the `globalSubscriptionPosition` method which can be useful when starting a new subscription. 
 
@@ -1937,10 +1941,10 @@ You can also provide a subscription filter, applied at the datastore level so th
 certain events:
 
 {% capture java %}
-subscription.subscribe("mySubscriptionId", filter(type("GameEnded"))).doOnNext(System.out::println).subscribe();
+subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded"))).doOnNext(System.out::println).subscribe();
 {% endcapture %}
 {% capture kotlin %}
-subscription.subscribe("mySubscriptionId", filter(type("GameEnded")).doOnNext(::println).subscribe()
+subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")).doOnNext(::println).subscribe()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -1950,10 +1954,10 @@ The `OccurrentSubscriptionFilter` is generic and should be applicable to a wide 
 may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
 
 {% capture java %}
-subscription.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")).doOnNext(System.out::println).subscribe();
+subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")).doOnNext(System.out::println).subscribe();
 {% endcapture %}
 {% capture kotlin %}
-subscription.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")).doOnNext(::println).subscribe()
+subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")).doOnNext(::println).subscribe()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -1989,8 +1993,8 @@ public interface ReactorSubscriptionPositionStorage {
 
 I.e. it's a way to read/write/delete the `SubscriptionPosition` for a given subscription. Occurrent ships one pre-defined reactive implementation (please contribute!):
 
-1\. **SpringReactorSubscriptionPositionStorageForMongoDB**<br>
-    Uses the vanilla MongoDB Java (sync) driver to store `SubscriptionPosition`'s in MongoDB.
+1\. **ReactorSubscriptionPositionStorage**<br>
+    Uses the [project reactor](https://projectreactor.io/) driver to store `SubscriptionPosition`'s in MongoDB.
     {% include macros/subscription/reactor/mongodb/spring/storage/maven.md %}   
 
 
@@ -2018,7 +2022,7 @@ but for most cases you probably want to look into implementations of `org.occurr
 These subscriptions can be combined with a [subscription position storage](#reactive-subscription-position-storage) implementation to store the position in a durable 
 datastore. 
 
-Occurrent provides a [utility](#automatic-subscription-position-persistence-reactive) that combines a `PositionAwareReactorSubscription` and 
+Occurrent provides a [utility](#durable-subscriptions-reactive) that combines a `PositionAwareSubscriptionModel` and 
 a `ReactorSubscriptionPositionStorage` (see [here](#reactive-subscription-position-storage)) to automatically store the subscription position   
 _after each processed event_. If you don't want the position to be persisted after _every_ event, it's recommended to pick a 
 [subscription position storage](#reactive-subscription-position-storage) implementation, and store the position yourself when you find fit.
@@ -2032,10 +2036,10 @@ First include the following dependency:
 
 {% include macros/subscription/reactor/mongodb/spring/impl/maven.md %}
 
-Then create a new instance of `SpringReactorSubscriptionForMongoDB` and start subscribing:
+Then create a new instance of `ReactorMongoSubscriptionModel` and start subscribing:
 
 {% include macros/subscription/reactor/mongodb/spring/impl/example.md %}
-<div class="comment">SpringReactorSubscriptionForMongoDB can be imported from the "org.occurrent.subscription.mongodb.spring.reactor" package.</div>
+<div class="comment">ReactorMongoSubscriptionModel can be imported from the "org.occurrent.subscription.mongodb.spring.reactor" package.</div>
 
 The "eventCollectionName" specifies the event collection in MongoDB where events are stored. It's important that this collection is the same as the collection
 used by the `EventStore` implementation. Secondly, we have the `TimeRepresentation.RFC_3339_STRING` that is passed as the third constructor argument, which you can read more about 
@@ -2045,24 +2049,64 @@ It should also be noted that Spring takes care of re-attaching to MongoDB if the
 
 Note that you can provide a [filter](#reactive-subscription-filters), [start position](#reactive-subscription-start-position) and [position persistence](#reactive-subscription-position-storage) for this subscription implementation.
 
-#### Automatic Subscription Position Persistence (Reactive)
+#### Durable Subscriptions (Reactive)
  
 Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application.
-Occurrent provides a utility that combines a `PositionAwareReactorSubscription` and a `ReactorSubscriptionPositionStorage` implementation 
+Occurrent provides a utility that combines a `PositionAwareSubscriptionModel` and a `ReactorSubscriptionPositionStorage` implementation 
 (see [here](#reactive-subscription-position-storage)) to automatically store the subscription position, by default,   
 after each processed event. If you don't want the position to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
-to `ReactorSubscriptionWithAutomaticPositionPersistenceConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
-the position to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new ReactorSubscriptionWithAutomaticPositionPersistenceConfig(3)` that 
+to `ReactorDurableSubscriptionModelConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
+the position to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new ReactorDurableSubscriptionModelConfig(3)` that 
 creates an instance of `EveryN` that stores the position for every third event. 
 
 To use it, first to add the following dependency:
 
 {% include macros/subscription/reactor/util/autopersistence/maven.md %}
 
-Then we should instantiate a `PositionAwareReactorSubscription`, that subscribes to the events from the event store, and an instance of a `ReactorSubscriptionPositionStorage`, 
-that stores the subscription position, and combine them to a `ReactorSubscriptionWithAutomaticPositionPersistence`: 
+Then we should instantiate a `PositionAwareSubscriptionModel`, that subscribes to the events from the event store, and an instance of a `ReactorSubscriptionPositionStorage`, 
+that stores the subscription position, and combine them to a `ReactorDurableSubscriptionModel`: 
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
+
+# DSL's
+
+## Subscription DSL
+
+The subscription DSL is a utility that you can use to easier create subscriptions by using a [CloudEventConverter](#application-service-event-conversion).
+There's a both a Kotlin DSL and Java DSL. First you need to depend on the `subscription-dsl` module:
+
+{% include macros/subscription/blocking/dsl/maven.md %}
+
+If you're using Kotlin you can then define subscriptions like this:
+
+```kotlin
+val subscriptionModel = SpringMongoSubscriptionModel(..)
+val cloudEventConverter = GenericCloudEventConverter<DomainEvent>(..)
+
+subscriptions(subscriptionModel, cloudEventConverter) {
+    subscribe<GameStarted>("id1") { gameStarted ->
+        log.info("Game was started $gameStarted")
+    }
+    subscribe<GameWon, GameLost>("id2") { domainEvent ->
+        log.info("Game was either won or lost: $domainEvent")
+    }
+    subscribe("everything") { domainEvent ->
+        log.info("I subscribe to every event: $domainEvent")
+    }
+} 
+```
+
+And if using Java you can do:
+          
+```java
+InMemorySubscriptionModel inMemorySubscriptionModel = new InMemorySubscriptionModel();
+InMemoryEventStore inMemoryEventStore = new InMemoryEventStore(inMemorySubscriptionModel);
+  
+inMemorySubscriptionModel.subscribe("subscription1", System.out::println);
+```
+
+For this to work, your domain events must all "implement" a `DomainEvent` interface (or a sealed class in Kotlin). Note that `DomainEvent` is something you create yourself, 
+it's not something that is provided by Occurrent.  
 
 # Blogs
 

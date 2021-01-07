@@ -1,10 +1,10 @@
 {% capture java %}
 public class UpdateSnapshotWhenNewEventsAreWrittenToEventStore {
 
-    private final BlockingSubscription subscription;
+    private final SubscriptionModel subscriptionModel;
     private final SnapshotRepository snapshotRepository;
     
-    public UpdateSnapshotWhenNewEventsAreWrittenToEventStore(BlockingSubscription subscription, SnapshotRepository snapshotRepository) {
+    public UpdateSnapshotWhenNewEventsAreWrittenToEventStore(SubscriptionModel subscriptionModel, SnapshotRepository snapshotRepository) {
         this.subscription = subscription;
         this.snapshotRepository = snapshotRepository;
     }
