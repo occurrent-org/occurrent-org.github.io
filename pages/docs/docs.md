@@ -58,6 +58,7 @@ permalink: /documentation
 * * * [Implementations](#blocking-subscription-implementations)
 * * * * [MongoDB Native Driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * * * * [MongoDB with Spring](#blocking-subscription-using-spring-mongotemplate)
+* * * * [InMemory](#inmemory-subscription)
 * * * * [Durable Subscriptions](#durable-subscriptions-blocking)
 * * * * [Catch-up Subscription](#catch-up-subscription-blocking)
 * * [Reactive](#reactive-subscriptions)
@@ -1829,6 +1830,16 @@ public class WriteToRepository {
 Don't forget to add `@EnableRetry` in to your Spring Boot application as well.
 
 Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [position persistence](#blocking-subscription-position-storage) for this subscription implementation.
+
+#### InMemory Subscription
+
+If you're using the [InMemory EventStore](#in-memory-eventstore) you can use the "InMemorySubscriptionModel" to subscribe to new events. For add the dependency:
+
+{% include macros/subscription/blocking/inmemory/impl/maven.md %}
+
+Then you can use it like this:
+
+{% include macros/subscription/blocking/inmemory/impl/example.md %}
 
 #### Durable Subscriptions (Blocking)
 
