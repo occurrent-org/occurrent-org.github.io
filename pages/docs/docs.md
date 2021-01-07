@@ -1577,7 +1577,7 @@ will block the thread. This is arguably the easiest and most familiar way to use
 and it's probably good-enough for most scenarios. If high throughput, low CPU and memory-consumption is critical then consider using
 [reactive subscription](#reactive-subscriptions) instead. Reactive subscriptions are also better suited if you want to work with streaming data.   
  
-All blocking subscriptions implements the `org.occurrent.subscription.api.blocking.BlockingSubscription` 
+All blocking subscriptions implements the `org.occurrent.subscription.api.blocking.SubscriptionModel` 
 interface. This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
 {% capture java %}
@@ -1615,7 +1615,7 @@ public interface BlockingSubscription {
 It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
 the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
 for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `BlockingSubscription` implementation that also implement the 
-`org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface. The `PositionAwareBlockingSubscription`  is an example of a `BlockingSubscription` that returns a wrapper around 
+`org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel` interface. The `PositionAwareBlockingSubscription`  is an example of a `BlockingSubscription` that returns a wrapper around 
 `io.cloudevents.CloudEvent` called `org.occurrent.subscription.PositionAwareCloudEvent` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
 the current subscription position. You can check if a cloud event contains a subscription position by calling `PositionAwareCloudEvent.hasSubscriptionPosition(cloudEvent)`
 and then get the position by using `PositionAwareCloudEvent.getSubscriptionPositionOrThrowIAE(cloudEvent)`. Note that `PositionAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
@@ -1675,7 +1675,7 @@ available that suits your needs. If not, you can still have a look at them for i
 
 It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the subscription position
 provided by a [blocking subscription](#blocking-subscriptions) any way you like, Occurrent provides an interface
-called `org.occurrent.subscription.api.blocking.BlockingSubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `BlockingSubscriptionPositionStorage` 
+called `org.occurrent.subscription.api.blocking.SubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `BlockingSubscriptionPositionStorage` 
 is defined like this:
 
 ```java
@@ -1717,11 +1717,11 @@ These are the _non-durable_ [blocking subscription implementations](#blocking-su
 By "non-durable" we mean implementations that doesn't store the subscription position in a durable storage automatically.  
 It might be that the datastore does this automatically _or_ that [subscription position storage](#blocking-subscription-position-storage) is not required
 for your use case. If the datastore _doesn't_ support storing the subscription position automatically, a subscription will typically implement the
-`org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription` interface (since these types of subscriptions doesn't need to be aware of the position).
+`org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel` interface (since these types of subscriptions doesn't need to be aware of the position).
 
    
 Typically, if you want the stream to continue where it left off on application restart you want to store away the subscription position. You can do this anyway you like,
-but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareBlockingSubscription`. 
+but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel`. 
 These subscriptions can be combined with a [subscription position storage](#blocking-subscription-position-storage) implementation to store the position in a durable 
 datastore. 
 
@@ -1880,7 +1880,7 @@ will _not_ block a thread. It uses concepts from [reactive programming](https://
 of data. This is arguably a bit more complex for the typical Java developer, and you should consider using [blocking subscriptions](#blocking-subscriptions) 
 if high throughput, low CPU and memory-consumption is not critical. 
  
-All reactive subscriptions implements the `org.occurrent.subscription.api.reactor.ReactorSubscription` interface which uses 
+All reactive subscriptions implements the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface which uses 
 components from [project reactor](https://projectreactor.io). This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
 {% capture java %}
@@ -1915,7 +1915,7 @@ public interface ReactorSubscription {
 It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
 the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
 for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `ReactorSubscription` implementation that also implement the 
-`org.occurrent.subscription.api.reactor.PositionAwareReactorSubscription` interface. The `PositionAwareReactorSubscription`  is an example of a `ReactorSubscription` that returns a wrapper around 
+`org.occurrent.subscription.api.reactor.PositionAwareSubscriptionModel` interface. The `PositionAwareReactorSubscription`  is an example of a `ReactorSubscription` that returns a wrapper around 
 `io.cloudevents.CloudEvent` called `org.occurrent.subscription.PositionAwareCloudEvent` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
 the current subscription position. You can check if a cloud event contains a subscription position by calling `PositionAwareCloudEvent.hasSubscriptionPosition(cloudEvent)`
 and then get the position by using `PositionAwareCloudEvent.getSubscriptionPositionOrThrowIAE(cloudEvent)`. 
@@ -1976,7 +1976,7 @@ available that suits your needs. If not, you can still have a look at them for i
 
 It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the subscription position
 provided by a [reactive subscription](#reactive-subscriptions) any way you like, Occurrent provides an interface
-called `org.occurrent.subscription.api.reactor.ReactorSubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `ReactorSubscriptionPositionStorage` 
+called `org.occurrent.subscription.api.reactor.SubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `ReactorSubscriptionPositionStorage` 
 is defined like this:
 
 ```java
@@ -2010,11 +2010,11 @@ These are the _non-durable_ [reactive subscription implementations](#reactive-su
 By "non-durable" we mean implementations that doesn't store the subscription position in a durable storage automatically.  
 It might be that the datastore does this automatically _or_ that [subscription position storage](#reactive-subscription-position-storage) is not required
 for your use case. If the datastore _doesn't_ support storing the subscription position automatically, a subscription will typically implement the
-`org.occurrent.subscription.api.reactor.PositionAwareReactorSubscription` interface (since these types of subscriptions doesn't need to be aware of the position).
-However you can do this anyway you like.
+`org.occurrent.subscription.api.reactor.PositionAwareSubscriptionModel` interface (since these types of subscriptions doesn't need to be aware of the position).
+However, you can do this anyway you like.
    
 Typically, if you want the stream to continue where it left off on application restart you want to store away the subscription position. You can do this anyway you like,
-but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.reactor.ReactorSubscriptionPositionStorage`. 
+but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.reactor.SubscriptionPositionStorage`. 
 These subscriptions can be combined with a [subscription position storage](#reactive-subscription-position-storage) implementation to store the position in a durable 
 datastore. 
 
