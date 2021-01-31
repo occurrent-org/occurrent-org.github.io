@@ -69,7 +69,7 @@ permalink: /documentation
 * * * [Implementations](#reactive-subscription-implementations)
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
 * * * * [Durable Subscriptions](#durable-subscriptions-reactive)
-* [Retry Config](#retry-configuration-blocking)
+* [Retry](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
 * [Blogs](#blogs)
