@@ -130,7 +130,8 @@ the current state.
 ## CloudEvents
 
 Cloud events is a [CNCF](https://www.cncf.io/) specification for describing event data in a common way. CloudEvents seeks to dramatically simplify event declaration and delivery across services, platforms, and beyond. 
-In Occurrent you don't persist your domain events directly to an event store, instead you convert them in a [cloud event](https://cloudevents.io/). You may regard a CloudEvent as a standardized envelope around your domain event. 
+In Occurrent, you don't persist your domain events directly to an event store, instead you convert them in a [cloud event](https://cloudevents.io/). You may regard a CloudEvent as a standardized envelope around the 
+data in your domain event. 
   
 In practice, this means that instead of storing events in a proprietary or arbitrary format, Occurrent, stores events in accordance with the cloud event specification, even at the data-store level. 
 I.e. you know the structure of your events, even in the database that the event store uses. It's up to you as a user of the library to [convert](#application-service-event-conversion) your domain events into cloud events when 
