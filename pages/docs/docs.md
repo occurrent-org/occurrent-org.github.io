@@ -1757,14 +1757,8 @@ Then create a new instance of `NativeMongoSubscriptionModel` and start subscribi
 There are a few things to note here that needs explaining. First we have the `TimeRepresentation.DATE` that is passed as the third constructor argument which you can read more about 
 [here](#mongodb-time-representation). Secondly we have the `Executors.newCachedThreadPool()`. A thread will be created from this executor for each call to 
 "subscribe" (i.e. for each subscription). Make sure that you have enough threads to cover all your subscriptions or the "SubscriptionModel" may hang.
-Last we have the `RetryStrategy` which defines what should happen if there's e.g. a connection issue during the life-time of a subscription or if subscription fails to process a cloud event
-(i.e. the `action` throws an exception). These retry strategies are available:
-
-| Name | Description |
-|:----|:----|
-| `none` | Don't retry! Instead the subscription will fail fast and not continue if there's an error. |     
-| `fixed` | Retry operation after a fixed number of milliseconds or `Duration`.  |     
-| `backoff` &nbsp;&nbsp;&nbsp; | Retry after with exponential backoff if an action throws an exception.  |     
+Last we have the [RetryStrategy](#retry-configuration-blocking) which defines what should happen if there's e.g. a connection issue during the life-time of a subscription or if subscription fails to process a cloud event
+(i.e. the `action` throws an exception). 
 
 Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [position persistence](#blocking-subscription-position-storage) for this subscription implementation. 
 
