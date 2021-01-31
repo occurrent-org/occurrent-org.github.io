@@ -2122,7 +2122,7 @@ retryStrategy.execute(Something::somethingThing);
 `RetryStrategy` is immutable, which means that you can safely do things like this:
 
 ```java
-RetryStrategy retryStrategy = RetryStrategy.fixed(200).maxAttempts(5);
+RetryStrategy retryStrategy = RetryStrategy.retry().fixed(200).maxAttempts(5);
 // Uses default 200 ms fixed delay
 retryStrategy.execute(() -> Something.something());
 // Use 600 ms fixed delay
