@@ -1739,7 +1739,7 @@ datastore.
 
 Occurrent provides a [utility](#durable-subscriptions-blocking) that combines a `PositionAwareSubscriptionModel` and 
 a `SubscriptionPositionStorage` (see [here](#blocking-subscription-position-storage)) to automatically store the subscription position   
-_after each processed event_. You can tweak how often the the position should be persisted in the configuration.
+_after each processed event_. You can tweak how often the position should be persisted in the configuration.
 
 #### Blocking Subscription using the "Native" Java MongoDB Driver
 
