@@ -1729,7 +1729,7 @@ These are the _non-durable_ [blocking subscription implementations](#blocking-su
 By "non-durable" we mean implementations that doesn't store the subscription position in a durable storage automatically.  
 It might be that the datastore does this automatically _or_ that [subscription position storage](#blocking-subscription-position-storage) is not required
 for your use case. If the datastore _doesn't_ support storing the subscription position automatically, a subscription will typically implement the
-`org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel` interface (since these types of subscriptions doesn't need to be aware of the position).
+`org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel` interface (since these types of subscriptions needs to be aware of the position).
 
    
 Typically, if you want the stream to continue where it left off on application restart you want to store away the subscription position. You can do this anyway you like,
