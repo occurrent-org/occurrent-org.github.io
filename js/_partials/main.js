@@ -67,6 +67,8 @@ if (document.location.pathname.includes("/documentation")) {
         "command-composition" : "0.2.0",
         "command-conversion" : "0.2.0",
         "subscription-dsl" : "0.5.0",
+        "subscription-life-cycle--testing-blocking" : "0.7.0",
+        "retry-configuration-blocking" : "0.7.0",
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",

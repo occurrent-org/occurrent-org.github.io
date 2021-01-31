@@ -61,6 +61,7 @@ permalink: /documentation
 * * * * [InMemory](#inmemory-subscription)
 * * * * [Durable Subscriptions](#durable-subscriptions-blocking)
 * * * * [Catch-up Subscription](#catch-up-subscription-blocking)
+* * * * [Life-cycle & Testing](#subscription-life-cycle--testing-blocking) 
 * * [Reactive](#reactive-subscriptions)
 * * * [Filters](#reactive-subscription-filters)
 * * * [Start Position](#reactive-subscription-start-position)
@@ -68,6 +69,7 @@ permalink: /documentation
 * * * [Implementations](#reactive-subscription-implementations)
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
 * * * * [Durable Subscriptions](#durable-subscriptions-reactive)
+* [Retry Config](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
 * [Blogs](#blogs)
@@ -1888,6 +1890,16 @@ switch. If the cache is too small, duplicate events will be sent to the continuo
 A `CatchupSubscriptionModel` can be configured to store the subscription position in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to 
 start replaying from the beginning again. Note that if you don't want subscription persistence during replay, you can disable this by doing `new CatchupSubscriptionModelConfig(dontUseSubscriptionPositionStorage())`.
 
+#### Subscription Life-cycle & Testing (Blocking)
+
+Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implements this). These subscription models supports canceling, pausing and  resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`).
+
+Note the difference between canceling and pausing a subscription. Canceling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
+pause the subscription, but it can later be resumed using the `resumeSubscription` method.
+
+Many of the methods in the `SubscriptionLifeCycle` are good to have when you write integration tests.
+It's often useful to e.g. write events to the event store _without_ triggering all subscriptions listening to the events. The life cycle methods allows you to selectively start/stop individual subscriptions so that you can (integration) test them in isolation.
+
 ## Reactive Subscriptions
 
 A "reactive subscription" is a subscription that uses non-blocking IO when reading events from the event store, i.e. reading changes from an [EventStore](#choosing-an-eventstore) 
@@ -2079,6 +2091,49 @@ Then we should instantiate a `PositionAwareSubscriptionModel`, that subscribes t
 that stores the subscription position, and combine them to a `ReactorDurableSubscriptionModel`: 
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
+           
+# Retry
+
+## Retry Configuration (Blocking)
+
+Occurrent contains a retry module that you can depend on using:
+
+{% include macros/retry/blocking/maven.md %}
+<div class="comment">Typically you don't need to depend on this module explicitly since many of Occurrent's components already uses this library under the hood and is thus depended on transitively.</div>
+
+Occurrent components that supports retry ([subscription model](#blocking-subscriptions) and [subscription position storage](#blocking-subscription-position-storage) implementations)
+typically accepts an instance of `org.occurrent.retry.RetryStrategy` to their constructors. This allows you to configure how they should do retry. You can configure max attempts, 
+a retry predicate, error listener as well as the backoff strategy. Here's an example:
+  
+```java
+RetryStrategy retryStrategy = RetryStrategy
+                                  .exponentialBackoff(Duration.ofMillis(50), Duration.ofMillis(200), 2.0)
+                                 .retryIf(throwable -> throwable instanceof OptimisticLockingException)
+                                 .maxAttempts(5)
+                                 .onError((info, throwable) -> log.warn("Caught exception {}, will retry in {} millis")), throwable.class.getSimpleName(), info.getDuration().toMillis()));
+```
+
+You can also use a `RetryStrategy` instance to call methods that you want to be retried on exception by using the `execute` method:
+
+```java
+RetryStrategy retryStrategy = ..
+// Retry the method if it throws an exception
+retryStrategy.execute(Something::somethingThing);
+```
+ 
+`RetryStrategy` is immutable, which means that you can safely do things like this:
+
+```java
+RetryStrategy retryStrategy = RetryStrategy.fixed(200).maxAttempts(5);
+// Uses default 200 ms fixed delay
+retryStrategy.execute(() -> Something.something());
+// Use 600 ms fixed delay
+retryStrategy.backoff(fixed(600)).execute(() -> SomethingElse.somethingElse());
+// 200 ms fixed delay again
+retryStrategy.execute(() -> Thing.thing());
+```
+ 
+You can also disable retries by calling `RetryStartegy.none()`.
 
 # DSL's
 
