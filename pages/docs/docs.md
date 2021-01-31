@@ -1720,6 +1720,7 @@ These are the _non-durable_ [blocking subscription implementations](#blocking-su
 
 * [Blocking subscription using the "native" Java MongoDB driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * [Blocking subscription using Spring MongoTemplate](#blocking-subscription-using-spring-mongotemplate)
+* [In-Memory subscription](#inmemory-subscription)
 {% include macros/subscription/common/mongodb/oplog_warning.md %}
 
 By "non-durable" we mean implementations that doesn't store the subscription position in a durable storage automatically.  
