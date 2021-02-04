@@ -2,7 +2,7 @@
 layout: news
 category: news
 date: 2020-11-29
-version: -
+version: 0.3.0
 title: Improved CloudEvent documentation 
 summary: Improved CloudEvent documentation 
 ---
