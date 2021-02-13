@@ -1774,10 +1774,10 @@ First include the following dependency:
 
 {% include macros/subscription/blocking/mongodb/spring/impl/maven.md %}
 
-Then create a new instance of `SpringNativeMongoSubscriptionModel` and start subscribing:
+Then create a new instance of `SpringMongoSubscriptionModel` and start subscribing:
 
 {% include macros/subscription/blocking/mongodb/spring/impl/example.md %}
-<div class="comment">SpringNativeMongoSubscriptionModel can be imported from the "org.occurrent.subscription.mongodb.spring.blocking" package.</div>
+<div class="comment">SpringMongoSubscriptionModel can be imported from the "org.occurrent.subscription.mongodb.spring.blocking" package.</div>
 
 The "eventCollectionName" specifies the event collection in MongoDB where events are stored. It's important that this collection is the same as the collection
 used by the `EventStore` implementation. Secondly, we have the `TimeRepresentation.RFC_3339_STRING` that is passed as the third constructor argument, which you can read more about 
@@ -1785,9 +1785,11 @@ used by the `EventStore` implementation. Secondly, we have the `TimeRepresentati
 
 It should also be noted that Spring takes care of re-attaching to MongoDB if there's a connection issue or other transient errors. This can be configured when creating the `MongoTemplate` instance. 
 
-When it comes to retries, if the "action" fails (i.e. if the higher-order function you provide when calling `subscribe` throws an exception), Occurrent doesn't provide retries out of the box.
-This is most likely something you want to add, and since you're using Spring you probably want to look into [Spring Retry](https://github.com/spring-projects/spring-retry). For example
-consider that you have a simple Spring bean that writes each cloud event to a repository:
+When it comes to retries, if the "action" fails (i.e. if the higher-order function you provide when calling `subscribe` throws an exception), either using something like [Spring Retry](https://github.com/spring-projects/spring-retry)
+or the [Occurrent Retry Module](#retry-configuration-blocking). By default, all subscription models will use the Occurrent retry module with exponential backoff starting with 100 ms and progressively
+ go up to max 2 seconds wait time between each retry when reading/saving/deleting the subscription position. You can customize this by passing an instance of `RetryStrategy` to the `SpringMongoSubscriptionModel` constructor.  
+
+If you want to disable the Occurrent retry module, pass `RetryStrategy.none()` to the `SpringMongoSubscriptionModel` constructor and then handle retries anyway you find fit. For example, let's say you want to use `spring-retry`, and you have a simple Spring bean that writes each cloud event to a repository:
 
 ```java
 @Component
@@ -1834,6 +1836,20 @@ public class WriteToRepository {
 Don't forget to add `@EnableRetry` in to your Spring Boot application as well.
 
 Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [position persistence](#blocking-subscription-position-storage) for this subscription implementation.
+
+##### Restart Subscription when Oplog Lost 
+
+If there's not enough history available in the MongoDB oplog to resume a subscription created from a `SpringMongoSubscriptionModel`, you can configure it to restart the subscription from the current 
+time automatically. This is only of concern when an application is restarted, and the subscriptions are configured to start from a position in the oplog that is no longer available. It's disabled by default since it might not 
+be 100% safe (meaning that you can miss some events when the subscription is restarted). It's not 100% safe if you run subscriptions in a different process than the event store _and_ you have lot's of 
+writes happening to the event store. It's safe if you run the subscription in the same process as the writes to the event store _if_ you make sure that the
+subscription is started _before_ you accept writes to the event store on startup. To enable automatic restart, you can do like this:
+  
+```java
+var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, SpringSubscriptionModelConfig.withConfig("events", TimeRepresentation.RFC_3339_STRING).restartSubscriptionsOnChangeStreamHistoryLost(true));
+```
+
+An alternative approach to restarting automatically is to use a [catch-up subscription](#catch-up-subscription-blocking) and restart the subscription from an earlier date.
 
 #### InMemory Subscription
 
