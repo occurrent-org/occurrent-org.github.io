@@ -438,29 +438,29 @@ that an EventStore implementation may implement to expose querying capabilities.
 {% capture java %}
 OffsetDateTime lastTwoHours = OffsetDateTime.now().minusHours(2); 
 // Query the database for all events the last two hours that have "subject" equal to "123" and sort these in descending order
-Stream<CloudEvent> events = eventStore.query(time(gte(lastTwoHours)).and(subject("123")), SortBy.TIME_DESC);
+Stream<CloudEvent> events = eventStore.query(subject("123").and(time(gte(lastTwoHours))), SortBy.time(DESCENDING));
 {% endcapture %}
 {% capture kotlin %}
 val lastTwoHours = OffsetDateTime.now().minusHours(2);
 // Query the database for all events the last two hours that have "subject" equal to "123" and sort these in descending order
-val events : Stream<CloudEvent> = eventStore.query(time(gte(lastTwoHours)).and(subject("123")), SortBy.TIME_DESC)
+val events : Stream<CloudEvent> = eventStore.query(subject("123").and(time(gte(lastTwoHours))), SortBy.time(DESCENDING))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 <div class="comment"><span>&#42;</span>There's a trade-off when it's appropriate to query the database vs creating materialized views/projections and you should most likely create indexes to allow for fast queries.</div>
 
-The `time` and `subject`  methods are statically imported from `org.occurrent.filter.Filter` and `lte` is statically imported from `org.occurrent.condition.Condition`.  
+The `subject` and `time` methods are statically imported from `org.occurrent.filter.Filter` and `lte` is statically imported from `org.occurrent.condition.Condition`.  
 
 `EventStoreQueries` is not bound to a particular stream, rather you can query _any_ stream (or multiple streams at the same time). 
 It also provides the ability to get an "all" stream:
   
 {% capture java %}
 // Return all events in an event store sorted by descending order
-Stream<CloudEvent> events = eventStore.all(SortBy.TIME_DESC);
+Stream<CloudEvent> events = eventStore.all(SortBy.time(DESCENDING));
 {% endcapture %}
 {% capture kotlin %}
 // Return all events in an event store sorted by descending order
-val events : Stream<CloudEvent> = eventStore.all(SortBy.TIME_DESC)
+val events : Stream<CloudEvent> = eventStore.all(SortBy.time(DESCENDING))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}    
 
@@ -1886,7 +1886,7 @@ that stores the subscription position, and combine them to a `DurableSubscriptio
 #### Catch-up Subscription (Blocking)
 
 When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events
-as the arrive. A catch-up subscription allows for exactly this! It combines the [EventStoreQueries](#eventstore-queries) API with a 
+as they arrive. A catch-up subscription allows for exactly this! It combines the [EventStoreQueries](#eventstore-queries) API with a 
 [subscription](#blocking-subscriptions) and an optional [subscription storage](#blocking-subscription-position-storage). It starts off by streaming
 historic events from the event store and then automatically switch to continuous streaming mode once the historic events have caught up.
 
@@ -1899,13 +1899,24 @@ For example:
 {% include macros/subscription/blocking/util/catchup/example.md %}
 
 A `CatchupSubscriptionModel` maintains an in-memory cache of event ids. The size of this cache is configurable using a `CatchupSubscriptionModelConfig` but it defaults to 100.
-The purpose of the cache is to reduce the likely hood of duplicate events when switching from replay mode to continuous mode. Otherwise, there would be a chance
+The purpose of the cache is to reduce the likelyhood of duplicate events when switching from replay mode to continuous mode. Otherwise, there would be a chance
 that event written _exactly_ when the switch from replay mode to continuous mode takes places, can be lost. To prevent this, the continuous mode subscription 
 starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the 
 switch. If the cache is too small, duplicate events will be sent to the continuous subscription. Typically, you want your application to be idempotent anyways and if so this shouldn't be a problem.        
 
 A `CatchupSubscriptionModel` can be configured to store the subscription position in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to 
 start replaying from the beginning again. Note that if you don't want subscription persistence during replay, you can disable this by doing `new CatchupSubscriptionModelConfig(dontUseSubscriptionPositionStorage())`.
+
+It's also possible to change how the `CatchupSubscriptionModel` sorts events read from the event store during catch-up phase. For example:
+  
+```java
+var subscriptionModel = ...
+var eventStore = ..
+var cfg = new CatchupSubscriptionModelConfig(100).catchupPhaseSortBy(SortBy.descending(TIME));
+var catchupSubscriptionModel = CatchupSubscriptionModel(subscriptionModel, eventStore, cfg);  
+```
+
+By default, events are sorted by time and then stream version (if two or more events have the same time).
 
 #### Subscription Life-cycle & Testing (Blocking)
 
