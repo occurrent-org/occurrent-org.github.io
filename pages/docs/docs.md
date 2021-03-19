@@ -1936,7 +1936,8 @@ The `CompetingConsumerStrategy` implementation in this module is called `NativeM
 
 {% include macros/subscription/blocking/util/competingconsumer/maven-strategy-spring.md %}
 
-The `CompetingConsumerStrategy` implementation in this module is called `SpringMongoLeaseCompetingConsumerStrategy` and it's using the `MongoTemplate` from the Spring ecosystem.
+The `CompetingConsumerStrategy` implementation in this module is called `SpringMongoLeaseCompetingConsumerStrategy` and it's using the `MongoTemplate` from the Spring ecosystem. Both of these strategies are heavily inspired by the awesome work
+of [Alec Henninger](https://github.com/alechenninger). To understand how these strategies work under the hood, refer to his [blog post](https://www.alechenninger.com/2020/05/building-kafka-like-message-queue-with.html).  
 
 Just like several other subscription models, the `CompetingConsumerSubscriptionModel` wraps another subscription model and decorates it with additional functionality, in this case to add competing consumer support to it. 
 Below is an example that uses `NativeMongoLeaseCompetingConsumerStrategy` from module `org.occurrent:subscription-mongodb-native-blocking-competing-consumer-strategy` with a [DurableSubscriptionModel](#durable-subscriptions-blocking) 
@@ -2262,4 +2263,5 @@ The [mailing-list](https://groups.google.com/g/occurrent) can also be used for s
 # Credits
 
 Thanks to [Per Ökvist](https://github.com/perokvist) for discussions and ideas, and [David Åse](https://www.linkedin.com/in/davidaase/) for letting me fork 
-the awesome [javalin](https://javalin.io/) website. 
+the awesome [Javalin](https://javalin.io/) website. Credits should also go to [Alec Henninger](https://github.com/alechenninger) for his work on [competing consumer support](https://www.alechenninger.com/2020/05/building-kafka-like-message-queue-with.html)
+in for MongoDB changestreams. 
