@@ -1,5 +1,5 @@
 {% capture java %}
-MongoTemplate mongoTemplate = mongoClient.getDatabase("some-database");
+MongoDatabase database = mongoClient.getDatabase("some-database");
 // Create the blocking subscription
 SubscriptionModel subscriptionModel = new NativeMongoSubscriptionModel(database, "eventCollection", TimeRepresentation.DATE, Executors.newCachedThreadPool(), RetryStrategy.retry().fixed(200));
 

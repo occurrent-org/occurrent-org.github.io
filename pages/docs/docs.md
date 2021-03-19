@@ -61,6 +61,7 @@ permalink: /documentation
 * * * * [InMemory](#inmemory-subscription)
 * * * * [Durable Subscriptions](#durable-subscriptions-blocking)
 * * * * [Catch-up Subscription](#catch-up-subscription-blocking)
+* * * * [Competing Consumer Subscription](#competing-consumer-subscription-blocking)
 * * * * [Life-cycle & Testing](#subscription-life-cycle--testing-blocking) 
 * * [Reactive](#reactive-subscriptions)
 * * * [Filters](#reactive-subscription-filters)
@@ -1674,7 +1675,7 @@ and only pick a more specific implementation if you cannot express your filter u
 ### Blocking Subscription Start Position
 
 A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
-`org.occurrent.subscription.StartAt` instance. It provides two ways to specify the start position, either by using `StartAt.now()` (default if `StartAt` is not defined when 
+`org.occurrent.subscription.StartAt` instance. It provides several ways to specify the start position, either by using `StartAt.now()`, `StartAt.subscriptionModelDefault()` (default if `StartAt` is not defined when 
 calling the `subscribe` function), or `StartAt.subscriptionPosition(<subscriptionPosition>)`, where `<subscriptionPosition>` is a datastore-specific 
 implementation of the `org.occurrent.subscription.SubscriptionPosition` interface which provides the start position as a `String`. You may want to store the 
 `String` returned by a `SubscriptionPosition` in a database so that it's possible to resume a subscription from the last processed position on application restart.
@@ -1918,6 +1919,36 @@ var catchupSubscriptionModel = CatchupSubscriptionModel(subscriptionModel, event
 
 By default, events are sorted by time and then stream version (if two or more events have the same time).
 
+
+#### Competing Consumer Subscription (Blocking)
+
+A competing consumer subscription model wraps another subscription model to allow several subscribers to subscribe to the same subscription. One of the subscribes will get a lock of the subscription
+and receive events from it, the others will be in standby. If a subscriber looses its lock, another subscriber will take over automatically. To achieve distributed locking, the subscription model uses a `org.occurrent.subscription.api.blocking.CompetingConsumerStrategy` to
+support different algorithms. You can write custom algorithms by implementing this interface yourself. To use it, first depend on the `CompetingConsumerSubscriptionModel`:
+
+{% include macros/subscription/blocking/util/competingconsumer/maven.md %}
+                                                                          
+A `CompetingConsumerSubscriptionModel` takes a `CompetingConsumerStrategy` as second parameter. There are currently two different implementations, both are based on MongoDB. Use the following if you're using the native Java MongoDB driver (i.e. you're _not_ using Spring):
+
+{% include macros/subscription/blocking/util/competingconsumer/maven-strategy-native.md %}
+
+The `CompetingConsumerStrategy` implementation in this module is called `NativeMongoLeaseCompetingConsumerStrategy`. If you're using Spring, depend on this module instead:
+
+{% include macros/subscription/blocking/util/competingconsumer/maven-strategy-spring.md %}
+
+The `CompetingConsumerStrategy` implementation in this module is called `SpringMongoLeaseCompetingConsumerStrategy` and it's using the `MongoTemplate` from the Spring ecosystem.
+
+Just like several other subscription models, the `CompetingConsumerSubscriptionModel` wraps another subscription model and decorates it with additional functionality, in this case to add competing consumer support to it. 
+Below is an example that uses `NativeMongoLeaseCompetingConsumerStrategy` from module `org.occurrent:subscription-mongodb-native-blocking-competing-consumer-strategy` with a [DurableSubscriptionModel](#durable-subscriptions-blocking) 
+which in turn wraps the [Native MongoDB](#blocking-subscription-using-the-native-java-mongodb-driver) subscription model.
+
+{% include macros/subscription/blocking/util/competingconsumer/example.md %}
+
+If the above code is executed on multiple nodes/processes, then only *one* subscriber will receive events.
+
+Note that you can make several tweaks to the `CompetingConsumerStrategy` using the `Builder`, (`new NativeMongoLeaseCompetingConsumerStrategy.Builder()` or `new SpringMongoLeaseCompetingConsumerStrategy.Builder()`). 
+You can, for example, tweak how long the lease time should be for the lock (default is 20 seconds), the name of lease collection in MongoDB, as well as the retry strategy and other things. 
+
 #### Subscription Life-cycle & Testing (Blocking)
 
 Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implements this). These subscription models supports canceling, pausing and  resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`).
@@ -2020,7 +2051,7 @@ and only pick a more specific implementation if you cannot express your filter u
 ### Reactive Subscription Start Position
 
 A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
-`org.occurrent.subscription.StartAt` instance. It provides two ways to specify the start position, either by using `StartAt.now()` (default if `StartAt` is not defined when 
+`org.occurrent.subscription.StartAt` instance. It provides several ways to specify the start position, either by using `StartAt.now()`, `StartAt.subscriptionModelDefault()` (default if `StartAt` is not defined when 
 calling the `subscribe` function), or `StartAt.subscriptionPosition(<subscriptionPosition>)`, where `<subscriptionPosition>` is a datastore-specific 
 implementation of the `org.occurrent.subscription.SubscriptionPosition` interface which provides the start position as a `String`. You may want to store the 
 `String` returned by a `SubscriptionPosition` in a database so that it's possible to resume a subscription from the last processed position on application restart.

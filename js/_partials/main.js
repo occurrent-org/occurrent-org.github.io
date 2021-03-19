@@ -69,6 +69,7 @@ if (document.location.pathname.includes("/documentation")) {
         "subscription-dsl" : "0.5.0",
         "subscription-life-cycle--testing-blocking" : "0.7.0",
         "retry-configuration-blocking" : "0.7.0",
+        "competing-consumer-subscription-blocking" : "0.9.0",
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
