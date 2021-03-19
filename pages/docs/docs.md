@@ -1924,7 +1924,7 @@ By default, events are sorted by time and then stream version (if two or more ev
 
 A competing consumer subscription model wraps another subscription model to allow several subscribers to subscribe to the same subscription. One of the subscribes will get a lock of the subscription
 and receive events from it, the others will be in standby. If a subscriber looses its lock, another subscriber will take over automatically. To achieve distributed locking, the subscription model uses a `org.occurrent.subscription.api.blocking.CompetingConsumerStrategy` to
-support different algorithms. You can write custom algorithms by implementing this interface yourself. To use it, first depend on the `CompetingConsumerSubscriptionModel`:
+support different algorithms. You can write custom algorithms by implementing this interface yourself. But to use it, first depend on the `CompetingConsumerSubscriptionModel`:
 
 {% include macros/subscription/blocking/util/competingconsumer/maven.md %}
                                                                           
