@@ -1343,7 +1343,7 @@ Note that MongoDB will automatically add an [\_id](https://docs.mongodb.com/manu
 The reason why the CloudEvent `id` attribute is not stored as `_id` in MongoDB is that the `id` of a CloudEvent is not globally unique! 
 The combination of `id` and `source` is a globally unique CloudEvent. Note also that `_id` will _not_ be included when the `CloudEvent` is read from an `EventStore`.    
 
-Here's an example of what you can expect to see the "events" collection when storing events in an `EventStore` backed by MongoDB
+Here's an example of what you can expect to see in the "events" collection when storing events in an `EventStore` backed by MongoDB
 (given that `TimeRepresentation` is set to `DATE`):
 
 ```javascript
@@ -1361,7 +1361,7 @@ Here's an example of what you can expect to see the "events" collection when sto
 		"maxNumberOfGuesses" : 5
 	},
 	"streamid" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
-	"streamversion : NumberLong(1)
+	"streamversion" : NumberLong(1)
 }
 {
 	"_id" : ObjectId("5f4112a548b8da5305e41f58"),
@@ -1376,7 +1376,7 @@ Here's an example of what you can expect to see the "events" collection when sto
 		"playerId" : "003ab97b-df79-4bf1-8c0c-08a5dd3701cf"
 	},
 	"streamid" : "a1fc6ba1-7cd4-45cf-8dcc-b357fe23956d",
-	"streamversion : NumberLong(2)
+	"streamversion" : NumberLong(2)
 }
 ``` 
 
