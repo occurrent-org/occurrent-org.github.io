@@ -1312,7 +1312,11 @@ Getting started with Occurrent involves these steps:
    Again, there may be several implementations to choose from.
 1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called "position storage" library. 
    These libraries provide means to automatically (or selectively) store the position for a subscriber to a datastore. Note that the datastore that stores this position
-   can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store subscription positions in Redis. 
+   can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store subscription positions in Redis.
+1. You're now go to go, but you may also want to look into more higher-level components if you don't have the need to role your own. We recommend looking into:
+    * [Application Service](#application-service)
+    * [Subscription DSL](#subscription-dsl)
+    * [Retry Component](#retry)
 
 # Choosing An EventStore
 
