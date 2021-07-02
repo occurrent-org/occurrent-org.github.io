@@ -1304,7 +1304,7 @@ Occurrent doesn't currently have any built-in support for this (but a small wrap
 # Getting started
 
 Getting started with Occurrent involves these steps:
-<div class="comment">It's recommended to read up on <a href="https://cloudevents.io/">CloudEvent's</a> and its <a href="https://github.com/cloudevents/spec/blob/v1.0/spec.md">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
+<div class="comment">It's recommended to read up on <a href="https://occurrent.org/documentation#cloudevents">CloudEvent's</a> and its <a href="https://github.com/cloudevents/spec/blob/v1.0/spec.md">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
 
 1. Choose an underlying datastore for an [event store](#choosing-an-eventstore). Luckily there are only two choices at the moment, MongoDB and an in-memory implementation. Hopefully this will be a more difficult decision in the future :)
 1. Once a datastore has been decided it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
