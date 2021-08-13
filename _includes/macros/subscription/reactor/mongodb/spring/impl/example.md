@@ -1,7 +1,7 @@
 {% capture java %}
 ReactiveMongoTemplate reactiveMongoTemplate = ...
 // Create the blocking subscription
-SubscriptionModel subscriptionModel = new ReactorMongoSubscription(reactiveMongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING);
+SubscriptionModel subscriptionModel = new ReactorMongoSubscriptionModel(reactiveMongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING);
 
 // Now you can create subscriptions instances that subscribes to new events as they're written to an EventStore
 // Typically you do this after the Spring application context has finished loading. For example by subscribing to 
@@ -15,7 +15,7 @@ subscriptionModel.cancelSubscription("mySubscriptionId");
 {% capture kotlin %}
 val reactiveMongoTemplate : ReactiveMongoTemplate = ... 
 // Create the blocking subscription
-val subscriptionModel = ReactorMongoSubscription(reactiveMongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING)
+val subscriptionModel = ReactorMongoSubscriptionModel(reactiveMongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING)
 
 // Now you can create subscriptions instances that subscribes to new events as they're written to an EventStore
 subscriptionModel.subscribe("mySubscriptionId").flatMap { cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent) }.subscribe()
