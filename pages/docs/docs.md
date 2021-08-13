@@ -715,7 +715,7 @@ From a typical Java perspective one could argue that this is not too bad. But it
 ### Commands in Occurrent 
 
 So how would one dispatch commands in Occurrent? As we've already mentioned there's nothing stopping you from using a distributed command bus or to create explicit commands, 
-and dispatch them the way we did in the example above. But if you've recognized the points described above and are looking for a more simple approach, here's another
+and dispatch them the way we did in the example above. But if you recognize some of the points described above and are looking for a more simple approach, here's another
 way to go about. First let's refactor the domain model to pure functions, without any state or dependencies to Occurrent or any other library/framework. 
 
 {% include macros/domain/wordGuessingGameDomainEvents.md java=java kotlin=kotlin %}
