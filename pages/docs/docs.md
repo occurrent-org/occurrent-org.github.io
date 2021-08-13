@@ -570,7 +570,7 @@ While this is a trivial example it shouldn't be difficult to create a view that 
 
 ## Commands
 
-A command is used to represent an _intention_ in an event sourced system, i.e. something that you _want_ to do. They're different, in a very important way, from events in that commands 
+A command is used to represent an _intent_ in an event sourced system, i.e. something that you _want_ to do. They're different, in a very important way, from events in that commands 
 can fail or be rejected, where-as events cannot. A typical example of a command would be a data structure whose name is defined as an imperative verb, for example `PlaceOrder`. 
 The resulting event, if the command is processed successfully, could then be `OrderPlaced`. However, in Occurrent, as explained in more detail in the [Command Philosophy](#command-philosophy)
 section below, you may start off by not using explicit data structures for commands unless you want to. In Occurrent, you can instead use pure functions 
