@@ -854,6 +854,14 @@ a `org.occurrent.application.converter.CloudEventConverter` implementation as pa
 cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
 `org.occurrent.application.converter.implementation.GenericCloudEventConverter`. You can see an example in the [next](#application-service-event-conversion) section.
 
+As of version 0.11.0, the `GenericApplicationService` also takes a [RetryStrategy](#retry) as an optional third parameter.  
+By default, the retry strategy uses exponential backoff starting with 100 ms and progressively go up to max 2 seconds wait time between
+each retry, if a `WriteConditionNotFulfilledException` is caught (see [write condition](#write-condition) docs). 
+It will, again by default, only retry 5 times before giving up, rethrowing the original exception. You can override the default strategy
+by calling `new GenericApplicationService(eventStore, cloudEventConverter, retryStrategy)`. 
+Use `new GenericApplicationService(eventStore, cloudEventConverter, RetryStrategy.none())` to disable retry. This is also useful if you 
+want to use another retry library.
+
 ### Application Service Event Conversion
 
 Let's have a look at an example of how we can convert our to domain events to cloud events (and vice versa) when using the [generic application service](#application-service) (the application service implementation provided by Occurrent). 
@@ -2201,6 +2209,15 @@ retryStrategy.execute(() -> Thing.thing());
 ```
  
 You can also disable retries by calling `RetryStartegy.none()`.
+
+As of version 0.11.0 you can also use the `mapRetryPredicate` function easily allows you to map the current retry predicate into a new one. This is useful if you e.g. want to add a predicate to the existing predicate. For example:
+
+```java
+// Let's say you have a retry strategy:
+Retry retry = RetryStrategy.exponentialBackoff(Duration.ofMillis(100), Duration.ofSeconds(2), 2.0f).maxAttempts(5).retryIf(WriteConditionNotFulfilledException.class::isInstance);
+// Now you also want to retry if an IllegalArgumentException is thrown:
+retry.mapRetryPredicate(currentRetryPredicate -> currentRetryPredicate.or(IllegalArgument.class::isInstance))
+```
 
 # DSL's
 
