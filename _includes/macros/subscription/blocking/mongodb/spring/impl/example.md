@@ -1,7 +1,7 @@
 {% capture java %}
 MongoTemplate mongoTemplate = ...
 // Create the blocking subscription
-SubscriptionModel subscriptionModel = new SpringMongoSubscription(mongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING);
+SubscriptionModel subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING);
 
 // Now you can create subscriptions instances that subscribes to new events as they're written to an EventStore
 // Typically you do this after the Spring application context has finished loading. For example by subscribing to 
@@ -15,7 +15,7 @@ subscriptionModel.cancelSubscription("mySubscriptionId");
 {% capture kotlin %}
 val mongoTemplate : MongoTemplate = ... 
 // Create the blocking subscription
-val subscriptionModel = SpringMongoSubscription(mongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING)
+val subscriptionModel = SpringMongoSubscriptionModel(mongoTemplate, "eventCollectionName", TimeRepresentation.RFC_3339_STRING)
 
 // Now you can create subscriptions instances that subscribes to new events as they're written to an EventStore
 subscriptionModel.subscribe("mySubscriptionId") { cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent) }
