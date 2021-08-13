@@ -724,7 +724,8 @@ If you define your behavior like this it'll be easy to test (and also to compose
 (such as publishing events) which also allows for easier testing and [local reasoning](https://www.inner-product.com/posts/fp-what-and-why/).
 
 But where are our commands!? In this example we've decided to represent them as functions. I.e. the "command" is modeled as simple function, e.g. `startNewGame`!
-Again, you may prefer to actually define your commands explicitly, but in this example we'll be using just normal functions.
+This means that the command handling logic is handled by function as well. You don't need to switch/match over the command since you directly invoke the function itself.
+Again, you may prefer to actually define your commands explicitly, but in this example we'll just be using normal functions.
 But wait, how are these functions called? Create or copy a generic `ApplicationService` class like the one below 
 (or use the generic [application service](#application-service) provided by Occurrent):         
 
