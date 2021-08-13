@@ -570,17 +570,19 @@ While this is a trivial example it shouldn't be difficult to create a view that 
 
 ## Commands
 
-A command is used to represent an _action_ in an event sourced system, i.e. something that you _want_ to do. They're different, in a very important way, from events in that commands 
+A command is used to represent an _intention_ in an event sourced system, i.e. something that you _want_ to do. They're different, in a very important way, from events in that commands 
 can fail or be rejected, where-as events cannot. A typical example of a command would be a data structure whose name is defined as an imperative verb, for example `PlaceOrder`. 
-The resulting event, if the command is processed successfully, could then be `OrderWasPlaced`. However, in Occurrent, as explained in more detail in the [Command Philosophy](#command-philosophy)
-section below, you are encouraged to start off by not using explicit data structures for commands unless you want to. Occurrent instead promotes pure functions 
+The resulting event, if the command is processed successfully, could then be `OrderPlaced`. However, in Occurrent, as explained in more detail in the [Command Philosophy](#command-philosophy)
+section below, you may start off by not using explicit data structures for commands unless you want to. In Occurrent, you can instead use pure functions 
 to represent commands. Combine this with function composition and you have a powerful way to invoke the domain model (refer to the [application service](#application-service) for examples).           
 
 ### Command Philosophy
 
-Occurrent doesn't contain a built-in command bus. The reason for this is that I'm not convinced that it's needed in a majority of cases.
-To send "commands" to another service (remotely) one could call a REST API or make an RPC invocation instead of using a proprietary command bus. 
-One exception to this is if you need [location transparency](https://en.wikipedia.org/wiki/Location_transparency).    
+Occurrent doesn't contain a built-in command bus. Instead, you're encouraged to pick any infrastructure component you need to act as the command bus to 
+send commands to another service. Personally, I typically make a call to a REST API or make an RPC invocation instead of using a distributed command bus
+that routes the commands to my aggregate. One exception to this is if you need [location transparency](https://en.wikipedia.org/wiki/Location_transparency).
+In such cases a command bus or an actor model can be of help. But I would argue that you add quite a lot of complexity by prematurely going down this route
+if your business requirements doesn't point you in this direction. 
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
 routed to a function in your domain model. This is where an [application service](#application-service) becomes useful. However, let's first explore the 
@@ -701,28 +703,30 @@ commandbus.dispatch(StartNewGameCommand("someGameId", "Secret word"))
 From a typical Java perspective one could argue that this is not too bad. But it does have a few things one could improve upon from a broader perspective:
 
 1. The `WordGuessingGame` is [complecting](https://www.infoq.com/presentations/Simple-Made-Easy/) several things that may be modelled separately. 
-   Data, state, behavior, command- and event routing and event publishing are all defined in the same model (the `WordGuessingGame` class).
+   Data, state, behavior, command- and event routing and event publishing are all defined in the same model (the `WordGuessingGame` class). 
    It also uses framework specific annotations, classes and inheritance inside your domain model which is something you want to avoid. 
    For small examples like this it arguably doesn't matter, but if you have complex logic and a large system, it probably will in my experience. 
    Keeping state and behavior separate allows for easier testing, referential transparency and function composition. 
    It allows treating the state as a [value](https://www.infoq.com/presentations/Value-Values/) which has many benefits.
-1. Commands are defined as explicit data structures (this is not _necessarily_ a bad thing but it will add to your code base) when arguably they don't have to. 
+2. Commands are defined as explicit data structures with framework-specific annotations when arguably they don't have to. This is fine if you need to serialize the command (in order to send it
+   to another location or to schedule it for the future) but one could argue that you don't want to couple your commands to some infrastructure.
+   This is of course a trade-off, in Occurrent you're free to choose any approach you like (i.e. commands/functions can completely free of framework/library/infrastructure concerns). 
 
 ### Commands in Occurrent 
 
-So how would one dispatch commands in Occurrent? There's actually nothing stopping you from implementation a simple command bus, create explicit commands, 
-and dispatch them the way we did in the example above. Actually it would be relatively easy to implement the imaginary framework above using Occurrent components. But if
-you've recognized the problems described above you're probably looking for a different approach. Here's another way you can do it. First of all let's refactor 
-our domain model to pure functions, without any state or dependencies to Occurrent or any other library/framework. 
+So how would one dispatch commands in Occurrent? As we've already mentioned there's nothing stopping you from using a distributed command bus or to create explicit commands, 
+and dispatch them the way we did in the example above. But if you've recognized the points described above and are looking for a more simple approach, here's another
+way to go about. First let's refactor the domain model to pure functions, without any state or dependencies to Occurrent or any other library/framework. 
 
 {% include macros/domain/wordGuessingGameDomainEvents.md java=java kotlin=kotlin %}
 
-If you define your behavior like this it'll be really easy to test (and also to compose using normal function composition techniques). There are no side-effects 
+If you define your behavior like this it'll be easy to test (and also to compose using normal function composition techniques). There are no side-effects 
 (such as publishing events) which also allows for easier testing and [local reasoning](https://www.inner-product.com/posts/fp-what-and-why/).
 
 But where are our commands!? In this example we've decided to represent them as functions. I.e. the "command" is modeled as simple function, e.g. `startNewGame`!
-But wait, how can I dispatch commands to this function? Just create or copy a generic `ApplicationService` class like the one below 
-(or use the generic [application service](#application-service) provided by Occurrent) if you're using an object-oriented approach:         
+Again, you may prefer to actually define your commands explicitly, but in this example we'll be using just normal functions.
+But wait, how are these functions called? Create or copy a generic `ApplicationService` class like the one below 
+(or use the generic [application service](#application-service) provided by Occurrent):         
 
 {% include macros/applicationservice/generic-oo-application-service.md %}
 
@@ -757,10 +761,12 @@ applicationService.execute(gameId) { events ->
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+            
+We're leveraging higher-order functions instead of using explicit commands.
 
 ### Command Composition
 
-Many times it's useful to compose multiple commands into a single unit-of-work. What this means that you'll "merge" several commands into one, and they will be executed in an atomic fashion. 
+Many times it's useful to compose multiple commands into a single unit-of-work for the same stream/aggregate. What this means that you'll "merge" several commands into one, and they will be executed in an atomic fashion. 
 I.e. either _all_ commands succeed, or all commands fail.
 
 While you're free to use any means and/or library to achieve this, Occurrent ships with a "command composition" library that you can leverage:
@@ -797,7 +803,7 @@ you can refactor the code above into this:
 
 {% include macros/command/composition-example-partial.md %}
 <div class="comment">If you're using commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "partial"
-from "org.occurrent.application.composition.command.partial.PartialListCommandApplication". If you're using Kotlin, imporant the "partial" extension function
+from "org.occurrent.application.composition.command.partial.PartialListCommandApplication". If you're using Kotlin, important the "partial" extension function
 from "org.occurrent.application.composition.command.partial".</div>
 
 With Kotlin, you can also use `andThen` (described above) to do:
