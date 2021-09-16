@@ -487,7 +487,7 @@ represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` i
 represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:subscription-api-reactor` module). 
 
 
-The blocking API is callback based, which is fine if you're working with individual events (you can of course write a simple function that aggregates events into batches).
+The blocking API is callback based, which is fine if you're working with individual events (you can of course a simple function that aggregates events into batches yourself).
 If you want to work with streams of data, the reactor `SubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
 publisher from [project reactor](https://projectreactor.io/).
 
