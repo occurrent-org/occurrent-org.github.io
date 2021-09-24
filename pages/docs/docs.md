@@ -24,6 +24,11 @@ permalink: /documentation
 * * * [In Occurrent](#commands-in-occurrent)
 * * * [Composition](#command-composition)
 * * * [Conversion](#command-conversion)
+* * [CloudEvent Conversion](#cloudevent-conversion)
+* * * [Generic](#generic-cloudevent-converter)
+* * * [XStream](#xstream-cloudevent-converter)
+* * * [Jackson](#jackson-cloudevent-converter)
+* * * [Custom](#custom-cloudevent-converter)
 * * [Application Service](#application-service)
 * * * [Event Conversion](#application-service-event-conversion)
 * * * [Usage](#using-the-application-service)
@@ -843,48 +848,88 @@ Then you can make use of the `toStreamCommand` in `org.occurrent.application.com
 {% include macros/command/conversion-example.md %}
 <div class="comment">You can also use the "toListCommand" method to convert a "Function&lt;Stream&lt;DomainEvent&gt;, Stream&lt;DomainEvent&gt;&gt;" into a "Function&lt;List&lt;DomainEvent&gt;, List&lt;DomainEvent&gt;&gt;"</div>
 
+## CloudEvent Conversion
 
-## Application Service
+To convert between domain events and cloud events you can use the cloud event converter API that's shipped with Occurrent. This is optional, but components such as the [application service](#application-service) and [subscription dsl](#subscription-dsl) uses a cloud event converter to function.
+If you're only using an [event store](#eventstore) and [subscriptions](#subscriptions) then you don't need a cloud event converter (or you can roll your own).
+All cloud event converters implements the `org.occurrent.application.converter.CloudEventConverter` interface from the `org.occurrent:cloudevent-converter` module (see [custom cloudevent converter](#custom-cloudevent-converter)). 
 
-Occurrent provides a generic application service that is a good starting point for most use cases. First add the module as a dependency to your project:
+### Generic CloudEvent Converter
 
-{% include macros/applicationservice/blocking-maven.md %}
+This is a really simple cloud event converter to which you can pass two higher-order functions. The first one converts .
+For example:
 
-This module provides an interface, `org.occurrent.application.service.blocking.ApplicationService`, and a default implementation, 
-`org.occurrent.application.service.blocking.implementation.GenericApplicationService`. The `GenericApplicationService` takes an `EventStore` and 
-a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from 
-cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
-`org.occurrent.application.converter.implementation.GenericCloudEventConverter`. You can see an example in the [next](#application-service-event-conversion) section.
+```java
+Function<CloudEvent, DomainEvent> convertCloudEventToDomainEventFunction = .. // You implement this function
+Function<DomainEvent, CloudEvent> convertDomainEventToCloudEventFunction = .. // You implement this function
+CloudEventConverter<CloudEvent> cloudEventConverter = new GenericCloudEventConverter<>(convertCloudEventToDomainEventFunction, convertDomainEventToCloudEventFunction);
+```
 
-As of version 0.11.0, the `GenericApplicationService` also takes a [RetryStrategy](#retry) as an optional third parameter.  
-By default, the retry strategy uses exponential backoff starting with 100 ms and progressively go up to max 2 seconds wait time between
-each retry, if a `WriteConditionNotFulfilledException` is caught (see [write condition](#write-condition) docs). 
-It will, again by default, only retry 5 times before giving up, rethrowing the original exception. You can override the default strategy
-by calling `new GenericApplicationService(eventStore, cloudEventConverter, retryStrategy)`. 
-Use `new GenericApplicationService(eventStore, cloudEventConverter, RetryStrategy.none())` to disable retry. This is also useful if you 
-want to use another retry library.
+If your domain model is already using a `CloudEvent` (and not a custom domain event) then you can just pass a `Function.identity()` to the `GenericCloudEventConverter`:
 
-### Application Service Event Conversion
+```java
+CloudEventConverter<CloudEvent> cloudEventConverter = new GenericCloudEventConverter<>(Function.identity(), Function.identity());
+```         
 
-Let's have a look at an example of how we can convert our to domain events to cloud events (and vice versa) when using the [generic application service](#application-service) (the application service implementation provided by Occurrent). 
+### XStream CloudEvent Converter
+
+This cloud event converter uses [XStream](https://x-stream.github.io/) to convert domain events to cloud events to XML and back. To use it, first depend on this module:
+
+{% include macros/cloudevent-converter/xstream-maven.md %}
+
+Next you can instantiate it like this:
 
 {% capture java %}
-DomainEventConverter domainEventConverter = new DomainEventConverter(new ObjectMapper());
-CloudEventConverter<DomainEvent> cloudEventConverter = new GenericCloudEventConverter<>(domainEventConverter::convertToDomainEvent, domainEventConverter::convertToCloudEvent);
+XStream xStream = new XStream();
+xStream.allowTypeHierarchy(MyDomainEvent.class);
+URI cloudEventSource = URI.create("urn:company:domain") 
+XStreamCloudEventConverter<MyDomainEvent> cloudEventConverter = new XStreamCloudEventConverter<>(xStream, cloudEventSource);
 {% endcapture %}
 {% capture kotlin %}
-val domainEventConverter = DomainEventConverter(ObjectMapper())
-val cloudEventConverter = GenericCloudEventConverter(domainEventConverter::convertToDomainEvent, domainEventConverter::convertToCloudEvent)
+val xStream = XStream().apply { allowTypeHierarchy(MyDomainEvent::class.java) }
+val cloudEventSource = URI.create("urn:company:domain")
+val cloudEventConverter = new XStreamCloudEventConverter<>(xStream, cloudEventSource)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
-<div class="comment">ObjectMapper a class from the is Jackson library</div>
 
-Here's an example of a `DomainEventConverter` (this is something you implement yourself):
+You can also configure how different attributes of the domain event should be represented in the cloud event by using the builder, `new XStreamCloudEventConverter.Builder<MyDomainEvent>().. build()`.
+
+### Jackson CloudEvent Converter
+
+This cloud event converter uses [Jackson](https://github.com/FasterXML/jackson) to convert domain events to cloud events to JSON and back. To use it, first depend on this module:
+
+{% include macros/cloudevent-converter/jackson-maven.md %}
+
+Next you can instantiate it like this:
+
+{% capture java %}
+ObjectMapper objectMapper = new ObjectMapper();
+URI cloudEventSource = URI.create("urn:company:domain")
+JacksonCloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
+{% endcapture %}
+{% capture kotlin %}
+val objectMapper = jacksonObjectMapper()
+val cloudEventSource = URI.create("urn:company:domain")
+val cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+You can also configure how different attributes of the domain event should be represented in the cloud event by using the builder, `new JacksonCloudEventConverter.Builder<MyDomainEvent>().. build()`.
+
+### Custom CloudEvent Converter
+
+To create a custom cloud event converter first depend on:
+
+{% include macros/cloudevent-converter/api-maven.md %}
+
+Let's have a look at a naive example of how we can create a custom converter that converts domain events to cloud events (and vice versa). This cloud event converter can then be used with the [generic application service](#application-service) (the application service implementation provided by Occurrent) and other Occurrent components that requires a `CloudEventConverter`.
+Note that instead of using the code below you might as well use the [Jackson CloudEvent Converter](#jackson-cloudevent-converter), this is just an example showing how you could roll your own.
 
 ```java
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.cloudevents.CloudEvent;
 import io.cloudevents.core.builder.CloudEventBuilder;
+import org.occurrent.application.converter.CloudEventConverter;
 
 import java.io.IOException;
 import java.net.URI;
@@ -893,15 +938,16 @@ import static java.time.ZoneOffset.UTC;
 import static org.occurrent.functional.CheckedFunction.unchecked;
 import static org.occurrent.time.TimeConversion.toLocalDateTime;
 
-public class DomainEventConverter {
+public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
 
     private final ObjectMapper objectMapper;
 
-    public DomainEventConverter(ObjectMapper objectMapper) {
+    public MyCloudEventConverter(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
-    public CloudEvent convertToCloudEvent(DomainEvent e) {
+    @Override
+    public CloudEvent toCloudEvent(DomainEvent e) {
         try {
             return CloudEventBuilder.v1()
                     .withId(e.getEventId())
@@ -918,7 +964,8 @@ public class DomainEventConverter {
         }
     }
 
-    public DomainEvent convertToDomainEvent(CloudEvent cloudEvent) {
+    @Override
+    public DomainEvent toDomainEvent(CloudEvent cloudEvent) {
         try {
             return (DomainEvent) objectMapper.readValue(cloudEvent.getData().toBytes(), Class.forName(cloudEvent.getType()));
         } catch (IOException | ClassNotFoundException e) {
@@ -935,12 +982,6 @@ might not be serializable to JSON without conversion. For these reasons, it's re
 To see what the attributes means in the context of event sourcing refer to the [CloudEvents](#cloudevents) documentation. 
 You can also have a look at [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/implementation/GenericApplicationServiceTest.java) 
 for an actual code example.
-
-If your domain model is using a `CloudEvent` (and not a custom domain event) then just pass a `Function.identity()` to the `GenericCloudEventConverter`:
-
-```java
-CloudEventConverter<CloudEvent> cloudEventConverter = new GenericCloudEventConverter<>(Function.identity(), Function.identity());
-```         
 
 Note that if the data content type in the CloudEvent is specified as "application/json" (or a json compatible content-type) then Occurrent will automatically store it as [Bson](http://bsonspec.org/) in a MongoDB event store.
 The reason for this so that you're able to query the data, either by the [EventStoreQueries](#eventstore-queries) API, or manually using MongoDB queries. 
@@ -963,15 +1004,16 @@ import static org.occurrent.functional.CheckedFunction.unchecked;
 import static org.occurrent.time.TimeConversion.toLocalDateTime;
 import static java.time.temporal.ChronoUnit.MILLIS;
 
-public class DomainEventConverter {
+public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
     
     private final ObjectMapper objectMapper;
     
-    public DomainEventConverter(ObjectMapper objectMapper) {
+    public MyCloudEventConverter(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     } 
 
-    public CloudEvent convertToCloudEvent(DomainEvent e) {  
+    @Override
+    public CloudEvent toCloudEvent(DomainEvent e) {  
             // Convert the data in the domain event into a Document 
             Map<String, Object> eventData = convertDataInDomainEventToMap(e);
             return CloudEventBuilder.v1()
@@ -991,8 +1033,9 @@ public class DomainEventConverter {
                     .withData(PojoCloudEventData.wrap(eventData, objectMapper::writeValueAsBytes))
                     .build();
     }
-
-    public DomainEvent convertToDomainEvent(CloudEvent cloudEvent) {
+    
+    @Override
+    public DomainEvent toDomainEvent(CloudEvent cloudEvent) {
         CloudEventData cloudEventData = cloudEvent.getData();
         if (cloudEventData instanceof PojoCloudEventData && cloudEventData.getValue() instanceof Map) {
             Map<String, Object> eventData = ((PojoCloudEventData<Map<String, Object>>) cloudEventData).getValue();
@@ -1025,6 +1068,27 @@ public class DomainEventConverter {
 }        
 ```
 <div class="comment">Tip: Instead of working directly with maps, you can use Jackson to convert a DTO into a Map, by calling "jackson.convertValue(myDTO, new TypeReference&lt;Map&lt;String, Object&gt;&gt;() {});".</div>
+
+## Application Service
+
+Occurrent provides a generic application service that is a good starting point for most use cases. First add the module as a dependency to your project:
+
+{% include macros/applicationservice/blocking-maven.md %}
+
+This module provides an interface, `org.occurrent.application.service.blocking.ApplicationService`, and a default implementation, 
+`org.occurrent.application.service.blocking.implementation.GenericApplicationService`. The `GenericApplicationService` takes an `EventStore` and 
+a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from 
+cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
+`org.occurrent.application.converter.implementation.GenericCloudEventConverter` available in the `org.occurrent:cloudevent-converter-generic` module. 
+You can see an example in the [next](#application-service-event-conversion) section.
+
+As of version 0.11.0, the `GenericApplicationService` also takes a [RetryStrategy](#retry) as an optional third parameter.  
+By default, the retry strategy uses exponential backoff starting with 100 ms and progressively go up to max 2 seconds wait time between
+each retry, if a `WriteConditionNotFulfilledException` is caught (see [write condition](#write-condition) docs). 
+It will, again by default, only retry 5 times before giving up, rethrowing the original exception. You can override the default strategy
+by calling `new GenericApplicationService(eventStore, cloudEventConverter, retryStrategy)`. 
+Use `new GenericApplicationService(eventStore, cloudEventConverter, RetryStrategy.none())` to disable retry. This is also useful if you 
+want to use another retry library.
 
 ### Using the Application Service
 
@@ -1237,7 +1301,7 @@ preferred library/framework/[view](#views).
 
 ## Policy
 
-A policy (or "reaction") can be used to deal with workflows such as "whenever _this_ happens, do _that_". For example, whenever a game is won, send an email to the winner. For simple workflows
+A policy (aka reaction/trigger) can be used to deal with workflows such as "whenever _this_ happens, do _that_". For example, whenever a game is won, send an email to the winner. For simple workflows
 like this there's typically no need for a full-fledged [saga](#sagas). 
 
 ### Asynchronous Policy
@@ -1261,14 +1325,14 @@ provided by Occurrent allows for this, please see the [application service docum
 <div class="comment">Using snapshots is an advanced technique and it shouldn't be used unless it's really necessary.</div>
 
 Snapshotting is an optimization technique that can be applied if it takes too long to derive the current state from an event stream for each [command](#commands).
-There are several ways to do this and Occurrent doesn't enforce any particular strategy. One strategy is to use so called "snapshot events" (special events that contains 
+There are several ways to do this and Occurrent doesn't enforce any particular strategy. One strategy is to use so-called "snapshot events" (special events that contains 
 a pre-calculated view of the state of an event stream at a particular time) and another technique is to write snapshots to another datastore than the event store.
 
 The [application service](#commands) need to be modified to first load the up the snapshot and then load events that have not yet been materialized in the snapshot (if any). 
 
 ### Synchronous Snapshots
 
-With Occurrent you can trade-off write speed for understandability. For example, let's say that you want to update the snapshot on every write and it should be consistent 
+With Occurrent, you can trade-off write speed for understandability. For example, let's say that you want to update the snapshot on every write and it should be consistent 
 with the writes to the event store. One way to do this is to use Spring's transactional support:
  
 {% include macros/snapshot/spring/sync-example.md %}
