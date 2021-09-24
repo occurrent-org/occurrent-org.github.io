@@ -856,7 +856,10 @@ All cloud event converters implements the `org.occurrent.application.converter.C
 
 ### Generic CloudEvent Converter
 
-This is a really simple cloud event converter to which you can pass two higher-order functions. The first one converts .
+This is a really simple cloud event converter to which you can pass two higher-order functions that converts to and from domain events respectively. To use it depend on:
+
+{% include macros/cloudevent-converter/generic-maven.md %}
+
 For example:
 
 ```java
