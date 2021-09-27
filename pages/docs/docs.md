@@ -2333,10 +2333,14 @@ subscription position storage.
 If using Java you can do:
           
 ```java
-InMemorySubscriptionModel inMemorySubscriptionModel = new InMemorySubscriptionModel();
-InMemoryEventStore inMemoryEventStore = new InMemoryEventStore(inMemorySubscriptionModel);
-  
-inMemorySubscriptionModel.subscribe("subscription1", System.out::println);
+SpringMongoSubscriptionModel subscriptionModel = SpringMongoSubscriptionModel(..);
+GenericCloudEventConverter cloudEventConverter = GenericCloudEventConverter<DomainEvent>(..);
+
+Subscriptions<DomainEvent> subscriptions = new Subscriptions<DomainEvent>(subscriptionModel, cloudEventConverter); 
+        
+subscriptions.subscribe("gameStarted", GameStarted.class, gameStarted -> {
+    log.info("Game was started {}", gameStarted)
+});
 ```
 
 For this to work, your domain events must all "implement" a `DomainEvent` interface (or a sealed class in Kotlin). Note that `DomainEvent` is something you create yourself, 
