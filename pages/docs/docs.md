@@ -30,7 +30,6 @@ permalink: /documentation
 * * * [Jackson](#jackson-cloudevent-converter)
 * * * [Custom](#custom-cloudevent-converter)
 * * [Application Service](#application-service)
-* * * [Event Conversion](#application-service-event-conversion)
 * * * [Usage](#using-the-application-service)
 * * * [Side-Effects](#application-service-side-effects)
 * * * [Transactional Side-Effects](#application-service-transactional-side-effects)
