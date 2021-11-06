@@ -958,8 +958,6 @@ CloudEventTypeMapper<MyDomainEvent> typeMapper = ReflectionCloudEventTypeMapper.
 Again, this will create an instance of `ReflectionCloudEventTypeMapper` that uses the simple name of the domain event as cloud event type, but
 you are responsible to, somehow, map the cloud event type (`cloudEventType`) back into a domain event class.
 
-<br>
-
 If you don't want to use reflection or don't want to couple the class name to the event name (which is recommended) you can roll your own custom `CloudEventTypeMapper` by implementing the 
 [org.occurrent.application.converter.typemapper.CloudEventTypeMapper](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/cloudevent-type-mapper/api/src/main/java/org/occurrent/application/converter/typemapper/CloudEventTypeMapper.java)
 interface.
