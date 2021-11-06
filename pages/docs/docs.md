@@ -2384,9 +2384,8 @@ subscribe<GameStarted> { gameStarted ->
 
 i.e. you don't need to specify an id explicitly. Be careful here though, since the name of the
 subscription will be generated from the event name (the unqualified name, in this case the subscription 
-id would be "GameStarted"). This can lead to trouble if you rename your event because then the name 
-id of you subscription will change as well, and it won't continue from the previous position in the
-subscription position storage. 
+id would be "GameStarted"). This can lead to trouble if you rename your event because then the id of your subscription 
+will change as well, and it won't continue from the previous position in the subscription position storage. 
 
 If using Java you can do:
           
