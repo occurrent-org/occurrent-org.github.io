@@ -919,6 +919,52 @@ val cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEv
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 You can also configure how different attributes of the domain event should be represented in the cloud event by using the builder, `new JacksonCloudEventConverter.Builder<MyDomainEvent>().. build()`.
+In production, you almost certainly want to change the way the `JacksonCloudEventConverter` generates the cloud event type from the domain event. By default, the cloud event type will be generated
+from the fully-qualified class name of the domain event class type. I.e. if you do:
+
+```java
+CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
+CloudEvent cloudEvent = cloudEventConverter.toCloudEvent(new SomeDomainEvent());
+```
+
+Then `cloudEvent.getType()` will return `com.mycompany.SomeDomainEvent`. Typically, you want to decouple the cloud event type from the fully-qualified name of the class. A better, but arguably still not optimal, would be to make
+`cloudEvent.getType()` return `SomeDomainEvent` instead. The `JacksonCloudEventConverter` allows us to do this by using the builder: 
+
+```java
+CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter.Builder<MyDomainEvent>()
+        .typeMapper(..) // Specify a custom way to map the domain event to a cloud event and vice versa
+        .build();
+```
+
+But when using Jackson, we can't just configure the type mapper to return the "simple name" of the domain event class instead of the fully-qualified name. This is because there's no generic way to derive the fully-qualified name from 
+just the simple name. The fully-qualified name is needed in order for Jackson to map the cloud event back into a domain event. In order to work-around this you could implement your own type mapper (that you pass to the builder above)
+or create an instance of [ReflectionCloudEventTypeMapper](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/cloudevent-type-mapper/reflection/src/main/java/org/occurrent/application/converter/typemapper/ReflectionCloudEventTypeMapper.java)
+that knows how to convert the "simple name" cloud event type back into the domain event class. There are a couple of ways, the most simple one is probably this:
+
+```java
+CloudEventTypeMapper<MyDomainEvent> typeMapper = ReflectionCloudEventTypeMapper.simple(MyDomainEvent.class);
+```
+
+This will create an instance of `ReflectionCloudEventTypeMapper` that uses the simple name of the domain event as cloud event type. But the crucial thing is that when deriving the domain event type from the cloud event, 
+the `ReflectionCloudEventTypeMapper` will prepend the package name of supplied domain event type (`MyDomainEvent`) to the cloud event type, thus reconstructing the fully-qualified name of the class. 
+For this to work, _all_ domain events must reside in exactly the same package as `MyDomainEvent`.
+
+<br>
+
+Another approach would be to supply a higher-order function that knows how to map the cloud event type back into a domain event class.
+
+```java
+CloudEventTypeMapper<MyDomainEvent> typeMapper = ReflectionCloudEventTypeMapper.simple(cloudEventType -> ...);
+```
+
+Again, this will create an instance of `ReflectionCloudEventTypeMapper` that uses the simple name of the domain event as cloud event type, but
+you are responsible to, somehow, map the cloud event type (`cloudEventType`) back into a domain event class.
+
+<br>
+
+If you don't want to use reflection or don't want to couple the class name to the event name (which is recommended) you can roll your own custom `CloudEventTypeMapper` by implementing the 
+[org.occurrent.application.converter.typemapper.CloudEventTypeMapper](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/cloudevent-type-mapper/api/src/main/java/org/occurrent/application/converter/typemapper/CloudEventTypeMapper.java)
+interface.
 
 ### Custom CloudEvent Converter
 
@@ -956,7 +1002,7 @@ public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
             return CloudEventBuilder.v1()
                     .withId(e.getEventId())
                     .withSource(URI.create("urn:myapplication:streamtype"))
-                    .withType(e.getClass().getName())
+                    .withType(getCloudEventType(e))
                     .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC)
                                            .truncatedTo(ChronoUnit.MILLIS))
                     .withSubject(e.getName())
@@ -976,6 +1022,11 @@ public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
             throw new RuntimeException(e);
         }
     }
+    
+    @Override
+    public String getCloudEventType(Class<? extends T> type) {
+        return type.getName();
+    }
 }        
 ```
 <div class="comment">While this implementation works for simple cases, make sure that you think before simply copying and pasting this class into your own code base. 
@@ -983,7 +1034,7 @@ The reason is that you may not need to serialize all data in the domain event to
 and the "type" field contains the fully-qualified name of the class which makes it more difficult to move without loosing backward compatibility. Also your domain events
 might not be serializable to JSON without conversion. For these reasons, it's recommended to create a more custom mapping between a cloud event and domain event.</div>
 
-To see what the attributes means in the context of event sourcing refer to the [CloudEvents](#cloudevents) documentation. 
+To see what the attributes mean in the context of event sourcing refer to the [CloudEvents](#cloudevents) documentation. 
 You can also have a look at [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/implementation/GenericApplicationServiceTest.java) 
 for an actual code example.
 
@@ -1023,7 +1074,7 @@ public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
             return CloudEventBuilder.v1()
                     .withId(e.getEventId())
                     .withSource(URI.create("http://name"))
-                    .withType(e.getClass().getName())
+                    .withType(getCloudEventType(e))
                     .withTime(LocalDateTime.ofInstant(e.getDate().toInstant(), UTC).atOffset(UTC)
                                            .truncatedTo(MILLIS))
                     .withSubject(e.getName())
@@ -1047,7 +1098,12 @@ public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
         } else {
             return objectMapper.readValue(cloudEventData.toBytes(), DomainEvent.class); // try-catch omitted
         }
-    }       
+    }
+    
+    @Override
+    public String getCloudEventType(Class<? extends T> type) {
+        return type.getSimpleName();
+    }
     
     private static Map<String, Object> convertDataInDomainEventToDocument(DomainEvent e) {
         // Convert the domain event into a Map                
