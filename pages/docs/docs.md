@@ -1443,6 +1443,8 @@ Occurrent doesn't currently have any built-in support for this (but a small wrap
 
 # Getting started
 
+<div class="comment">If you're using Spring Boot, you might consider using the <a href="#spring-boot-starter">spring-boot-starter</a> project to get started quickly. Then you can return to this section.</div>
+
 Getting started with Occurrent involves these steps:
 <div class="comment">It's recommended to read up on <a href="https://occurrent.org/documentation#cloudevents">CloudEvent's</a> and its <a href="https://github.com/cloudevents/spec/blob/v1.0/spec.md">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
 
@@ -1603,6 +1605,8 @@ Use when you don't need Spring support and want to use MongoDB as the underlying
 {% include macros/eventstore/mongodb/native/maven.md %}
 
 #### Getting Started
+
+
 
 Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.nativedriver.MongoEventStore`.
 It takes four arguments, a [MongoClient](https://mongodb.github.io/mongo-java-driver/3.12/javadoc/com/mongodb/client/MongoClient.html), 
