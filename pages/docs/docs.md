@@ -77,6 +77,8 @@ permalink: /documentation
 * [Retry](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
+* * [Query DSL](#query-dsl)
+* [Spring Boot Starter](#spring-boot-starter)
 * [Blogs](#blogs)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
@@ -1398,6 +1400,7 @@ Getting started with Occurrent involves these steps:
 1. You're now good to go, but you may also want to look into more higher-level components if you don't have the need to role your own. We recommend looking into:
     * [Application Service](#application-service)
     * [Subscription DSL](#subscription-dsl)
+    * [Query DSL](#query-dsl)
     * [Retry Component](#retry)
 
 # Choosing An EventStore
@@ -2343,7 +2346,78 @@ subscriptions.subscribe("gameStarted", GameStarted.class, gameStarted -> {
 ```
 
 For this to work, your domain events must all "implement" a `DomainEvent` interface (or a sealed class in Kotlin). Note that `DomainEvent` is something you create yourself, 
-it's not something that is provided by Occurrent.  
+it's not something that is provided by Occurrent.
+
+## Query DSL
+
+The "Query DSL" (or "domain query DSL") is a small wrapper around the [EventStoreQueries](#eventstore-queries) API that lets you query for domain events instead of CloudEvents. 
+Depend on the `org.occurrent:query-dsl-blocking` module and create an instance of `org.occurrent.dsl.query.blocking.DomainEventQueries`. For example:
+
+```java                                                      
+EventStoreQueries eventStoreQueries = .. 
+CloudEventConverter<DomainEvent> cloudEventConverter = ..
+DomainEventQueries<DomainEvent> domainEventQueries = new DomainEventQueries<DomainEvent>(eventStoreQueries, cloudEventConverter);
+ 
+Stream<DomainEvent> events = domainQueries.query(Filter.subject("someSubject"));
+```
+
+There's also support for skip, limits and sorting and convenience methods for querying for a single event:
+
+```java                                                      
+Stream<DomainEvent> events = domainQueries.query(GameStarted.class, GameEnded.class); // Find only events of this type
+GameStarted event1 = domainQueries.queryOne(GameStarted.class); // Find the first event of this type
+GamePlayed event2 = domainQueries.queryOne(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")); // Find event with this id
+```
+
+There are also some Kotlin extensions that you can use to query for a `Sequence` of events instead of a `Stream`:
+ ```kotlin
+ val events : Sequence<DomainEvent> = domainQueries.queryForSequence(GamePlayed::class, GameWon::class, skip = 2) // Find only events of this type and skip the first two events
+ val event1 = domainQueries.queryOne<GameStarted>() // Find the first event of this type
+ val event2 = domainQueries.queryOne<GamePlayed>(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")) // Find event with this id
+ ```
+             
+# Spring Boot Starter
+
+Use the "Spring Boot Starter" project to bootstrap Occurrent quickly if using Spring. Add the following to your build script:
+
+{% include macros/spring-boot-starter/maven.md %}
+
+Next create a Spring Boot application annotated with `@SpringBootApplication` as you would normally do. Occurrent will then configure the following components automatically:
+ 
+* A Spring MongoDB Event Store instance (`EventStore`)
+* A Spring `SubscriptionPositionStorage` instance 
+* A durable Spring MongoDB competing consumer subscription model (`SubscriptionModel`)
+* A Jackson-based `CloudEventConverter`. It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases).
+  You can do this, for example, by doing:
+  ```java
+  @Bean
+  public CloudEventTypeMapper<GameEvent> cloudEventTypeMapper() {
+    return ReflectionCloudEventTypeMapper.simple(GameEvent.class);
+  }
+  ```
+  This will use the "simple name" (via reflection) of a domain event as the cloud event type. But since the package name is now lost from the cloud event type property, the `ReflectionCloudEventTypeMapper` will append the package name of `GameEvent` to when converting back into a domain event. 
+  This _only_ works if all your domain events are located in the exact same package as `GameEvent`. If this is not that case you need to implement a more advanced `CloudEventTypeMapper` such as
+  ```kotlin
+  class CustomTypeMapper : CloudEventTypeMapper<GameEvent> {
+      override fun getCloudEventType(type: Class<out GameEvent>): String = type.simpleName
+  
+      override fun <E : GameEvent> getDomainEventType(cloudEventType: String): Class<E> = when (cloudEventType) {
+          GameStarted::class.simpleName -> GameStarted::class
+          GamePlayed::class.simpleName -> GamePlayed::class
+          // Add all other events here!!
+          ...
+          else -> throw IllegalStateException("Event type $cloudEventType is unknown")
+      }.java as Class<E>
+  }
+  ```
+  or implement your own custom [CloudEventConverter](#cloudevent-conversion).
+* A `GenericApplication` instance (`ApplicationService`)
+* A subscription dsl instance (`Subscriptions`)
+* A query dsl instance (`DomainQueries`)
+
+You can of course override other beans as well to tailor them to your needs. 
+See the source code of [org.occurrent.springboot.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java)
+if you want to know exactly what gets configured automatically.
 
 # Blogs
 
