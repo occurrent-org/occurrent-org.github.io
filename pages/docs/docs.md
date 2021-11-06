@@ -949,8 +949,6 @@ This will create an instance of `ReflectionCloudEventTypeMapper` that uses the s
 the `ReflectionCloudEventTypeMapper` will prepend the package name of supplied domain event type (`MyDomainEvent`) to the cloud event type, thus reconstructing the fully-qualified name of the class. 
 For this to work, _all_ domain events must reside in exactly the same package as `MyDomainEvent`.
 
-<br>
-
 Another approach would be to supply a higher-order function that knows how to map the cloud event type back into a domain event class.
 
 ```java
