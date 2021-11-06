@@ -927,7 +927,7 @@ CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventCo
 CloudEvent cloudEvent = cloudEventConverter.toCloudEvent(new SomeDomainEvent());
 ```
 
-Then `cloudEvent.getType()` will return `com.mycompany.SomeDomainEvent`. Typically, you want to decouple the cloud event type from the fully-qualified name of the class. A better, but arguably still not optimal, would be to make
+Then `cloudEvent.getType()` will return `com.mycompany.SomeDomainEvent`. Typically, you want to decouple the cloud event type from the fully-qualified name of the class. A better, but arguably still not optimal way, would be to make
 `cloudEvent.getType()` return `SomeDomainEvent` instead. The `JacksonCloudEventConverter` allows us to do this by using the builder: 
 
 ```java
