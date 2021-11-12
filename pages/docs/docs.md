@@ -2471,9 +2471,22 @@ Next create a Spring Boot application annotated with `@SpringBootApplication` as
 * A query dsl instance (`DomainQueries`)
 
 You can of course override other beans as well to tailor them to your needs. 
-See the source code of [org.occurrent.springboot.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java)
+See the source code of [org.occurrent.springboot.mongo.blocking.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java)
 if you want to know exactly what gets configured automatically.
 
+It's also possible to configure certain aspects from the `application.yaml` file under the "occurrent" namespace.
+For example:
+                 
+```yaml
+occurrent:
+  application-service:
+    enable-default-retry-strategy: false
+```
+
+You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.mongo.blocking.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentProperties.java)
+to find which configuration properties that are supported. 
+
+                                                                                                      
 # Blogs
 
 [Johan](https://github.com/johanhaleby) has created a couple of blog-posts on Occurrent on his [blog](https://code.haleby.se):
