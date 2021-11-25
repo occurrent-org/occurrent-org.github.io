@@ -2309,10 +2309,10 @@ a retry predicate, error listener as well as the backoff strategy. Here's an exa
   
 ```java
 RetryStrategy retryStrategy = RetryStrategy
-                                  .exponentialBackoff(Duration.ofMillis(50), Duration.ofMillis(200), 2.0)
-                                 .retryIf(throwable -> throwable instanceof OptimisticLockingException)
-                                 .maxAttempts(5)
-                                 .onError((info, throwable) -> log.warn("Caught exception {}, will retry in {} millis")), throwable.class.getSimpleName(), info.getDuration().toMillis()));
+                                    .exponentialBackoff(Duration.ofMillis(100), Duration.ofSeconds(2), 2.0)
+                                    .retryIf(UncategorizedSQLException.class::isInstance)
+                                    .maxAttempts(5)
+                                    .onError((info, throwable) -> log.warn("Caught exception {}, will retry in {} millis", throwable.getClass().getSimpleName(), info.getBackoff().toMillis()));
 ```
 
 You can also use a `RetryStrategy` instance to call methods that you want to be retried on exception by using the `execute` method:
