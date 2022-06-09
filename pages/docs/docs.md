@@ -2450,7 +2450,7 @@ Next create a Spring Boot application annotated with `@SpringBootApplication` as
     return ReflectionCloudEventTypeMapper.simple(GameEvent.class);
   }
   ```
-  This will use the "simple name" (via reflection) of a domain event as the cloud event type. But since the package name is now lost from the cloud event type property, the `ReflectionCloudEventTypeMapper` will append the package name of `GameEvent` to when converting back into a domain event. 
+  This will use the "simple name" (via reflection) of a domain event as the cloud event type. But since the package name is now lost from the cloud event type property, the `ReflectionCloudEventTypeMapper` will append the package name of `GameEvent` when converting back into a domain event. 
   This _only_ works if all your domain events are located in the exact same package as `GameEvent`. If this is not that case you need to implement a more advanced `CloudEventTypeMapper` such as
   ```kotlin
   class CustomTypeMapper : CloudEventTypeMapper<GameEvent> {
