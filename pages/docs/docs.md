@@ -806,13 +806,11 @@ Events returned from `WordGuessingGame.startNewGame(..)` will be appended to the
 returned by the two functions will be merged and written in an atomic fashion to the event store.
 
 The command composition library also contains some utilities for [partial function application](https://en.wikipedia.org/wiki/Partial_application) 
-that you can use to further enhance the example above (if you like). If you statically import `partial` method from `org.occurrent.application.composition.command.partial.PartialStreamCommandApplication` 
+that you can use to further enhance the example above (if you like). If you statically import `partial` method from `org.occurrent.application.composition.command.partial.PartialFunctionApplication` 
 you can refactor the code above into this:
 
 {% include macros/command/composition-example-partial.md %}
-<div class="comment">If you're using commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "partial"
-from "org.occurrent.application.composition.command.partial.PartialListCommandApplication". If you're using Kotlin, important the "partial" extension function
-from "org.occurrent.application.composition.command.partial".</div>
+<div class="comment">If you're using Kotlin, important the "partial" extension function from "org.occurrent.application.composition.command.partial".</div>
 
 With Kotlin, you can also use `andThen` (described above) to do:
 
