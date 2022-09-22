@@ -2498,5 +2498,5 @@ The [mailing-list](https://groups.google.com/g/occurrent) can also be used for s
 # Credits
 
 Thanks to [Per Ökvist](https://github.com/perokvist) for discussions and ideas, and [David Åse](https://www.linkedin.com/in/davidaase/) for letting me fork 
-the awesome [Javalin](https://javalin.io/) website. Credits should also go to [Alec Henninger](https://github.com/alechenninger) for his work on [competing consumer support](https://www.alechenninger.com/2020/05/building-kafka-like-message-queue-with.html 
+the awesome [Javalin](https://javalin.io/) website. Credits should also go to [Alec Henninger](https://github.com/alechenninger) for his work on [competing consumer support](https://www.alechenninger.com/2020/05/building-kafka-like-message-queue-with.html) 
 for MongoDB change streams. 
