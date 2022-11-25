@@ -42,7 +42,10 @@ permalink: /documentation
 * * * [Synchronous](#synchronous-snapshots)
 * * * [Asynchronous](#asynchronous-snapshots)
 * * * [Closing the Books](#closing-the-books)
-* * [Scheduling](#scheduling)
+* * [Deadlines](#deadlines)
+* * * [JobRunr](#jobrunr-deadline-scheduler)
+* * * [InMemory](#in-memory-deadline-scheduler)
+* * * [Other](#other-ways-of-expressing-deadlines)
 * [Getting Started](#getting-started)
 * [Choosing An EventStore](#choosing-an-eventstore)
 * * [MongoDB](#mongodb)
@@ -1421,13 +1424,172 @@ This is a pattern that can be applied instead of updating [snapshots](#snapshots
 instead create snapshots periodically. For example, once every month we run a job that creates snapshots for certain event streams. This is especially well suited for problem domains where "closing the books"
 is a concept in the domain (such as accounting).     
 
-## Scheduling
+## Deadlines
 
-Scheduling (aka deadlines, alarm clock) is a very handy technique to schedule to commands to be executed in the future or periodically. 
+Deadlines (aka scheduling, alarm clock) is a very handy technique to schedule to something to be executed in the future. 
 Imagine, for example, a multiplayer game (like word guessing game shown in previous examples), where we want to game to end automatically after 
 10 hours of inactivity. This means that as soon as a player has made a guess, we'd like to schedule a "timeout game command" to be executed after 10 hours.
 
-Occurrent doesn't currently have any built-in support for this (but a small wrapper around an existing library is planned), but there are several libraries you can use from the Java ecosystem, such as:
+The way it works in Occurrent is that you schedule a Deadline (`org.occurrent.deadline.api.blocking.Deadline`) using a DeadlineScheduler (`org.occurrent.deadline.api.blocking.DeadlineScheduler`) implementation.
+The Deadline is a date/time in the future when the deadline is up. To handle the deadline, you also register a DeadlineConsumer (`org.occurrent.deadline.api.blocking.DeadlineConsumer`) to a 
+DeadlineConsumerRegistry (`org.occurrent.deadline.api.blocking.DeadlineConsumerRegistry`) implementation, and it'll be invoked when a deadline is up. For example: 
+
+```java
+// In some method we schedule a deadline two hours from now with data "hello world" 
+var deadlineId = UUID.randomUUID(); 
+var deadlineCategory = "hello-world"; 
+var deadline = Deadline.afterHours(2);
+deadlineScheduler.schedule(deadlineId, deadlineCategory, deadline, "hello world");
+
+// In some other method, during application startup, we register a deadline consumer to the registry for the "hello-world" deadline category
+deadlineConsumerRegistry.register("hello-world", (deadlineId, deadlineCategory, deadline, data) -> System.out.println(data));
+```
+
+In the example above, the deadline consumer will print "hello world" after 2 hours.
+
+There are two implementations of `DeadlineScheduler` and `DeadlineConsumerRegistry`, [JobRunr](#jobrunr-deadline-scheduler) and [InMemory](#in-memory-deadline-scheduler). 
+
+### JobRunr Deadline Scheduler 
+
+This is a persistent (meaning that your application can be restarted and deadlines are still around) DeadlineScheduler based on [JobRunr](https://www.jobrunr.io/). To get started, depend on:  
+
+{% include macros/deadline/jobrunr-maven.md %}
+
+You then need to create an instance of `org.jobrunr.scheduling.JobRequestScheduler` (see [JobRunr documentation](https://www.jobrunr.io/en/documentation/configuration/fluent/) for different ways of doing this). 
+Once you have a `JobRequestScheduler` you need to create an instance of `org.occurrent.deadline.jobrunr.JobRunrDeadlineScheduler`:
+
+```java
+JobRequestScheduler jobRequestScheduler = ..
+DeadlineScheduler deadlineScheduler = new JobRunrDeadlineScheduler(jobRequestScheduler); 
+```
+
+You also need to create an instance of `org.occurrent.deadline.jobrunr.JobRunrDeadlineConsumerRegistry`: 
+
+```java
+DeadlineConsumerRegistry deadlineConsumerRegistry = new JobRunrDeadlineConsumerRegistry();  
+```
+                                                                                          
+You register so-called "deadline consumers" to the DeadlineConsumerRegistry for a certain "category" (see example [above](#deadlines)). A deadline consumer will be invoked once a deadline is up. 
+Note that you can only have one deadline consumer instance per category. You want to register your deadline consumer everytime your application starts up. If you're using Spring, you can, for example, do this 
+using a `@PostConstructor` method:
+
+```java
+@PostConstruct
+void registerDeadlineConsumersOnApplicationStart() {
+    deadlineConsumerRegistry.register("CancelPayment", (id, category, deadline, data) -> {
+        CancelPayment cancelPayment = (CancelPayment) data; 
+        paymentApi.cancel(cancelPayment.getPaymentId());    
+    }):
+}
+```
+
+The example above will register a deadline consumer for the "CancelPayment" category and call an imaginary api (`paymentApi`) to cancel the payment. The deadline consumer will be called by Occurrent when the scheduled deadline is up. Here's an example of you can schedule this deadline using
+the `JobRunrDeadlineConsumerRegistry`, but first lets see what `CancelPayment` looks like:
+
+```java
+public class CancelPayment {
+    private String paymentId;
+
+    CancelPayment() {
+    }
+
+    public CancelPayment(String paymentId) {
+        this.paymentId = paymentId;
+    }
+    
+    public void setPaymentId(String paymentId) {
+        this.paymentId = paymentId;
+    }
+
+    public String getPaymentId() {
+        return paymentId;
+    }
+}
+```
+
+As you can see it's a regular Java POJO. This is very important since JobRunr needs to serialize/de-serialize this class to the database. Typically, this is done using Jackson (so it's fine to use Jackson annotations etc), but JobRunr has support for other mappers as well.
+ 
+Now lets see how we can schedule a "CancelPayment":
+
+```java
+String paymentId = ...
+deadlineScheduler.schedule(UUID.randomUUID(), "CancelPayment", Deadline.afterWeeks(2), new CancelPayment(paymentId));
+```
+          
+This will schedule a deadline after 2 weeks, that'll be picked-up by the deadline consumer registered in the `registerDeadlineConsumersOnApplicationStart` method. Note that in this case, the class (`CancelPayment`) has the same name as the category, but this is not required.  
+                                      
+Here's an example of you can setup Occurrent Deadline Scheduling in Spring Boot:
+
+```java
+@Configuration
+public class DeadlineSpringConfig {
+
+    @Bean
+    JobRunrConfigurationResult initJobRunr(ApplicationContext applicationContext, MongoClient mongoClient,
+                                           @Value("${spring.data.mongodb.uri}") String mongoUri) {
+        var connectionString = new ConnectionString(mongoUri);
+        var database = connectionString.getDatabase();
+
+        return JobRunr.configure()
+                .useJobActivator(applicationContext::getBean)
+                .useStorageProvider(new MongoDBStorageProvider(mongoClient, database, "jobrunr-"))
+                .useBackgroundJobServer()
+                .useDashboard(
+                        JobRunrDashboardWebServerConfiguration
+                                .usingStandardDashboardConfiguration()
+                                .andPort(8082)
+                                .andAllowAnonymousDataUsage(false)
+                )
+                .initialize();
+    }
+
+    @PostConstruct
+    void destroyJobRunnerOnShutdown() {
+        JobRunr.destroy();
+    }
+
+    @Bean
+    DeadlineScheduler deadlineScheduler(JobRunrConfigurationResult jobRunrConfigurationResult) {
+        return new JobRunrDeadlineScheduler(jobRunrConfigurationResult.getJobRequestScheduler());
+    }
+
+    @Bean
+    DeadlineConsumerRegistry deadlineConsumerRegistry() {
+        return new JobRunrDeadlineConsumerRegistry();
+    }
+}
+```
+
+Have a look at [JobRunr](https://www.jobrunr.io/) for more configuration options.
+
+### In-Memory Deadline Scheduler
+
+This is an in-memory, non-persistent (meaning that scheduled deadlines will be lost on application restart), DeadlineScheduler. To get started, depend on:  
+
+{% include macros/deadline/inmemory-maven.md %}
+
+Next, you need to create in instance of `org.occurrent.deadline.inmemory.InMemoryDeadlineScheduler` and `org.occurrent.deadline.inmemory.InMemoryDeadlineConsumerRegistry`. In order for these two components to communicate with each other, 
+you also need to provide an instance of a `e java.util.concurrent.BlockingDeque` to the constructor. Here's an example:
+
+```java
+BlockingDeque<Object> queue = new LinkedBlockingDeque<>();
+DeadlineConsumerRegistry deadlineConsumerRegistry = new InMemoryDeadlineConsumerRegistry(queue);
+DeadlineConsumerRegistry deadlineScheduler = new InMemoryDeadlineScheduler(queue);
+```
+
+You can configure things, such as poll interval and retry strategy, for `InMemoryDeadlineConsumerRegistry` by supplying an instance of `org.occurrent.deadline.inmemory.InMemoryDeadlineConsumerRegistry$Config` as the second constructor argument:
+
+```java
+new InMemoryDeadlineConsumerRegistry(queue, new Config().pollIntervalMillis(300).retryStrategy(RetryStrategy.fixed(Duration.of(2, SECONDS))));
+```
+
+Note that it's very important to call `shutdown` on both `InMemoryDeadlineConsumerRegistry` and `InMemoryDeadlineScheduler` on application/test end.
+
+For usage examples, see [Deadlines](#deadlines) and [JobRunr Scheduler](#jobrunr-deadline-scheduler).
+
+### Other Ways of Expressing Deadlines
+
+If you don't want to use any of the Occurrent libraries for deadline scheduling, or if you're looking for more features that are not (yet) available, you can use other libraries from the Java ecosystem, such as:
 
 * [JobRunr](https://www.jobrunr.io/) - An easy way to perform background processing in Java. Distributed and backed by persistent storage.
 * [Quartz](http://www.quartz-scheduler.org/) - Can be used to create simple or complex schedules for executing tens, hundreds, or even tens-of-thousands of jobs.

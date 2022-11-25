@@ -73,7 +73,8 @@ if (document.location.pathname.includes("/documentation")) {
         "xstream-cloudevent-converter" : "0.12.0",
         "jackson-cloudevent-converter" : "0.12.0",
         "query-dsl" : "0.14.0",
-        "spring-boot-starter" : "0.14.0"
+        "spring-boot-starter" : "0.14.0",
+        "deadlines" : "0.15.0"
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
