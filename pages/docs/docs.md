@@ -1602,13 +1602,13 @@ If you don't want to use any of the Occurrent libraries for deadline scheduling,
 <div class="comment">If you're using Spring Boot, you might consider using the <a href="#spring-boot-starter">spring-boot-starter</a> project to get started quickly. Then you can return to this section.</div>
 
 Getting started with Occurrent involves these steps:
-<div class="comment">It's recommended to read up on <a href="https://occurrent.org/documentation#cloudevents">CloudEvent's</a> and its <a href="https://github.com/cloudevents/spec/blob/v1.0/spec.md">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
+<div class="comment">It's recommended to read up on <a href="#cloudevents">CloudEvent's</a> and its <a href="https://github.com/cloudevents/spec/blob/v1.0/spec.md">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
 
 1. Choose an underlying datastore for an [event store](#choosing-an-eventstore). Luckily there are only two choices at the moment, MongoDB and an in-memory implementation. Hopefully this will be a more difficult decision in the future :)
 1. Once a datastore has been decided it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
 1. If you need [subscriptions](#using-subscriptions) (i.e. the ability to subscribe to changes from an EventStore) then you need to pick a library that implements this for the datastore that you've chosen. 
    Again, there may be several implementations to choose from.
-1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [position storage](https://occurrent.org/documentation#blocking-subscription-position-storage) library. 
+1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [position storage](#blocking-subscription-position-storage) library. 
    These libraries provide means to automatically (or selectively) store the position for a subscriber to a datastore. Note that the datastore that stores this position
    can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store subscription positions in Redis.
 1. You're now good to go, but you may also want to look into more higher-level components if you don't have the need to role your own. We recommend looking into:
