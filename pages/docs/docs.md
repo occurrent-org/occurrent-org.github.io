@@ -1277,7 +1277,7 @@ applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events
 
 ### Application Service Transactional Side-Effects
 
-In the example above, writing the events to the event store and executing policies is not an atomic operation. If your app crashes before after the call to `registerOngoingGame::registerGameAsOngoingWhenGameWasStarted`
+In the example above, writing the events to the event store and executing policies is not an atomic operation. If your app crashes after the call to `registerOngoingGame::registerGameAsOngoingWhenGameWasStarted`
 but before `removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded`, you will need to handle idempotency. But if your policies/side-effects are writing data to the same database as the event store
 you can make use of transactions to write everything atomically! This is very easy if you're using a [Spring EventStore](#eventstore-with-spring-mongotemplate-blocking). What you need to do is to wrap the `ApplicationService` provided
 by Occurrent in your own application service, something like this:
