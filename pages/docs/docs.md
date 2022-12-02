@@ -164,7 +164,7 @@ In the context of event sourcing, we can leverage these attributes in the way su
      
 
 Note that the table above is to be regarded as a rule of thumb, it's ok to map things differently if it's better suited for your application, but it's a good idea to keep things consistent throughout your organization.
-To see an example of how this may look in code, refer to the [application service](#application-service-event-conversion) documentation.
+To see an example of how this may look in code, refer to the [application service](#application-service) documentation.
 
 
 ### Occurrent CloudEvent Extensions
