@@ -1893,7 +1893,7 @@ will block the thread. This is arguably the easiest and most familiar way to use
 and it's probably good-enough for most scenarios. If high throughput, low CPU and memory-consumption is critical then consider using
 [reactive subscription](#reactive-subscriptions) instead. Reactive subscriptions are also better suited if you want to work with streaming data.   
 
-To create a blocking subscription, you first need to choose which "subscription model" to use. You then a create subscription instance from this subscription model.
+To create a blocking subscription, you first need to choose which "subscription model" to use. Then you create a subscription instance from this subscription model.
 All blocking subscriptions implements the `org.occurrent.subscription.api.blocking.SubscriptionModel` 
 interface. This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
@@ -2269,7 +2269,7 @@ will _not_ block a thread. It uses concepts from [reactive programming](https://
 of data. This is arguably a bit more complex for the typical Java developer, and you should consider using [blocking subscriptions](#blocking-subscriptions) 
 if high throughput, low CPU and memory-consumption is not critical. 
  
-To create a reactive subscription you first need to choose which "subscription model" to use. You then a create subscription instance from this subscription model. 
+To create a reactive subscription you first need to choose which "subscription model" to use. Then you create a subscription instance from this subscription model. 
 All reactive subscriptions implements the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface which uses 
 components from [project reactor](https://projectreactor.io). This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
