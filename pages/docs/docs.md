@@ -2463,7 +2463,7 @@ Occurrent contains a retry module that you can depend on using:
 {% include macros/retry/blocking/maven.md %}
 <div class="comment">Typically you don't need to depend on this module explicitly since many of Occurrent's components already uses this library under the hood and is thus depended on transitively.</div>
 
-Occurrent components that supports retry ([subscription model](#blocking-subscriptions) and [subscription position storage](#blocking-subscription-position-storage) implementations)
+Occurrent components that support retry ([subscription model](#blocking-subscriptions) and [subscription position storage](#blocking-subscription-position-storage) implementations)
 typically accepts an instance of `org.occurrent.retry.RetryStrategy` to their constructors. This allows you to configure how they should do retry. You can configure max attempts, 
 a retry predicate, error listener as well as the backoff strategy. Here's an example:
   
