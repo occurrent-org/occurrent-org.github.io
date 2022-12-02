@@ -496,7 +496,7 @@ represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` i
 represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:subscription-api-reactor` module). 
 
 
-The blocking API is callback based, which is fine if you're working with individual events (you can of course a simple function that aggregates events into batches yourself).
+The blocking API is callback based, which is fine if you're working with individual events (you can of course use a simple function that aggregates events into batches yourself).
 If you want to work with streams of data, the reactor `SubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
 publisher from [project reactor](https://projectreactor.io/).
 
@@ -719,7 +719,7 @@ From a typical Java perspective one could argue that this is not too bad. But it
    It allows treating the state as a [value](https://www.infoq.com/presentations/Value-Values/) which has many benefits.
 2. Commands are defined as explicit data structures with framework-specific annotations when arguably they don't have to. This is fine if you need to serialize the command (in order to send it
    to another location or to schedule it for the future) but one could argue that you don't want to couple your commands to some infrastructure.
-   This is of course a trade-off, in Occurrent you're free to choose any approach you like (i.e. commands/functions can completely free of framework/library/infrastructure concerns). 
+   This is of course a trade-off, in Occurrent you're free to choose any approach you like (i.e. commands/functions can be completely free of framework/library/infrastructure concerns). 
 
 ### Commands in Occurrent 
 
