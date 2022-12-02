@@ -1032,7 +1032,7 @@ and the "type" field contains the fully-qualified name of the class which makes 
 might not be serializable to JSON without conversion. For these reasons, it's recommended to create a more custom mapping between a cloud event and domain event.</div>
 
 To see what the attributes mean in the context of event sourcing refer to the [CloudEvents](#cloudevents) documentation. 
-You can also have a look at [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/implementation/GenericApplicationServiceTest.java) 
+You can also have a look at [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/generic/GenericApplicationServiceTest.java) 
 for an actual code example.
 
 Note that if the data content type in the CloudEvent is specified as "application/json" (or a json compatible content-type) then Occurrent will automatically store it as [Bson](http://bsonspec.org/) in a MongoDB event store.
