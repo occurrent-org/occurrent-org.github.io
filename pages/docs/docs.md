@@ -1293,7 +1293,7 @@ public class CustomApplicationServiceImpl implements ApplicationService<DomainEv
 
 	@Transactional
 	@Override
-    public void execute(String streamId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel, Consumer<Stream<DomainEvent>> sideEffect) {
+    public void execute(String gameId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel, Consumer<Stream<DomainEvent>> sideEffect) {
 		occurrentApplicationService.execute(gameId, functionThatCallsDomainModel, sideEffect);
     }
 }
@@ -1303,7 +1303,7 @@ public class CustomApplicationServiceImpl implements ApplicationService<DomainEv
 class CustomApplicationServiceImpl(val occurrentApplicationService:  GenericApplicationService<DomainEvent>) : ApplicationService<DomainEvent> {
 
 	@Transactional
-    override fun execute(streamId : String, functionThatCallsDomainModel: Function<Stream<DomainEvent>, Stream<DomainEvent>> , sideEffect : Consumer<Stream<DomainEvent>>) {
+    override fun execute(gameId : String, functionThatCallsDomainModel: Function<Stream<DomainEvent>, Stream<DomainEvent>> , sideEffect : Consumer<Stream<DomainEvent>>) {
 		occurrentApplicationService.execute(gameId, functionThatCallsDomainModel, sideEffect)
     }
 }
