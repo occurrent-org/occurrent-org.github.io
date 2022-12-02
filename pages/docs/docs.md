@@ -1781,7 +1781,7 @@ Now you can start reading and writing events to the EventStore:
 
 | Name  | Description  | 
 |:----|:-----|  
-| [Number&nbsp;Guessing&nbsp;Game](https://gitthub.com/johanhaleby/occurrent/tree/master/example/domain/number-guessing-game/mongodb/native) | A simple game implemented using a pure domain model and stores events in MongoDB using `MongoEventStore`. It also generates integration events and publishes these to RabbitMQ. |
+| [Number&nbsp;Guessing&nbsp;Game](https://github.com/johanhaleby/occurrent/tree/master/example/domain/number-guessing-game/mongodb/native) | A simple game implemented using a pure domain model and stores events in MongoDB using `MongoEventStore`. It also generates integration events and publishes these to RabbitMQ. |
 | [Uno](https://github.com/johanhaleby/occurrent/tree/master/example/domain/uno/mongodb/native) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Stores events in MongoDB using `MongoEventStore`.
 
 ### EventStore with Spring MongoTemplate (Blocking)  
