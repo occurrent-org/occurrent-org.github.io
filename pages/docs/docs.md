@@ -7,6 +7,8 @@ permalink: /documentation
 
 {% include notificationBanner.html %}
 
+{% assign cloudevents_spec = "https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md" %}
+
 <div id="spy-nav" class="left-menu" markdown="1"  style="overflow-x: hidden; overflow-y: auto;">
 * [Introduction](#introduction)
 * [Concepts](#concepts)
@@ -115,9 +117,9 @@ intrinsic joy of doing something yourself:
   that you already have and hook these into Occurrent.
 * Occurrent is not a database by itself. The goal is to be a thin wrapper around existing commodity databases that you may already be familiar with.  
 * Events are stored in a standard format ([cloud events](https://cloudevents.io/)). You are responsible for serializing/deserializing the cloud events "body" (data) yourself.
-  While this may seem like a limitation at first, why not just serialize your POJO directly to arbitrary JSON like you're used to?, it really enables a lot of use cases and piece of mind. For example:
+  While this may seem like a limitation at first, why not just serialize your POJO directly to arbitrary JSON like you're used to?, it really enables a lot of use cases and peace of mind. For example:
   * It should be possible to hook in various standard components into Occurrent that understands cloud events. For example a component could visualize a distributed tracing graph from the cloud events
-    if using the [distributed tracing cloud event extension](https://github.com/cloudevents/spec/blob/master/extensions/distributed-tracing.md).
+    if using the [distributed tracing cloud event extension](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md).
   * Since the current idea is to be as close as possible to the specification even in the database,  
     you can use the database to your advantage. For example, you can create custom indexes used for fast and fully consistent domain queries directly on an event stream (or even multiple streams).
 * Composable: Function composition and pipes are encouraged. For example pipe the event stream to a rehydration function (any function that converts a stream of events to current state) before calling your domain model.
@@ -144,44 +146,44 @@ In Occurrent, you don't persist your domain events directly to an event store, i
 data in your domain event. 
   
 In practice, this means that instead of storing events in a proprietary or arbitrary format, Occurrent, stores events in accordance with the cloud event specification, even at the data-store level. 
-I.e. you know the structure of your events, even in the database that the event store uses. It's up to you as a user of the library to [convert](#application-service-event-conversion) your domain events into cloud events when 
+I.e. you know the structure of your events, even in the database that the event store uses. It's up to you as a user of the library to [convert](#cloudevent-conversion) your domain events into cloud events when 
 writing to the [event store](#eventstore). This is extremely powerful, not only does it allow you to design your domains event in any way you find fit (for example without compromises enforced by a JSON serialization library) but it also allows for easier migration, 
-data consistency and features such as (fully-consistent) [queries](#eventstore-queries) to the event store for certain use cases. A cloud event is made-up by a set of pre-defined attributes described in the [cloud event specification](https://github.com/cloudevents/spec/blob/v1.0/spec.md).
+data consistency and features such as (fully-consistent) [queries](#eventstore-queries) to the event store for certain use cases. A cloud event is made-up by a set of pre-defined attributes described in the [cloud event specification]({{cloudevents_spec}}).
 In the context of event sourcing, we can leverage these attributes in the way suggested below:
 <br><br>
 
 
 | Cloud&nbsp;Event<br>Attribute&nbsp;Name | Event&nbsp;Sourcing Nomenclature&nbsp; | Description |
 |:---------------------------:|:-----:|:----|
-| [id](https://github.com/cloudevents/spec/blob/v1.0/spec.md#id) | event&nbsp;id | The cloud event `id` attribute is used to store the id of a unique event in a particular context ("source"). Note that this id doesn't necessarily need to be _globally_ unique (but the combination of `id` and `source` _must_). Typically this would be a UUID.<br><br> |     
-| [source](https://github.com/cloudevents/spec/blob/v1.0/spec.md#source-1) | category | You can regard the "source" attribute as the "stream type" or a "category" for certain streams. For example, if you're creating a game, you may have two kinds of aggregates in your bounded context, a "game" and a "player". You can regard these as two different sources (categories). These are represented as URN's, for example the "game" may have the source "urn:mycompany:mygame:game" and "player" may have "urn:mycompany:mygame:player". This allows, for example, [subscriptions](#subscriptions) to subscribe to all events related to any player (by using a [subscription filter](#blocking-subscription-filters) for the `source` attribute).<br><br>|     
-| [subject](https://github.com/cloudevents/spec/blob/v1.0/spec.md#subject) | "subject" (~identifier) | A subject describes the event in the context of the source, typically an entity (aggregate) id that all events in the stream are related to. This property is optional (because Occurrent automatically adds the `streamid` attribute) and it's possible that you may not need to add it. But it can be quite useful. For example, a stream may not _necessarily_, just hold contents of a single aggregate, and if so the `subject` can be used to distinguish between different aggregates/entities in a stream. Another example would be if you have multiple streams that represents different aspects of the same entity. For example, if you have a game where players are awarded points based on their performance in the game _after_ the game has ended, you may decide to represent "point awarding" and "game play" as different streams, but they refer to the same "game id". You can then use the "game id" as subject.<br><br>|
-| [type](https://github.com/cloudevents/spec/blob/v1.0/spec.md#type) | event&nbsp;type | The type of the event. It may be enough to just use name of the domain event, such as "GameStarted" but you may also consider using a URN (e.g. "urn:mycompany:game:started") or qualify it ("com.mycompany.game.started"). Note that you should try to avoid using the fully-qualified class name of the domain event since you'll run into trouble if you're moving the domain event to a different package.<br><br>|
-| [time](https://github.com/cloudevents/spec/blob/v1.0/spec.md#time) | event&nbsp;time | The time when the event occurred (typically would be the application time and not the processing time) described by [RFC 3339](https://tools.ietf.org/html/rfc3339) (represented as `java.time.OffsetDateTime` by the [CloudEvent SDK](https://github.com/cloudevents/sdk-java)).<br><br>|
-| [datacontenttype](https://github.com/cloudevents/spec/blob/v1.0/spec.md#datacontenttype) | content-type | The content-type of the data attribute, typically you want to use "application/json", which is also the default if you don't specify any content-type at all.<br><br>|
-| [dataschema](https://github.com/cloudevents/spec/blob/v1.0/spec.md#dataschema) | schema | The URI to a schema describing the data in the cloud event (optional).<br><br>|
-| [data](https://github.com/cloudevents/spec/blob/v1.0/spec.md#event-data) | event&nbsp;data | The actual data needed to represent your domain event, for example the contents of a `GameStarted` event. You can leave out this attribute entirely if your event is fully described by other attributes.<br><br>|
+| [id]({{cloudevents_spec}}#id) | event&nbsp;id | The cloud event `id` attribute is used to store the id of a unique event in a particular context ("source"). Note that this id doesn't necessarily need to be _globally_ unique (but the combination of `id` and `source` _must_). Typically this would be a UUID.<br><br> |     
+| [source]({{cloudevents_spec}}#source-1) | category | You can regard the "source" attribute as the "stream type" or a "category" for certain streams. For example, if you're creating a game, you may have two kinds of aggregates in your bounded context, a "game" and a "player". You can regard these as two different sources (categories). These are represented as URN's, for example the "game" may have the source "urn:mycompany:mygame:game" and "player" may have "urn:mycompany:mygame:player". This allows, for example, [subscriptions](#subscriptions) to subscribe to all events related to any player (by using a [subscription filter](#blocking-subscription-filters) for the `source` attribute).<br><br>|     
+| [subject]({{cloudevents_spec}}#subject) | "subject" (~identifier) | A subject describes the event in the context of the source, typically an entity (aggregate) id that all events in the stream are related to. This property is optional (because Occurrent automatically adds the `streamid` attribute) and it's possible that you may not need to add it. But it can be quite useful. For example, a stream may not _necessarily_, just hold contents of a single aggregate, and if so the `subject` can be used to distinguish between different aggregates/entities in a stream. Another example would be if you have multiple streams that represents different aspects of the same entity. For example, if you have a game where players are awarded points based on their performance in the game _after_ the game has ended, you may decide to represent "point awarding" and "game play" as different streams, but they refer to the same "game id". You can then use the "game id" as subject.<br><br>|
+| [type]({{cloudevents_spec}}#type) | event&nbsp;type | The type of the event. It may be enough to just use name of the domain event, such as "GameStarted" but you may also consider using a URN (e.g. "urn:mycompany:game:started") or qualify it ("com.mycompany.game.started"). Note that you should try to avoid using the fully-qualified class name of the domain event since you'll run into trouble if you're moving the domain event to a different package.<br><br>|
+| [time]({{cloudevents_spec}}#time) | event&nbsp;time | The time when the event occurred (typically would be the application time and not the processing time) described by [RFC 3339](https://tools.ietf.org/html/rfc3339) (represented as `java.time.OffsetDateTime` by the [CloudEvent SDK](https://github.com/cloudevents/sdk-java)).<br><br>|
+| [datacontenttype]({{cloudevents_spec}}#datacontenttype) | content-type | The content-type of the data attribute, typically you want to use "application/json", which is also the default if you don't specify any content-type at all.<br><br>|
+| [dataschema]({{cloudevents_spec}}#dataschema) | schema | The URI to a schema describing the data in the cloud event (optional).<br><br>|
+| [data]({{cloudevents_spec}}#event-data) | event&nbsp;data | The actual data needed to represent your domain event, for example the contents of a `GameStarted` event. You can leave out this attribute entirely if your event is fully described by other attributes.<br><br>|
      
 
 Note that the table above is to be regarded as a rule of thumb, it's ok to map things differently if it's better suited for your application, but it's a good idea to keep things consistent throughout your organization.
-To see an example of how this may look in code, refer to the [application service](#application-service-event-conversion) documentation.
+To see an example of how this may look in code, refer to the [application service](#application-service) documentation.
 
 
 ### Occurrent CloudEvent Extensions
 
-Occurrent automatically adds two [extension attributes](https://github.com/cloudevents/spec/blob/v1.0/spec.md#extension-context-attributes) to each cloud event written to the [event store](#eventstore):<br><br>
+Occurrent automatically adds two [extension attributes]({{cloudevents_spec}}#extension-context-attributes) to each cloud event written to the [event store](#eventstore):<br><br>
 
 {% include macros/occurrent-cloudevent-extension.md %}
 
 These are required for Occurrent to operate. A long-term goal of Occurrent is to come up with a standardized set of cloud event extensions that are agreed upon and used by several different vendors.
 
-In the mean time, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#specify-cloudevent-metadata)), 
+In the mean time, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#cloudevent-metadata)), 
 you would typically do this by creating or extending/wrapping an already existing [application service](#application-service).    
 
 ### CloudEvent Metadata
 
-You can specify metadata to the cloud event by making use of [extension attributes](https://github.com/cloudevents/spec/blob/v1.0/spec.md#extension-context-attributes). This is the place to add things such as sequence number, correlation id, causation id etc. 
-Actually there's already a standard way of applying [distributed tracing](https://github.com/cloudevents/spec/blob/master/extensions/distributed-tracing.md) and [sequence number generation](https://github.com/cloudevents/spec/blob/master/extensions/sequence.md) 
+You can specify metadata to the cloud event by making use of [extension attributes]({{cloudevents_spec}}#extension-context-attributes). This is the place to add things such as sequence number, correlation id, causation id etc. 
+Actually there's already a standard way of applying [distributed tracing](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md) and [sequence number generation](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/sequence.md) 
 extensions to cloud events that might be of interest.  
 
 ## EventStore
@@ -496,7 +498,7 @@ represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` i
 represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:subscription-api-reactor` module). 
 
 
-The blocking API is callback based, which is fine if you're working with individual events (you can of course a simple function that aggregates events into batches yourself).
+The blocking API is callback based, which is fine if you're working with individual events (you can of course use a simple function that aggregates events into batches yourself).
 If you want to work with streams of data, the reactor `SubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
 publisher from [project reactor](https://projectreactor.io/).
 
@@ -719,7 +721,7 @@ From a typical Java perspective one could argue that this is not too bad. But it
    It allows treating the state as a [value](https://www.infoq.com/presentations/Value-Values/) which has many benefits.
 2. Commands are defined as explicit data structures with framework-specific annotations when arguably they don't have to. This is fine if you need to serialize the command (in order to send it
    to another location or to schedule it for the future) but one could argue that you don't want to couple your commands to some infrastructure.
-   This is of course a trade-off, in Occurrent you're free to choose any approach you like (i.e. commands/functions can completely free of framework/library/infrastructure concerns). 
+   This is of course a trade-off, in Occurrent you're free to choose any approach you like (i.e. commands/functions can be completely free of framework/library/infrastructure concerns). 
 
 ### Commands in Occurrent 
 
@@ -1032,7 +1034,7 @@ and the "type" field contains the fully-qualified name of the class which makes 
 might not be serializable to JSON without conversion. For these reasons, it's recommended to create a more custom mapping between a cloud event and domain event.</div>
 
 To see what the attributes mean in the context of event sourcing refer to the [CloudEvents](#cloudevents) documentation. 
-You can also have a look at [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/implementation/GenericApplicationServiceTest.java) 
+You can also have a look at [GenericApplicationServiceTest.java](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/service/blocking/src/test/java/org/occurrent/application/service/blocking/generic/GenericApplicationServiceTest.java) 
 for an actual code example.
 
 Note that if the data content type in the CloudEvent is specified as "application/json" (or a json compatible content-type) then Occurrent will automatically store it as [Bson](http://bsonspec.org/) in a MongoDB event store.
@@ -1137,7 +1139,7 @@ This module provides an interface, `org.occurrent.application.service.blocking.A
 a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from 
 cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
 `org.occurrent.application.converter.implementation.GenericCloudEventConverter` available in the `org.occurrent:cloudevent-converter-generic` module. 
-You can see an example in the [next](#application-service-event-conversion) section.
+You can see an example in the [next](#using-the-application-service) section.
 
 As of version 0.11.0, the `GenericApplicationService` also takes a [RetryStrategy](#retry) as an optional third parameter.  
 By default, the retry strategy uses exponential backoff starting with 100 ms and progressively go up to max 2 seconds wait time between
@@ -1277,7 +1279,7 @@ applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events
 
 ### Application Service Transactional Side-Effects
 
-In the example above, writing the events to the event store and executing policies is not an atomic operation. If your app crashes before after the call to `registerOngoingGame::registerGameAsOngoingWhenGameWasStarted`
+In the example above, writing the events to the event store and executing policies is not an atomic operation. If your app crashes after the call to `registerOngoingGame::registerGameAsOngoingWhenGameWasStarted`
 but before `removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded`, you will need to handle idempotency. But if your policies/side-effects are writing data to the same database as the event store
 you can make use of transactions to write everything atomically! This is very easy if you're using a [Spring EventStore](#eventstore-with-spring-mongotemplate-blocking). What you need to do is to wrap the `ApplicationService` provided
 by Occurrent in your own application service, something like this:
@@ -1293,7 +1295,7 @@ public class CustomApplicationServiceImpl implements ApplicationService<DomainEv
 
 	@Transactional
 	@Override
-    public void execute(String streamId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel, Consumer<Stream<DomainEvent>> sideEffect) {
+    public void execute(String gameId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel, Consumer<Stream<DomainEvent>> sideEffect) {
 		occurrentApplicationService.execute(gameId, functionThatCallsDomainModel, sideEffect);
     }
 }
@@ -1303,7 +1305,7 @@ public class CustomApplicationServiceImpl implements ApplicationService<DomainEv
 class CustomApplicationServiceImpl(val occurrentApplicationService:  GenericApplicationService<DomainEvent>) : ApplicationService<DomainEvent> {
 
 	@Transactional
-    override fun execute(streamId : String, functionThatCallsDomainModel: Function<Stream<DomainEvent>, Stream<DomainEvent>> , sideEffect : Consumer<Stream<DomainEvent>>) {
+    override fun execute(gameId : String, functionThatCallsDomainModel: Function<Stream<DomainEvent>, Stream<DomainEvent>> , sideEffect : Consumer<Stream<DomainEvent>>) {
 		occurrentApplicationService.execute(gameId, functionThatCallsDomainModel, sideEffect)
     }
 }
@@ -1315,7 +1317,7 @@ are written atomically in the same transaction!
 
 ### Application Service Kotlin Extensions
 
-If you're using [Kotlin](https://kotlinlang.org/) chances are that your domain model is using a [Sequence](https://kotlinlang.org/docs/reference/sequences.html)
+If you're using [Kotlin](https://kotlinlang.org/) chances are that your domain model is using a [Sequence](https://kotlinlang.org/docs/sequences.html)
 instead of a java `Stream`:
 
 ```kotlin
@@ -1369,7 +1371,7 @@ In Occurrent, you can create asynchronous policies by creating a [subscription](
 
 You could also create a generic policy that simply forwards all events to another piece of infrastructure. For example, you may wish to forward all events to [rabbitmq](https://www.rabbitmq.com/) (by publishing them)
 or [Spring's event infrastructure](https://www.baeldung.com/spring-events), and _then_ create policies that subscribes to events from these systems instead. There's an example in the
-[github repository](https://github.com/johanhaleby/occurrent/tree/master/example/forwarder/mongodb-subscription-to-spring-event) that shows an example of how one can achieve this.
+[github repository](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/forwarder/mongodb-subscription-to-spring-event) that shows an example of how one can achieve this.
 
 You may also want to look into the "todo-list" pattern described in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation) on the in the [event modeling](https://eventmodeling.org/) website.
 
@@ -1385,7 +1387,7 @@ Snapshotting is an optimization technique that can be applied if it takes too lo
 There are several ways to do this and Occurrent doesn't enforce any particular strategy. One strategy is to use so-called "snapshot events" (special events that contains 
 a pre-calculated view of the state of an event stream at a particular time) and another technique is to write snapshots to another datastore than the event store.
 
-The [application service](#commands) need to be modified to first load the up the snapshot and then load events that have not yet been materialized in the snapshot (if any). 
+The [application service](#application-service) need to be modified to first load the up the snapshot and then load events that have not yet been materialized in the snapshot (if any). 
 
 ### Synchronous Snapshots
 
@@ -1602,13 +1604,13 @@ If you don't want to use any of the Occurrent libraries for deadline scheduling,
 <div class="comment">If you're using Spring Boot, you might consider using the <a href="#spring-boot-starter">spring-boot-starter</a> project to get started quickly. Then you can return to this section.</div>
 
 Getting started with Occurrent involves these steps:
-<div class="comment">It's recommended to read up on <a href="https://occurrent.org/documentation#cloudevents">CloudEvent's</a> and its <a href="https://github.com/cloudevents/spec/blob/v1.0/spec.md">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
+<div class="comment">It's recommended to read up on <a href="#cloudevents">CloudEvent's</a> and its <a href="{{cloudevents_spec}}">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
 
 1. Choose an underlying datastore for an [event store](#choosing-an-eventstore). Luckily there are only two choices at the moment, MongoDB and an in-memory implementation. Hopefully this will be a more difficult decision in the future :)
 1. Once a datastore has been decided it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
 1. If you need [subscriptions](#using-subscriptions) (i.e. the ability to subscribe to changes from an EventStore) then you need to pick a library that implements this for the datastore that you've chosen. 
    Again, there may be several implementations to choose from.
-1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [position storage](https://occurrent.org/documentation#blocking-subscription-position-storage) library. 
+1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [position storage](#blocking-subscription-position-storage) library. 
    These libraries provide means to automatically (or selectively) store the position for a subscriber to a datastore. Note that the datastore that stores this position
    can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store subscription positions in Redis.
 1. You're now good to go, but you may also want to look into more higher-level components if you don't have the need to role your own. We recommend looking into:
@@ -1619,7 +1621,7 @@ Getting started with Occurrent involves these steps:
 
 # Choosing An EventStore
 
-There are currently two different datastores to choose from, [MongoDB](#mongodb) and [In-Memory](#in-memory). 
+There are currently two different datastores to choose from, [MongoDB](#mongodb) and [In-Memory](#in-memory-eventstore). 
 
 ## MongoDB
 
@@ -1639,7 +1641,7 @@ The Occurrent CloudEvent Extension consists of these attributes:
 
 {% include macros/occurrent-cloudevent-extension.md %}
 
-A json schema describing a complete Occurrent CloudEvent, as it will be persisted to a MongoDB collection, can be found [here](https://github.com/johanhaleby/occurrent/blob/master/cloudevents-schema-occurrent.json) 
+A json schema describing a complete Occurrent CloudEvent, as it will be persisted to a MongoDB collection, can be found [here](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/cloudevents-schema-occurrent.json) 
 (a "raw" cloud event json schema can be found [here](https://github.com/tsurdilo/cloudevents-schema-vscode/blob/master/schemas/cloudevents-schema.json) for comparison).
 
 Note that MongoDB will automatically add an [\_id](https://docs.mongodb.com/manual/reference/method/ObjectId/) field (which is not used by Occurrent). 
@@ -1685,7 +1687,7 @@ Here's an example of what you can expect to see in the "events" collection when 
 
 ### MongoDB Time Representation
 
-The CloudEvents specification says that the [time attribute](https://github.com/cloudevents/spec/blob/v1.0/spec.md#time), if present, must adhere to the [RFC 3339 specification](https://tools.ietf.org/html/rfc3339).
+The CloudEvents specification says that the [time attribute]({{cloudevents_spec}}#time), if present, must adhere to the [RFC 3339 specification](https://tools.ietf.org/html/rfc3339).
 To accommodate this in MongoDB, the `time` attribute must be persisted as a `String`. This by itself is not a problem, a problem only arise 
 if you want to make time-based queries on the events persisted to a MongoDB-backed `EventStore` (using the [EventStoreQueries](#eventstore-queries) interface).
 This is, quite obviously, because time-based queries on `String`'s are suboptimal (to say the least) and may lead to surprising results.
@@ -1733,7 +1735,7 @@ Each MongoDB `EventStore` [implementation](#mongodb-eventstore-implementations) 
 
 |  Name | Properties | Description |
 |:----|:------|:-----|
-| `id` + `source` | ascending `id`,<br>descending&nbsp;`source`,&nbsp;&nbsp;<br>unique<br><br> | Compound index of `id` and `source` to comply with the [specification](https://github.com/cloudevents/spec/blob/v1.0/spec.md) that the `id`+`source` combination must be unique. |     
+| `id` + `source` | ascending `id`,<br>descending&nbsp;`source`,&nbsp;&nbsp;<br>unique<br><br> | Compound index of `id` and `source` to comply with the [specification]({{cloudevents_spec}}) that the `id`+`source` combination must be unique. |     
 | `streamid` + `streamversion`&nbsp;&nbsp;| ascending `streamid`,<br>descending `streamversion`,<br>unique | Compound index of `streamid` and `streamversion` (Occurrent CloudEvent extension) used for fast retrieval of the latest cloud event in a stream. |
 
 <div class="comment">Prior to version 0.7.3, a <code>streamid</code> index was also automatically created, but it was removed in 0.7.3 since this index is covered by the <code>streamid+streamversion</code> index.</div>
@@ -1781,8 +1783,8 @@ Now you can start reading and writing events to the EventStore:
 
 | Name  | Description  | 
 |:----|:-----|  
-| [Number&nbsp;Guessing&nbsp;Game](https://gitthub.com/johanhaleby/occurrent/tree/master/example/domain/number-guessing-game/mongodb/native) | A simple game implemented using a pure domain model and stores events in MongoDB using `MongoEventStore`. It also generates integration events and publishes these to RabbitMQ. |
-| [Uno](https://github.com/johanhaleby/occurrent/tree/master/example/domain/uno/mongodb/native) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Stores events in MongoDB using `MongoEventStore`.
+| [Number&nbsp;Guessing&nbsp;Game](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/number-guessing-game/mongodb/native) | A simple game implemented using a pure domain model and stores events in MongoDB using `MongoEventStore`. It also generates integration events and publishes these to RabbitMQ. |
+| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/uno/mongodb/native) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Stores events in MongoDB using `MongoEventStore`.
 
 ### EventStore with Spring MongoTemplate (Blocking)  
 
@@ -1815,12 +1817,12 @@ Now you can start reading and writing events to the EventStore:
 
 | Name  | Description  | 
 |:----|:-----|  
-| [Number&nbsp;Guessing&nbsp;Game](https://github.com/johanhaleby/occurrent/tree/master/example/domain/number-guessing-game/mongodb/spring/blocking) | A simple game implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. It also generates integration events and publishes these to RabbitMQ. |
-| [Word&nbsp;Guessing&nbsp;Game](https://github.com/johanhaleby/occurrent/tree/master/example/domain/word-guessing-game/mongodb/spring/blocking) | Similar to the "Number Guessing Game" but more advanced, leveraging several Occurrent features such as CQRS, queries, and transactional projections. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot.
-| [Uno](https://github.com/johanhaleby/occurrent/tree/master/example/domain/uno/mongodb/spring/blocking) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot.
-| [Subscription&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-subscription-based-mongodb-projections/src/main/java/org/occurrent/example/eventstore/mongodb/spring/subscriptionprojections) | An example showing how to create a subscription that listens to certain events stored in the EventStore and updates a view/projection from these events. |
-| [Transactional&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-transactional-projection-mongodb/src/main/java/org/occurrent/example/eventstore/mongodb/spring/transactional) | An example showing how to combine writing events to the `SpringMongoEventStore` and update a view transactionally using the `@Transactional` annotation. | 
-| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
+| [Number&nbsp;Guessing&nbsp;Game](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/number-guessing-game/mongodb/spring/blocking) | A simple game implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. It also generates integration events and publishes these to RabbitMQ. |
+| [Word&nbsp;Guessing&nbsp;Game](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/word-guessing-game/mongodb/spring/blocking) | Similar to the "Number Guessing Game" but more advanced, leveraging several Occurrent features such as CQRS, queries, and transactional projections. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot.
+| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/uno/mongodb/spring/blocking) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot.
+| [Subscription&nbsp;View](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-subscription-based-mongodb-projections/src/main/java/org/occurrent/example/eventstore/mongodb/spring/subscriptionprojections) | An example showing how to create a subscription that listens to certain events stored in the EventStore and updates a view/projection from these events. |
+| [Transactional&nbsp;View](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-transactional-projection-mongodb/src/main/java/org/occurrent/example/eventstore/mongodb/spring/transactional) | An example showing how to combine writing events to the `SpringMongoEventStore` and update a view transactionally using the `@Transactional` annotation. | 
+| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
 
 ### EventStore with Spring ReactiveMongoTemplate (Reactive)
   
@@ -1853,7 +1855,7 @@ Now you can start reading and writing events to the EventStore:
 
 | Name  | Description  | 
 |:----|:-----|  
-| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/master/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
+| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-adhoc-evenstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
 
 # In-Memory EventStore 
 
@@ -1893,7 +1895,7 @@ will block the thread. This is arguably the easiest and most familiar way to use
 and it's probably good-enough for most scenarios. If high throughput, low CPU and memory-consumption is critical then consider using
 [reactive subscription](#reactive-subscriptions) instead. Reactive subscriptions are also better suited if you want to work with streaming data.   
 
-To create a blocking subscription, you first need to choose which "subscription model" to use. You then a create subscription instance from this subscription model.
+To create a blocking subscription, you first need to choose which "subscription model" to use. Then you create a subscription instance from this subscription model.
 All blocking subscriptions implements the `org.occurrent.subscription.api.blocking.SubscriptionModel` 
 interface. This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
@@ -2269,7 +2271,7 @@ will _not_ block a thread. It uses concepts from [reactive programming](https://
 of data. This is arguably a bit more complex for the typical Java developer, and you should consider using [blocking subscriptions](#blocking-subscriptions) 
 if high throughput, low CPU and memory-consumption is not critical. 
  
-To create a reactive subscription you first need to choose which "subscription model" to use. You then a create subscription instance from this subscription model. 
+To create a reactive subscription you first need to choose which "subscription model" to use. Then you create a subscription instance from this subscription model. 
 All reactive subscriptions implements the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface which uses 
 components from [project reactor](https://projectreactor.io). This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
 
@@ -2463,7 +2465,7 @@ Occurrent contains a retry module that you can depend on using:
 {% include macros/retry/blocking/maven.md %}
 <div class="comment">Typically you don't need to depend on this module explicitly since many of Occurrent's components already uses this library under the hood and is thus depended on transitively.</div>
 
-Occurrent components that supports retry ([subscription model](#blocking-subscriptions) and [subscription position storage](#blocking-subscription-position-storage) implementations)
+Occurrent components that support retry ([subscription model](#blocking-subscriptions) and [subscription position storage](#blocking-subscription-position-storage) implementations)
 typically accepts an instance of `org.occurrent.retry.RetryStrategy` to their constructors. This allows you to configure how they should do retry. You can configure max attempts, 
 a retry predicate, error listener as well as the backoff strategy. Here's an example:
   
@@ -2510,7 +2512,7 @@ retry.mapRetryPredicate(currentRetryPredicate -> currentRetryPredicate.or(Illega
 
 ## Subscription DSL
 
-The subscription DSL is a utility that you can use to easier create subscriptions by using a [CloudEventConverter](#application-service-event-conversion).
+The subscription DSL is a utility that you can use to easier create subscriptions by using a [CloudEventConverter](#cloudevent-conversion).
 There's a both a Kotlin DSL and Java DSL. First you need to depend on the `subscription-dsl` module:
 
 {% include macros/subscription/blocking/dsl/maven.md %}
