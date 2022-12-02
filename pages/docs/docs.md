@@ -117,7 +117,7 @@ intrinsic joy of doing something yourself:
 * Events are stored in a standard format ([cloud events](https://cloudevents.io/)). You are responsible for serializing/deserializing the cloud events "body" (data) yourself.
   While this may seem like a limitation at first, why not just serialize your POJO directly to arbitrary JSON like you're used to?, it really enables a lot of use cases and piece of mind. For example:
   * It should be possible to hook in various standard components into Occurrent that understands cloud events. For example a component could visualize a distributed tracing graph from the cloud events
-    if using the [distributed tracing cloud event extension](https://github.com/cloudevents/spec/blob/master/extensions/distributed-tracing.md).
+    if using the [distributed tracing cloud event extension](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md).
   * Since the current idea is to be as close as possible to the specification even in the database,  
     you can use the database to your advantage. For example, you can create custom indexes used for fast and fully consistent domain queries directly on an event stream (or even multiple streams).
 * Composable: Function composition and pipes are encouraged. For example pipe the event stream to a rehydration function (any function that converts a stream of events to current state) before calling your domain model.
@@ -146,21 +146,21 @@ data in your domain event.
 In practice, this means that instead of storing events in a proprietary or arbitrary format, Occurrent, stores events in accordance with the cloud event specification, even at the data-store level. 
 I.e. you know the structure of your events, even in the database that the event store uses. It's up to you as a user of the library to [convert](#application-service-event-conversion) your domain events into cloud events when 
 writing to the [event store](#eventstore). This is extremely powerful, not only does it allow you to design your domains event in any way you find fit (for example without compromises enforced by a JSON serialization library) but it also allows for easier migration, 
-data consistency and features such as (fully-consistent) [queries](#eventstore-queries) to the event store for certain use cases. A cloud event is made-up by a set of pre-defined attributes described in the [cloud event specification](https://github.com/cloudevents/spec/blob/v1.0/spec.md).
+data consistency and features such as (fully-consistent) [queries](#eventstore-queries) to the event store for certain use cases. A cloud event is made-up by a set of pre-defined attributes described in the [cloud event specification](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md).
 In the context of event sourcing, we can leverage these attributes in the way suggested below:
 <br><br>
 
 
 | Cloud&nbsp;Event<br>Attribute&nbsp;Name | Event&nbsp;Sourcing Nomenclature&nbsp; | Description |
 |:---------------------------:|:-----:|:----|
-| [id](https://github.com/cloudevents/spec/blob/v1.0/spec.md#id) | event&nbsp;id | The cloud event `id` attribute is used to store the id of a unique event in a particular context ("source"). Note that this id doesn't necessarily need to be _globally_ unique (but the combination of `id` and `source` _must_). Typically this would be a UUID.<br><br> |     
-| [source](https://github.com/cloudevents/spec/blob/v1.0/spec.md#source-1) | category | You can regard the "source" attribute as the "stream type" or a "category" for certain streams. For example, if you're creating a game, you may have two kinds of aggregates in your bounded context, a "game" and a "player". You can regard these as two different sources (categories). These are represented as URN's, for example the "game" may have the source "urn:mycompany:mygame:game" and "player" may have "urn:mycompany:mygame:player". This allows, for example, [subscriptions](#subscriptions) to subscribe to all events related to any player (by using a [subscription filter](#blocking-subscription-filters) for the `source` attribute).<br><br>|     
-| [subject](https://github.com/cloudevents/spec/blob/v1.0/spec.md#subject) | "subject" (~identifier) | A subject describes the event in the context of the source, typically an entity (aggregate) id that all events in the stream are related to. This property is optional (because Occurrent automatically adds the `streamid` attribute) and it's possible that you may not need to add it. But it can be quite useful. For example, a stream may not _necessarily_, just hold contents of a single aggregate, and if so the `subject` can be used to distinguish between different aggregates/entities in a stream. Another example would be if you have multiple streams that represents different aspects of the same entity. For example, if you have a game where players are awarded points based on their performance in the game _after_ the game has ended, you may decide to represent "point awarding" and "game play" as different streams, but they refer to the same "game id". You can then use the "game id" as subject.<br><br>|
-| [type](https://github.com/cloudevents/spec/blob/v1.0/spec.md#type) | event&nbsp;type | The type of the event. It may be enough to just use name of the domain event, such as "GameStarted" but you may also consider using a URN (e.g. "urn:mycompany:game:started") or qualify it ("com.mycompany.game.started"). Note that you should try to avoid using the fully-qualified class name of the domain event since you'll run into trouble if you're moving the domain event to a different package.<br><br>|
-| [time](https://github.com/cloudevents/spec/blob/v1.0/spec.md#time) | event&nbsp;time | The time when the event occurred (typically would be the application time and not the processing time) described by [RFC 3339](https://tools.ietf.org/html/rfc3339) (represented as `java.time.OffsetDateTime` by the [CloudEvent SDK](https://github.com/cloudevents/sdk-java)).<br><br>|
-| [datacontenttype](https://github.com/cloudevents/spec/blob/v1.0/spec.md#datacontenttype) | content-type | The content-type of the data attribute, typically you want to use "application/json", which is also the default if you don't specify any content-type at all.<br><br>|
-| [dataschema](https://github.com/cloudevents/spec/blob/v1.0/spec.md#dataschema) | schema | The URI to a schema describing the data in the cloud event (optional).<br><br>|
-| [data](https://github.com/cloudevents/spec/blob/v1.0/spec.md#event-data) | event&nbsp;data | The actual data needed to represent your domain event, for example the contents of a `GameStarted` event. You can leave out this attribute entirely if your event is fully described by other attributes.<br><br>|
+| [id](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#id) | event&nbsp;id | The cloud event `id` attribute is used to store the id of a unique event in a particular context ("source"). Note that this id doesn't necessarily need to be _globally_ unique (but the combination of `id` and `source` _must_). Typically this would be a UUID.<br><br> |     
+| [source](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#source-1) | category | You can regard the "source" attribute as the "stream type" or a "category" for certain streams. For example, if you're creating a game, you may have two kinds of aggregates in your bounded context, a "game" and a "player". You can regard these as two different sources (categories). These are represented as URN's, for example the "game" may have the source "urn:mycompany:mygame:game" and "player" may have "urn:mycompany:mygame:player". This allows, for example, [subscriptions](#subscriptions) to subscribe to all events related to any player (by using a [subscription filter](#blocking-subscription-filters) for the `source` attribute).<br><br>|     
+| [subject](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#subject) | "subject" (~identifier) | A subject describes the event in the context of the source, typically an entity (aggregate) id that all events in the stream are related to. This property is optional (because Occurrent automatically adds the `streamid` attribute) and it's possible that you may not need to add it. But it can be quite useful. For example, a stream may not _necessarily_, just hold contents of a single aggregate, and if so the `subject` can be used to distinguish between different aggregates/entities in a stream. Another example would be if you have multiple streams that represents different aspects of the same entity. For example, if you have a game where players are awarded points based on their performance in the game _after_ the game has ended, you may decide to represent "point awarding" and "game play" as different streams, but they refer to the same "game id". You can then use the "game id" as subject.<br><br>|
+| [type](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#type) | event&nbsp;type | The type of the event. It may be enough to just use name of the domain event, such as "GameStarted" but you may also consider using a URN (e.g. "urn:mycompany:game:started") or qualify it ("com.mycompany.game.started"). Note that you should try to avoid using the fully-qualified class name of the domain event since you'll run into trouble if you're moving the domain event to a different package.<br><br>|
+| [time](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#time) | event&nbsp;time | The time when the event occurred (typically would be the application time and not the processing time) described by [RFC 3339](https://tools.ietf.org/html/rfc3339) (represented as `java.time.OffsetDateTime` by the [CloudEvent SDK](https://github.com/cloudevents/sdk-java)).<br><br>|
+| [datacontenttype](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#datacontenttype) | content-type | The content-type of the data attribute, typically you want to use "application/json", which is also the default if you don't specify any content-type at all.<br><br>|
+| [dataschema](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#dataschema) | schema | The URI to a schema describing the data in the cloud event (optional).<br><br>|
+| [data](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#event-data) | event&nbsp;data | The actual data needed to represent your domain event, for example the contents of a `GameStarted` event. You can leave out this attribute entirely if your event is fully described by other attributes.<br><br>|
      
 
 Note that the table above is to be regarded as a rule of thumb, it's ok to map things differently if it's better suited for your application, but it's a good idea to keep things consistent throughout your organization.
@@ -169,7 +169,7 @@ To see an example of how this may look in code, refer to the [application servic
 
 ### Occurrent CloudEvent Extensions
 
-Occurrent automatically adds two [extension attributes](https://github.com/cloudevents/spec/blob/v1.0/spec.md#extension-context-attributes) to each cloud event written to the [event store](#eventstore):<br><br>
+Occurrent automatically adds two [extension attributes](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#extension-context-attributes) to each cloud event written to the [event store](#eventstore):<br><br>
 
 {% include macros/occurrent-cloudevent-extension.md %}
 
@@ -180,8 +180,8 @@ you would typically do this by creating or extending/wrapping an already existin
 
 ### CloudEvent Metadata
 
-You can specify metadata to the cloud event by making use of [extension attributes](https://github.com/cloudevents/spec/blob/v1.0/spec.md#extension-context-attributes). This is the place to add things such as sequence number, correlation id, causation id etc. 
-Actually there's already a standard way of applying [distributed tracing](https://github.com/cloudevents/spec/blob/master/extensions/distributed-tracing.md) and [sequence number generation](https://github.com/cloudevents/spec/blob/master/extensions/sequence.md) 
+You can specify metadata to the cloud event by making use of [extension attributes](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#extension-context-attributes). This is the place to add things such as sequence number, correlation id, causation id etc. 
+Actually there's already a standard way of applying [distributed tracing](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md) and [sequence number generation](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/sequence.md) 
 extensions to cloud events that might be of interest.  
 
 ## EventStore
@@ -1685,7 +1685,7 @@ Here's an example of what you can expect to see in the "events" collection when 
 
 ### MongoDB Time Representation
 
-The CloudEvents specification says that the [time attribute](https://github.com/cloudevents/spec/blob/v1.0/spec.md#time), if present, must adhere to the [RFC 3339 specification](https://tools.ietf.org/html/rfc3339).
+The CloudEvents specification says that the [time attribute](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#time), if present, must adhere to the [RFC 3339 specification](https://tools.ietf.org/html/rfc3339).
 To accommodate this in MongoDB, the `time` attribute must be persisted as a `String`. This by itself is not a problem, a problem only arise 
 if you want to make time-based queries on the events persisted to a MongoDB-backed `EventStore` (using the [EventStoreQueries](#eventstore-queries) interface).
 This is, quite obviously, because time-based queries on `String`'s are suboptimal (to say the least) and may lead to surprising results.
@@ -1733,7 +1733,7 @@ Each MongoDB `EventStore` [implementation](#mongodb-eventstore-implementations) 
 
 |  Name | Properties | Description |
 |:----|:------|:-----|
-| `id` + `source` | ascending `id`,<br>descending&nbsp;`source`,&nbsp;&nbsp;<br>unique<br><br> | Compound index of `id` and `source` to comply with the [specification](https://github.com/cloudevents/spec/blob/v1.0/spec.md) that the `id`+`source` combination must be unique. |     
+| `id` + `source` | ascending `id`,<br>descending&nbsp;`source`,&nbsp;&nbsp;<br>unique<br><br> | Compound index of `id` and `source` to comply with the [specification](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md) that the `id`+`source` combination must be unique. |     
 | `streamid` + `streamversion`&nbsp;&nbsp;| ascending `streamid`,<br>descending `streamversion`,<br>unique | Compound index of `streamid` and `streamversion` (Occurrent CloudEvent extension) used for fast retrieval of the latest cloud event in a stream. |
 
 <div class="comment">Prior to version 0.7.3, a <code>streamid</code> index was also automatically created, but it was removed in 0.7.3 since this index is covered by the <code>streamid+streamversion</code> index.</div>
