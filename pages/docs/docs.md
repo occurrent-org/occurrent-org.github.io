@@ -1317,7 +1317,7 @@ are written atomically in the same transaction!
 
 ### Application Service Kotlin Extensions
 
-If you're using [Kotlin](https://kotlinlang.org/) chances are that your domain model is using a [Sequence](https://kotlinlang.org/docs/reference/sequences.html)
+If you're using [Kotlin](https://kotlinlang.org/) chances are that your domain model is using a [Sequence](https://kotlinlang.org/docs/sequences.html)
 instead of a java `Stream`:
 
 ```kotlin
