@@ -1387,7 +1387,7 @@ Snapshotting is an optimization technique that can be applied if it takes too lo
 There are several ways to do this and Occurrent doesn't enforce any particular strategy. One strategy is to use so-called "snapshot events" (special events that contains 
 a pre-calculated view of the state of an event stream at a particular time) and another technique is to write snapshots to another datastore than the event store.
 
-The [application service](#commands) need to be modified to first load the up the snapshot and then load events that have not yet been materialized in the snapshot (if any). 
+The [application service](#application-service) need to be modified to first load the up the snapshot and then load events that have not yet been materialized in the snapshot (if any). 
 
 ### Synchronous Snapshots
 
