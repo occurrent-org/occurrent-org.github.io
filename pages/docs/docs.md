@@ -144,7 +144,7 @@ In Occurrent, you don't persist your domain events directly to an event store, i
 data in your domain event. 
   
 In practice, this means that instead of storing events in a proprietary or arbitrary format, Occurrent, stores events in accordance with the cloud event specification, even at the data-store level. 
-I.e. you know the structure of your events, even in the database that the event store uses. It's up to you as a user of the library to [convert](#application-service-event-conversion) your domain events into cloud events when 
+I.e. you know the structure of your events, even in the database that the event store uses. It's up to you as a user of the library to [convert](#cloudevent-conversion) your domain events into cloud events when 
 writing to the [event store](#eventstore). This is extremely powerful, not only does it allow you to design your domains event in any way you find fit (for example without compromises enforced by a JSON serialization library) but it also allows for easier migration, 
 data consistency and features such as (fully-consistent) [queries](#eventstore-queries) to the event store for certain use cases. A cloud event is made-up by a set of pre-defined attributes described in the [cloud event specification](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md).
 In the context of event sourcing, we can leverage these attributes in the way suggested below:
@@ -175,7 +175,7 @@ Occurrent automatically adds two [extension attributes](https://github.com/cloud
 
 These are required for Occurrent to operate. A long-term goal of Occurrent is to come up with a standardized set of cloud event extensions that are agreed upon and used by several different vendors.
 
-In the mean time, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#specify-cloudevent-metadata)), 
+In the mean time, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#cloudevent-metadata)), 
 you would typically do this by creating or extending/wrapping an already existing [application service](#application-service).    
 
 ### CloudEvent Metadata
@@ -1137,7 +1137,7 @@ This module provides an interface, `org.occurrent.application.service.blocking.A
 a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from 
 cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
 `org.occurrent.application.converter.implementation.GenericCloudEventConverter` available in the `org.occurrent:cloudevent-converter-generic` module. 
-You can see an example in the [next](#application-service-event-conversion) section.
+You can see an example in the [next](#using-the-application-service) section.
 
 As of version 0.11.0, the `GenericApplicationService` also takes a [RetryStrategy](#retry) as an optional third parameter.  
 By default, the retry strategy uses exponential backoff starting with 100 ms and progressively go up to max 2 seconds wait time between
@@ -1619,7 +1619,7 @@ Getting started with Occurrent involves these steps:
 
 # Choosing An EventStore
 
-There are currently two different datastores to choose from, [MongoDB](#mongodb) and [In-Memory](#in-memory). 
+There are currently two different datastores to choose from, [MongoDB](#mongodb) and [In-Memory](#in-memory-eventstore). 
 
 ## MongoDB
 
@@ -2510,7 +2510,7 @@ retry.mapRetryPredicate(currentRetryPredicate -> currentRetryPredicate.or(Illega
 
 ## Subscription DSL
 
-The subscription DSL is a utility that you can use to easier create subscriptions by using a [CloudEventConverter](#application-service-event-conversion).
+The subscription DSL is a utility that you can use to easier create subscriptions by using a [CloudEventConverter](#cloudevent-conversion).
 There's a both a Kotlin DSL and Java DSL. First you need to depend on the `subscription-dsl` module:
 
 {% include macros/subscription/blocking/dsl/maven.md %}
