@@ -1879,8 +1879,6 @@ Now you can start reading and writing events to the EventStore:
 
 {% include macros/eventstore/in-memory/read-and-write-events.md %}
 
-Note that `InMemoryEventStore` doesn't support [EventStoreQueries](#eventstore-queries).
-
 # Using Subscriptions
 <div class="comment">Before you start using subscriptions you should read up on what they are <a href="#subscriptions">here</a>.</div>
 
