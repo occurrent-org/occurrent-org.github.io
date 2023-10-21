@@ -2465,15 +2465,15 @@ Occurrent contains a retry module that you can depend on using:
 
 Occurrent components that support retry ([subscription model](#blocking-subscriptions) and [subscription position storage](#blocking-subscription-position-storage) implementations)
 typically accepts an instance of `org.occurrent.retry.RetryStrategy` to their constructors. This allows you to configure how they should do retry. You can configure max attempts, 
-a retry predicate, error listener, before retry listener, as well as the backoff strategy. Here's an example:
+a retry predicate, error listener, before/after retry listener, as well as the backoff strategy. Here's an example:
   
 ```java
 RetryStrategy retryStrategy = RetryStrategy
                                     .exponentialBackoff(Duration.ofMillis(100), Duration.ofSeconds(2), 2.0)
                                     .retryIf(UncategorizedSQLException.class::isInstance)
                                     .maxAttempts(5)
-                                    .onBeforeRetry((info, throwable) -> log.warn("Caught exception {}, will retry.", throwable.getClass().getSimpleName()))
-                                    .onError(throwable -> log.error("Ended with exception {}.", throwable.getClass().getSimpleName()));
+                                    .onBeforeRetry(throwable -> log.warn("Caught exception {}, will retry.", throwable.getClass().getSimpleName()))
+                                    .onError((throwable, info) -> if(info.isFinalError()) log.error("Ended with exception {}.", throwable.getClass().getSimpleName()));
 ```
 
 You can then use a `RetryStrategy` instance to call methods that you want to be retried on exception by using the `execute` method:
@@ -2520,9 +2520,6 @@ retryStrategy.execute(info -> {
     ...     
 });
 ```
-
-As of version 0.16.8, `RetryStrategy` has a function called `onBeforeRetry` that takes an instance of `org.occurrent.retry.RetryInfo` and the `Throwable` that caused the retry. For
-
 
 # DSL's
 
