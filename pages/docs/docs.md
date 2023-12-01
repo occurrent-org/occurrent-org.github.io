@@ -2473,7 +2473,7 @@ RetryStrategy retryStrategy = RetryStrategy
                                     .retryIf(UncategorizedSQLException.class::isInstance)
                                     .maxAttempts(5)
                                     .onBeforeRetry(throwable -> log.warn("Caught exception {}, will retry.", throwable.getClass().getSimpleName()))
-                                    .onError((throwable, info) -> if(info.isFinalError()) log.error("Ended with exception {}.", throwable.getClass().getSimpleName()));
+                                    .onError((info, throwable) -> if(info.isLastAttempt()) log.error("Ended with exception {}.", throwable.getClass().getSimpleName()));
 ```
 
 You can then use a `RetryStrategy` instance to call methods that you want to be retried on exception by using the `execute` method:
