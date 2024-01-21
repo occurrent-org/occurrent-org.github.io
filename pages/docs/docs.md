@@ -2612,7 +2612,8 @@ Use the "Spring Boot Starter" project to bootstrap Occurrent quickly if using Sp
 
 {% include macros/spring-boot-starter/maven.md %}
 
-Next create a Spring Boot application annotated with `@SpringBootApplication` as you would normally do. Occurrent will then configure the following components automatically:
+Next create a Spring Boot application annotated with `@SpringBootApplication` as you would normally do, and also add the `@EnableOccurrent` annotation (located in package `org.occurrent.springboot.mongo.blocking`). 
+Occurrent will then configure the following components automatically:
  
 * A Spring MongoDB Event Store instance (`EventStore`)
 * A Spring `SubscriptionPositionStorage` instance 
