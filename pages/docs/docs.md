@@ -79,6 +79,7 @@ permalink: /documentation
 * * * [Implementations](#reactive-subscription-implementations)
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
 * * * * [Durable Subscriptions](#durable-subscriptions-reactive)
+* [Decider](#decider)
 * [Retry](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
@@ -2453,6 +2454,65 @@ Then we should instantiate a `PositionAwareSubscriptionModel`, that subscribes t
 that stores the subscription position, and combine them to a `ReactorDurableSubscriptionModel`: 
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
+
+# Decider
+
+As of version 0.17.0, Occurrent has basic support for [Deciders](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider). 
+A decider is a model that can be implemented to get a structured way to implement decision logic for a business entity (typically aggregate) or use case.
+
+To use a decider, you need to model your commands as explicit data structures (i.e. don't use higher-order function). 
+To create a decider, first include the dependency:
+
+{% include macros/decider/maven.md %}
+
+You can then either implement the `org.occurrent.dsl.decider.Decider` interface or use the default implementation (see more below). The interface is defined like this:
+
+```java
+public interface Decider<C, S, E> {
+    S initialState();
+
+    @NotNull
+    List<E> decide(@NotNull C command, S state);
+
+    S evolve(S state, @NotNull E event);
+
+    default boolean isTerminal(S state) {
+        return false;
+    }
+}
+```
+
+where:
+
+| Parameter Type | Description                                          |
+|----------------|------------------------------------------------------|
+| C              | The type of the commands that the decider can handle |
+| S              | The state that the decider works with                |
+| E              | The type of events that the decider returns          |
+
+
+The interface contains four methods:
+
+| Method name  | Description                                                                                                                                                          |
+|--------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| initialState | Returns the initial state of the decider, for example `null` or something like "`NotStarted`" (a domain specific state implemented by you), depending on your domain |
+| decide       | A function that takes a command and the current state and returns a list of new events that represents the changes the occurred after the commands was handled       |
+| evolve       | A method that takes the current state and an event, and return an update state after applying this event                                                             |
+| isTerminal   | An optional method that can be implemented/overridden to tell the Decider to stop evolving the state if the Decider has reached a specific state                     |
+
+It's highly recommended to read [this](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) blog post to get a better understanding of the rationale behind Deciders. 
+
+But you don't actually need to implement this interface yourself, instead you can create a default implementation by passing in functions to `Decider.create(..)`.
+
+Imagine that you have commands, events and state defined like this:
+
+{% include macros/decider/example_events_state_cmd.md %}
+
+Then you can create a decider like this:
+
+{% include macros/decider/example_create.md %}
+
+
            
 # Retry
 
