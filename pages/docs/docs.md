@@ -2476,7 +2476,7 @@ Some benefits of using deciders are:
 4. Occurrent's decider implementation supports sending multiple commands to a decider atomically.
 5. Deciders are also combinable, however this feature is not yet available in Occcurrent.
 
-To use a decider, you need to model your commands as explicit data structures (i.e. don't use higher-order function).
+To use a decider, you need to model your commands as explicit data structures instead of functions.
 
 
 To create a decider, first include the dependency:
