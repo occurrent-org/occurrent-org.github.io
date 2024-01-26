@@ -80,6 +80,9 @@ permalink: /documentation
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
 * * * * [Durable Subscriptions](#durable-subscriptions-reactive)
 * [Decider](#decider)
+* * [Application Service](#using-an-applicationservice-with-deciders)
+* * * [Java](#application-service-decider-java)
+* * * [Kotlin(#application-service-decider-kotlin)
 * [Retry](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
@@ -2515,6 +2518,61 @@ Then you can create a decider like this:
 Now that you have an instance of `Decider`, you can then call any of the many default methods to return either the name state, the new events, or both. For example:
 
 {% include macros/decider/example_usage.md %}
+
+## Using an ApplicationService with Decider's
+
+It's possible to integrate [Decider's](#decider) with an [ApplicationService](#application-service) to easily load existing events from an [event store](#eventstore).
+
+### Java<a id="application-service-decider-java"></a>
+
+To use the existing [ApplicationService](#application-service) infrastructure with Deciders from Java, you can do like this:
+
+
+```java
+ApplicationService<Event> applicationService = ...
+Command command = ...
+
+// Because the decider expects a List<Event>, and not Stream<Event> as expected by the ApplicationService,
+// we first convert the Stream to a List using the "toStreamCommand" function provided by Occurrent.
+var writeResult = applicationService.execute("streamId", toStreamCommand(events -> decider.decideOnEventsAndReturnEvents(events, defineName)));
+```
+<div class="comment">
+<code>toStreamCommand</code> can be statically imported from <code>org.occurrent.application.composition.command.toStreamCommand</code>.
+</div>
+
+
+### Kotlin<a id="application-service-decider-kotlin"></a>
+
+The `org.occurrent:decider` module contains Kotlin extension functions, located in the `org.occurrent.dsl.decider.ApplicationServiceDeciderExtensions.kt` file, that allows you to easily integrate deciders
+with existing [ApplicationService](#application-service) infrastructure. Here's an example:
+
+```kotlin
+import org.occurrent.dsl.decider.execute
+
+// Create the decider
+
+val applicationService = ...
+val decider = ... 
+        
+
+// Then you can pass the decider and command to the application service instance 
+val writeResult = applicationService.execute(streamId, command, decider)
+```
+
+It's also possible to return the decision, state or new events when calling execute:
+
+```kotlin
+import org.occurrent.dsl.decider.executeAndReturnDecision
+import org.occurrent.dsl.decider.executeAndReturnState
+import org.occurrent.dsl.decider.executeAndReturnEvents
+
+// Invoke the decider with the command and return both state and new events (decision) 
+val decision = applicationService.executeAndReturnDecision(streamId, command, decider)
+// Invoke the decider with the command and return the new state
+val state = applicationService.executeAndReturnState(streamId, command, decider)
+// Invoke the decider with the command and return the new events
+val newEvents = applicationService.executeAndReturnEvents(streamId, command, decider)
+```
            
 # Retry
 
