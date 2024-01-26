@@ -2468,7 +2468,7 @@ that stores the subscription position, and combine them to a `ReactorDurableSubs
 # Decider
 
 As of version 0.17.0, Occurrent has basic support for [Deciders](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider). 
-A decider is a model that can be used as a structured way to implement decision logic for a business entity (typically aggregate) or use case/command.
+A decider is a model that can be used as a structured way of implementing decision logic for a business entity (typically aggregate) or use case/command.
 Some benefits of using deciders are:
 1. You don't need to implement any folding of events to state yourself.
 2. You get a good structure for defining your aggregate/use case.
