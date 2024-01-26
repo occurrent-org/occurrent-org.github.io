@@ -2556,11 +2556,9 @@ with existing [ApplicationService](#application-service) infrastructure. Here's 
 ```kotlin
 import org.occurrent.dsl.decider.execute
 
-// Create the decider
-
+// Create the application service and decider
 val applicationService = ...
 val decider = ... 
-        
 
 // Then you can pass the decider and command to the application service instance 
 val writeResult = applicationService.execute(streamId, command, decider)
