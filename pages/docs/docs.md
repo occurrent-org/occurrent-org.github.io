@@ -2469,8 +2469,9 @@ that stores the subscription position, and combine them to a `ReactorDurableSubs
 
 As of version 0.17.0, Occurrent has basic support for [Deciders](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider). 
 A decider is a model that can be used as a structured way to implement decision logic for a business entity (typically aggregate) or use case/command.
+To use a decider, you need to model your commands as explicit data structures (i.e. don't use higher-order function).
 
-To use a decider, you need to model your commands as explicit data structures (i.e. don't use higher-order function). 
+
 To create a decider, first include the dependency:
 
 {% include macros/decider/maven.md %}
