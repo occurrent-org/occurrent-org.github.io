@@ -595,9 +595,9 @@ to represent commands and command handling. Combine this with function compositi
 
 Occurrent doesn't contain a built-in command bus. Instead, you're encouraged to pick any infrastructure component you need to act as the command bus to 
 send commands to another service. Personally, I typically make a call to a REST API or make an RPC invocation instead of using a distributed command bus
-that routes the commands to my aggregate. One exception to this is if you need [location transparency](https://en.wikipedia.org/wiki/Location_transparency).
-In such cases a command bus or an actor model can be of help. But I would argue that you add quite a lot of complexity by prematurely going down this route
-if your business requirements doesn't point you in this direction. 
+that routes the commands to my aggregate. There are of course exceptions to this, such as the need for [location transparency](https://en.wikipedia.org/wiki/Location_transparency) or if you're using [Decider's](#decider).
+If you need location transparency, a command bus or an actor model can be of help. But I would argue that you may not always need the complexity by prematurely going down this route
+if your business requirements doesn't point you in this direction. [Decider's](#decider) are a nice alternative, that doesn't require any additional infrastructure.    
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
 routed to a function in your domain model. This is where an [application service](#application-service) becomes useful. However, let's first explore the 
@@ -729,8 +729,9 @@ From a typical Java perspective one could argue that this is not too bad. But it
 
 ### Commands in Occurrent 
 
-So how would one dispatch commands in Occurrent? As we've already mentioned there's nothing stopping you from using a distributed command bus or to create explicit commands, 
-and dispatch them the way we did in the example above. But if you recognize some of the points described above and are looking for a more simple approach, here's another
+So how would one dispatch commands in Occurrent? As we've already mentioned there's nothing stopping you from using a (distributed) command bus or to create explicit commands, 
+and dispatch them the way we did in the example above. For example, if you're using [Decider's](#decider), it could be nice to have commands explicitly defined.
+But if you recognize some of the points described above and are looking for a simpler approach, here's another
 way to go about. First let's refactor the domain model to pure functions, without any state or dependencies to Occurrent or any other library/framework. 
 
 {% include macros/domain/wordGuessingGameDomainEvents.md java=java kotlin=kotlin %}
@@ -1169,7 +1170,12 @@ val applicationService : ApplicationService<DomainEvent> = GenericApplicationSer
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-You're now ready to use the generic application service in your application. As an example let's say you have a domain model with a method defined like this:
+You're now ready to use the generic application service in your application. 
+<div class="comment">
+If you're using <a href="#decider">Decider's</a> then refer to the docs <a href="#using-an-applicationservice-with-deciders">here</a>.  
+</div>
+
+As an example let's say you have a domain model with a method defined like this:
 
 ```java
 public class WordGuessingGame {
@@ -1622,6 +1628,7 @@ Getting started with Occurrent involves these steps:
     * [Subscription DSL](#subscription-dsl)
     * [Query DSL](#query-dsl)
     * [Retry Component](#retry)
+    * [Decider's](#decider)
 
 # Choosing An EventStore
 
