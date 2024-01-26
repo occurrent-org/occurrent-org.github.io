@@ -43,6 +43,6 @@ val decider = decider<Command, State?, Event>(
         }
 )
 
-You can also, optionally, define an "isTerminal" predicate as a fourth argument to the decider(..) function if you need to specify this condition, otherwise it always returns false by default.
+// You can also, optionally, define an "isTerminal" predicate as a fourth argument to the decider(..) function if you need to specify this condition, otherwise it always returns false by default.
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
