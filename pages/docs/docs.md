@@ -82,7 +82,7 @@ permalink: /documentation
 * [Decider](#decider)
 * * [Application Service](#using-an-applicationservice-with-deciders)
 * * * [Java](#application-service-decider-java)
-* * * [Kotlin(#application-service-decider-kotlin)
+* * * [Kotlin](#application-service-decider-kotlin)
 * [Retry](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
