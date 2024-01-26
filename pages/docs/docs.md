@@ -2512,6 +2512,8 @@ Then you can create a decider like this:
 
 {% include macros/decider/example_create.md %}
 
+Now that you have an instance of `Decider`, you can then call any of the many default methods to return either the name state, the new events, or both. For example:
+
 
            
 # Retry

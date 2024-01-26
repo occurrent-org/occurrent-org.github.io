@@ -1,5 +1,4 @@
 {% capture java %}
-```java
 sealed interface Command {
     record Command1(String something, String message) implements Command {
     }
@@ -22,8 +21,6 @@ sealed interface Event {
 record State(String something, String somethingElse, String message) {
     // Other constructors excluded for brevity   
 }
-```
-
 {% endcapture %}
 
 {% capture kotlin %}

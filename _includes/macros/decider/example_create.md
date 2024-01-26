@@ -1,5 +1,4 @@
 {% capture java %}
-```java
 // This example uses Java 21+
 var decider = Decider.<Command, State, Event>create(
         null,
@@ -19,11 +18,8 @@ var decider = Decider.<Command, State, Event>create(
             case Event3 e3 -> new State(s.something(), e3.somethingElse(), s.message());    
         }
 );
-```
 
-<div class="comment">
-You can pass an optional <code>Predicate</code> as a fourth argument to <code>Decider.create(..)</code> if you like to specify the <code>isTerminal</code> condition, otherwise it always returns <code>false</code> by default.
-</div>
+// You can pass an optional Predicate as a fourth argument to Decider.create(..) if you like to specify the "isTerminal" condition, otherwise it always returns false by default.
 {% endcapture %}
 
 {% capture kotlin %}
@@ -47,8 +43,6 @@ val decider = decider<Command, State?, Event>(
         }
 )
 
-<div class="comment">
-You can also, optionally, define a <code>isTerminal</code> predicate as a fourth argument to the <code>decider(..)</code> function if you need to specify this condition, otherwise it always returns <code>false</code> by default.
-</div>
+You can also, optionally, define an "isTerminal" predicate as a fourth argument to the decider(..) function if you need to specify this condition, otherwise it always returns false by default.
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
