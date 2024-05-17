@@ -18,7 +18,7 @@ CatchupSubscriptionModel catchupSubscriptionModelModel = new CatchupSubscription
                     .andPersistSubscriptionPositionDuringCatchupPhaseForEveryNEvents(3));
 
 // Start a subscription that starts replaying events of type "GameEnded" from the beginning of time
-catchupSubscriptionModelModel.subscribe("mySubscription", filter(type("GameEnded")), StartAt.subscriptionPosition(TimeBasedSubscriptionPosition.beginningOfTime()), cloudEvent -> System.out.println(cloudEvent));
+catchupSubscriptionModelModel.subscribe("mySubscription", filter(type("GameEnded")), StartAtTime.beginningOfTime(), cloudEvent -> System.out.println(cloudEvent));
 
 // Note that excluding "StartAt.subscriptionPosition(TimeBasedSubscriptionPosition.beginningOfTime())" like below would still start at 
 // the beginnning of time the first time, but on subsequent calls will start from the latest position storing the in the storage.
@@ -53,7 +53,7 @@ val catchupSubscriptionModel = CatchupSubscriptionModel(continuousSubscription, 
                     .andPersistSubscriptionPositionDuringCatchupPhaseForEveryNEvents(3))
 
 // Start a subscription that starts replaying events of type "GameEnded" from the beginning of time
-catchupSubscriptionModel.subscribe("mySubscription", filter(type("GameEnded")), StartAt.subscriptionPosition(TimeBasedSubscriptionPosition.beginningOfTime())) { cloudEvent -> 
+catchupSubscriptionModel.subscribe("mySubscription", filter(type("GameEnded")), StartAt.beginningOfTime()) { cloudEvent -> 
     println(cloudEvent)
 }
 
