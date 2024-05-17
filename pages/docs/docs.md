@@ -70,6 +70,7 @@ permalink: /documentation
 * * * * [InMemory](#inmemory-subscription)
 * * * * [Durable Subscriptions](#durable-subscriptions-blocking)
 * * * * [Catch-up Subscription](#catch-up-subscription-blocking)
+* * * * * [Usage](#catch-up-subscription-usage)
 * * * * [Competing Consumer Subscription](#competing-consumer-subscription-blocking)
 * * * * [Life-cycle & Testing](#subscription-life-cycle--testing-blocking) 
 * * [Reactive](#reactive-subscriptions)
@@ -1617,7 +1618,7 @@ Getting started with Occurrent involves these steps:
 <div class="comment">It's recommended to read up on <a href="#cloudevents">CloudEvent's</a> and its <a href="{{cloudevents_spec}}">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
 
 1. Choose an underlying datastore for an [event store](#choosing-an-eventstore). Luckily there are only two choices at the moment, MongoDB and an in-memory implementation. Hopefully this will be a more difficult decision in the future :)
-1. Once a datastore has been decided it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
+1. Once a datastore has been decided, it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
 1. If you need [subscriptions](#using-subscriptions) (i.e. the ability to subscribe to changes from an EventStore) then you need to pick a library that implements this for the datastore that you've chosen. 
    Again, there may be several implementations to choose from.
 1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [position storage](#blocking-subscription-position-storage) library. 
@@ -2212,8 +2213,8 @@ For example:
 
 {% include macros/subscription/blocking/util/catchup/example.md %}
 
-A `CatchupSubscriptionModel` maintains an in-memory cache of event ids. The size of this cache is configurable using a `CatchupSubscriptionModelConfig` but it defaults to 100.
-The purpose of the cache is to reduce the likelyhood of duplicate events when switching from replay mode to continuous mode. Otherwise, there would be a chance
+To reduce the likelihood of duplicate events when switching from replay mode to continuous mode, a `CatchupSubscriptionModel` maintains an in-memory cache of event ids. 
+The size of this cache is configurable using a `CatchupSubscriptionModelConfig` but it defaults to 100. Otherwise, there would be a chance
 that event written _exactly_ when the switch from replay mode to continuous mode takes places, can be lost. To prevent this, the continuous mode subscription 
 starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the 
 switch. If the cache is too small, duplicate events will be sent to the continuous subscription. Typically, you want your application to be idempotent anyways and if so this shouldn't be a problem.        
@@ -2232,6 +2233,41 @@ var catchupSubscriptionModel = CatchupSubscriptionModel(subscriptionModel, event
 
 By default, events are sorted by time and then stream version (if two or more events have the same time).
 
+##### Catch-up Subscription Usage
+
+The subscription model will only stream historic events if started with a `StartAt` instance with a so called `TimeBasedSubscriptionPosition`, for example:
+
+{% capture java %}
+subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeBasedSubscription.beginningOfTime()), e -> System.out.println("Event: " + e);
+{% endcapture %}
+{% capture kotlin %}
+subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeBasedSubscription.beginningOfTime())) { e -> 
+    println("Event: $e")
+}
+{% endcapture %}
+
+If you don't specify a `StartAt` position (or specify `StartAt.subscriptionModelDefault()` explicitly), the `CatchupSubscriptionModel` will just delegate to the parent subscription model and
+replay of old events will not happen. This means that for a subscription you can start it off by e.g. replaying from beginning of time then change the code and remove the `StartAt` position. 
+It'll then resume from the position of the last consumed event.
+
+There are also some "shortcuts" to make it a bit more concise to start replay from beginning of time:
+
+{% capture java %}
+var subscriptionModel = new CatchupSubscriptionModel(..);
+// All examples below are equivalent:
+subscriptionModel.subscribeFromBeginningOfTime("subscriptionId", e -> System.out.println("Event: " + e);
+subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime(), e -> System.out.println("Event: " + e);
+subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeBasedSubscription.beginningOfTime()), e -> System.out.println("Event: " + e);
+{% endcapture %}
+{% capture kotlin %}
+val subscriptionModel = new CatchupSubscriptionModel(..);
+// All examples below are equivalent:
+subscriptionModel.subscribeFromBeginningOfTime("subscriptionId") { e -> println("Event: $") }
+subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime()) { e -> println("Event: $e") }
+subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeBasedSubscription.beginningOfTime()) { e -> println("Event: $") }
+// beginningOfTime is an extension function imported from org.occurrent.subscription.blocking.durable.catchup.CatchupSubscriptionModelExtensions.kt  
+subscriptionModel.subscribe("subscriptionId", StartAt.beginningOfTime()) { e -> println("Event: $") }
+{% endcapture %}
 
 #### Competing Consumer Subscription (Blocking)
 
