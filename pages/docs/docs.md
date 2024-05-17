@@ -2245,6 +2245,7 @@ subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeB
     println("Event: $e")
 }
 {% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 If you don't specify a `StartAt` position (or specify `StartAt.subscriptionModelDefault()` explicitly), the `CatchupSubscriptionModel` will just delegate to the parent subscription model and
 replay of old events will not happen. This means that for a subscription you can start it off by e.g. replaying from beginning of time then change the code and remove the `StartAt` position. 
@@ -2268,6 +2269,19 @@ subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeB
 // beginningOfTime is an extension function imported from org.occurrent.subscription.blocking.durable.catchup.CatchupSubscriptionModelExtensions.kt  
 subscriptionModel.subscribe("subscriptionId", StartAt.beginningOfTime()) { e -> println("Event: $") }
 {% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+It's also possible to start from a specific `java.time.OffsetDateTime`, for example:
+
+{% capture java %}
+var offsetDateTime = OffsetDateTime.of(2024, 2, 3, 10, 4, 2, 0, ZoneOffset.UTC)
+subscriptionModel.subscribe("subscriptionId", StartAtTime.offsetDateTime(offsetDateTime)) { e -> println("Event: $e") }
+{% endcapture %}
+{% capture kotlin %}
+val offsetDateTime = OffsetDateTime.of(2024, 2, 3, 10, 4, 2, 0, ZoneOffset.UTC)
+subscriptionModel.subscribe("subscriptionId", StartAt.offsetDateTime(offsetDateTime)) { e -> println("Event: $e") }
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 #### Competing Consumer Subscription (Blocking)
 
