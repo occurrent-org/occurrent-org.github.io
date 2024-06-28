@@ -89,6 +89,11 @@ permalink: /documentation
 * * [Subscription DSL](#subscription-dsl)
 * * [Query DSL](#query-dsl)
 * [Spring Boot Starter](#spring-boot-starter)
+* [Spring Boot Annotation](#spring-boot-annotations)
+* * [Start Position](#subscription-start-position)
+* * [Selective Events](#selective-events)
+* * [Event Metadata](#event-metadata)
+* * [Startup Mode](#subscription-startup-mode)
 * [Blogs](#blogs)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
@@ -182,7 +187,7 @@ Occurrent automatically adds two [extension attributes]({{cloudevents_spec}}#ext
 
 These are required for Occurrent to operate. A long-term goal of Occurrent is to come up with a standardized set of cloud event extensions that are agreed upon and used by several different vendors.
 
-In the mean time, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#cloudevent-metadata)), 
+In the meantime, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#cloudevent-metadata)), 
 you would typically do this by creating or extending/wrapping an already existing [application service](#application-service).    
 
 ### CloudEvent Metadata
@@ -2832,6 +2837,7 @@ Occurrent will then configure the following components automatically:
 * A `GenericApplication` instance (`ApplicationService`)
 * A subscription dsl instance (`Subscriptions`)
 * A query dsl instance (`DomainQueries`)
+* Support for [annotations](#spring-boot-annotations)
 
 You can of course override other beans as well to tailor them to your needs. 
 See the source code of [org.occurrent.springboot.mongo.blocking.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java)
@@ -2847,7 +2853,95 @@ occurrent:
 ```
 
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.mongo.blocking.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentProperties.java)
-to find which configuration properties that are supported. 
+to find which configuration properties that are supported.
+
+## Spring Boot Annotations
+
+If using the [Spring Boot Starter](#spring-boot-starter) you have the option to start subscriptions using the `@Subscription` annotation (`org.occurrent.annotation.Subscription`). 
+For example if you have a domain event like this:
+
+{% include macros/annotation/domain-event.md %}
+
+you can create a subscription to _all_ events like this:
+
+{% include macros/annotation/basic-example.md %}
+
+Note that subscriptions started by the `Subscription` annotation will make use of [competing consumers](#competing-consumer-subscription-blocking) so that if you run multiple instances of the application one of them will receive the event(s).
+
+#### Subscription Start Position
+
+When creating a subscription using the `@Subscription` annotation you can specify how it should behave when first starting (creating) the subscription 
+as well as how it should be resumed when the application is restarted. Here's an example:
+
+{% include macros/annotation/start-position-example.md %}
+
+This will first replay all historic events from the beginning of time and then continue subscribing to new events continuously. You can also start at a specific date by using `startAtISO8601()` or `startAtTimeEpochMillis()`.
+
+Note that the example above will _start_ replaying historic events from the beginning of time when the subscription is started the first time. However, once the subscription is resumed, e.g. on application restart, it'll continue from the last received event.
+
+Here's a description for each StartPosition:
+
+| StartPosition       | Description                                                                                                                                                                                                                                                            |
+|---------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `BEGINNING_OF_TIME` | Start this subscription from the first event in the event store.                                                                                                                                                                                                       |
+| `NOW`               | Start this subscription from current time.                                                                                                                                                                                                                             |
+| `DEFAULT`           | Start this subscription using the default behavior of the subscription model. Typically, this means that it'll start from `NOW`, unless the subscription has already been started before, in which case the subscription will be started from its last known position. |
+                                            
+
+If you want a different behavior when the application is restarted, configure a different `resumeBehavior()` (`@Subscription(id="mySubscription", resumeBehavior=..)`):
+
+Resume behavior:
+
+| ResumeBehavior     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+|--------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DEFAULT`          | Use the default resume behavior of the underlying subscription model. For example, if the `StartPosition` is set to `StartPosition.BEGINNING_OF_TIME`, and `ResumeBehavior` is set to `ResumeBehavior.DEFAULT`, then the subscription will _start_ from the beginning of time the first time it's run. Then, on application restart, it'll continue from the last received event (the subscription position (checkpoint) for the subscription) on restart. |
+| `SAME_AS_START_AT` | Always start at the same position as specified by the `StartPosition`. I.e., even if there's a subscription position (checkpoint) stored for the subscription, it'll be ignored on application restart and the subscription will resume from the specified `StartPosition`.                                                                                                                                                                                |
+
+
+The combination of start and resume behavior can enable various use cases. For example:
+
+| StartPostion        | ResumeBehavior     | Use Case                                                                                                                                                                                                                                                                                                         |
+|---------------------|--------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `BEGINNING_OF_TIME` | `DEFAULT`          | Start a new subscription from "beginning of time", but when the app is restarted, continue from the last processed event (i.e. don't replay all historic events again).                                                                                                                                          |
+| `BEGINNING_OF_TIME` | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to all historic events, effectively making this an in-memory subscription. Note that this subscription will be called on each instance of the application event though competition consumer behavior is configured.                                     |
+| `NOW`               | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to events from "now", ignoring the historic events. This will effectively make this an in-memory subscription. Note that this subscription will be called on each instance of the application event though competition consumer behavior is configured. |
+| `NOW`               | `DEFAULT`          | The subscription start subscribing to events from "now" when created, but continue (resume) from the last received event on restart.                                                                                                                                                                             |
+| `DEFAULT`           | `DEFAULT`          | Same as above (this is the default behavior if start position and resume behavior is not specified).                                                                                                                                                                                                             |
+
+
+#### Selective Events
+
+If `DomainEvent` is a sealed interface/class (as in the examples above), then all events implementing this interface/class will be received when subscribing to this event.
+You can of course subscribe to an individual event, such as `DomainEvent2`. But if you want to receive only some of the events that implement the `DomainEvent` interface, you can use `eventTypes()`.
+For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` but handle them as a `DomainEvent`:
+
+{% include macros/annotation/event-types-example.md %}
+
+#### Event Metadata
+
+Sometimes it can be useful to get the metadata associated with the received event. For this reason, you can add a parameter to the method annotated with `@Subscription` of type `org.occurrent.dsl.subscription.blocking.EventMetadata`. 
+It'll contain all extension properties added to the [CloudEvent](#cloudevent-metadata), for example:
+
+{% include macros/annotation/metadata-example.md %}
+
+#### Subscription Startup Mode
+
+You can configure whether the subscription should start before the application is ready to receive requests. For example, it might be very important that a certain subscription is started before the first web request comes in:
+
+{% include macros/annotation/startup-mode-wait-until-started-example.md %}
+
+In other cases, such as when replaying a huge number of historic events it might be better to let the application start and let the processing of historic events happen in the background.
+
+{% include macros/annotation/startup-mode-background-example.md %}
+
+Here's a summary of the different startup modes:
+
+
+| StartupMode          | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+|----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `DEFAULT`            | Determine the startup mode based on the properties of the subscription (such as `startAt()` and `resumeBehavior()`). It'll use `BACKGROUND` if the subscription needs to replay historic events before subscribing to new ones (e.g. if `startAt()` is `StartPosition.BEGINNING_OF_TIME`), otherwise `WAIT_UNTIL_STARTED` will be used.                                                                                                                                                                                                                                                                                                                                                                             |
+| `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.SubscriptionPositionStorage` (checkpointing), it'll never miss an event during startup.                                                                                      |
+| `BACKGROUND`         | The subscription will NOT wait until it's started up fully before Spring continues starting the rest of the application; instead, it will be started in the background. Typically, this is mainly useful if you instruct the subscription to start at an earlier date (such as the beginning of time), and you have a lot of events to read before the subscription has caught up. In this case, you may wish to start the Spring application before the subscription has fully started (i.e., before all historic events have been replayed) because waiting for all events to replay takes too long. The subscription will then replay all historic events in the background before switching to continuous mode. |
 
 # Blogs
 
