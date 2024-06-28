@@ -3,7 +3,7 @@
 public class Example {
     
     @Subscription(id = "printAllDomainEvents", eventTypes = {DomainEvent1.class, DomainEvent3.class})
-    void printAllDomainEvents(DomainEvent e) {
+    void printSomeDomainEvents(DomainEvent e) {
         System.out.println("Received any of the specified domain events: %s".formatted(e));    
     }
 }
@@ -14,7 +14,7 @@ public class Example {
 class Example {
     
     @Subscription(id = "printAllDomainEvents", eventTypes = [DomainEvent1::class, DomainEvent3::class])
-    fun printAllDomainEvents(e: DomainEvent) {
+    fun printSomeDomainEvents(e: DomainEvent) {
         println("Received any of the specified domain events: $e")
     }
 }
