@@ -1,4 +1,4 @@
-occurrentversion: 0.19.10
+occurrentversion: 0.19.11
 repourl: https://github.com/occurrent/occurrent.github.io
 description: Occurrent -  Event Sourcing Utilities for the JVM based on the CloudEvent specification
 baseurl: "" # the subpath of your site, e.g. /blog
