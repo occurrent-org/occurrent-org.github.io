@@ -1146,7 +1146,7 @@ Occurrent provides a generic application service that is a good starting point f
 {% include macros/applicationservice/blocking-maven.md %}
 
 This module provides an interface, `org.occurrent.application.service.blocking.ApplicationService`, and a default implementation, 
-`org.occurrent.application.service.blocking.implementation.GenericApplicationService`. The `GenericApplicationService` takes an `EventStore` and 
+`org.occurrent.application.service.blocking.generic.GenericApplicationService`. The `GenericApplicationService` takes an `EventStore` and 
 a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from 
 cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
 `org.occurrent.application.converter.implementation.GenericCloudEventConverter` available in the `org.occurrent:cloudevent-converter-generic` module. 
@@ -1197,30 +1197,238 @@ You can call it using the application service:
 applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess));
 {% endcapture %}
 {% capture kotlin %}
-applicationService.execute(gameId) { events -> 
+applicationService.executeSequence(gameId) { events ->
     WordGuessingGame.guessWord(events, guess)
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+When you need more control over the execution, for example filtered stream reads or synchronous side effects, use `ExecuteOptions`.
+This is now the preferred API for these concerns.
+
+{% capture java %}
+applicationService.execute(
+        gameId,
+        ExecuteOptions.<DomainEvent>options()
+                .filter(StreamReadFilter.type(GameWasStarted.class.getName()))
+                .sideEffect(newEvents -> newEvents.forEach(this::publish)),
+        events -> WordGuessingGame.guessWord(events, guess)
+);
+{% endcapture %}
+{% capture kotlin %}
+applicationService.executeSequence(
+    gameId,
+    filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+        { event: GameWasStarted -> publish(event) }
+    )
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+For a more complete explanation of filtered reads, `ExecuteOptions`, and how they fit together, see [Stream Filtering and Execute Options](#stream-filtering-and-execute-options).
+
+## Stream Filtering and Execute Options
+
+`StreamReadFilter` and `ExecuteOptions` are designed to solve two related problems:
+
+* Some commands only depend on a subset of the events in a stream.
+* Some applications need synchronous side effects immediately after a successful write.
+
+Together they let you keep the domain code focused while still making read- and execution-behavior explicit.
+
+### Why Use It
+
+Filtered stream reads are useful when a stream contains many event types, but a particular use case only depends on one or a few of them.
+For supported event stores, this can reduce unnecessary IO and deserialization work.
+
+`ExecuteOptions` is useful when you want to express both of these concerns explicitly at the `ApplicationService` boundary:
+
+* which events should be read before command execution
+* which synchronous side effects should run after the write succeeds
+
+### StreamReadFilter
+
+`org.occurrent.eventstore.api.StreamReadFilter` represents a filter that is applied when reading an individual event stream.
+It is intentionally limited to stream reads and validates reserved stream fields such as `streamid` and `streamversion`.
+
+Use `StreamReadFilter` when the domain decision only needs a subset of events in the stream, for example a small set of event types.
+
+### Event Store Support
+
+Filtered stream reads are exposed via optional capability interfaces:
+
+* `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`
+* `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`
+
+The following event stores support filtered stream reads:
+
+* `InMemoryEventStore`
+* `MongoEventStore`
+* `SpringMongoEventStore`
+* `ReactorMongoEventStore`
+
+A blocking example:
+
+{% capture java %}
+if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+    EventStream<CloudEvent> eventStream = filteredEventStore.read(
+            "streamId",
+            StreamReadFilter.type("com.acme.NameDefined")
+    );
+}
+{% endcapture %}
+{% capture kotlin %}
+val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+val eventStream = filteredEventStore?.read(
+    "streamId",
+    StreamReadFilter.type(NameDefined::class.java.name)
+)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A reactor example:
+
+{% capture java %}
+if (eventStore instanceof org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter filteredEventStore) {
+    Mono<EventStream<CloudEvent>> eventStream = filteredEventStore.read(
+            "streamId",
+            StreamReadFilter.type("com.acme.NameDefined")
+    );
+}
+{% endcapture %}
+{% capture kotlin %}
+val filteredEventStore = eventStore as? org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter
+val eventStream = filteredEventStore?.read(
+    "streamId",
+    StreamReadFilter.type(NameDefined::class.java.name)
+)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### ExecuteOptions
+
+`org.occurrent.application.service.blocking.ExecuteOptions` is the preferred way to configure blocking `ApplicationService` execution when you need:
+
+* filtered stream reads before command execution
+* synchronous post-write side effects
+* both at the same time
+
+A Java example:
+
+{% capture java %}
+WriteResult result = applicationService.execute(
+        gameId,
+        ExecuteOptions.<DomainEvent>options()
+                .filter(StreamReadFilter.type(GameWasStarted.class.getName()))
+                .sideEffect(newEvents -> newEvents.forEach(this::publish)),
+        events -> WordGuessingGame.guessWord(events, guess)
+);
+{% endcapture %}
+{% capture kotlin %}
+val result = applicationService.executeSequence(
+    gameId,
+    options().filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+        { event: GameWasStarted -> publish(event) }
+    )
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Synchronous Side Effects
+
+Use `ExecuteOptions.sideEffect(...)` for synchronous side effects going forward.
+This is now the preferred API for new code.
+
+The older `executePolicy(...)` and `executePolicies(...)` helpers still exist, but they are no longer the recommended primary approach.
+If you are documenting or writing new synchronous side-effect code, prefer `ExecuteOptions.sideEffect(...)`.
+
+### Java Examples
+
+{% capture java %}
+applicationService.execute(
+        gameId,
+        ExecuteOptions.<DomainEvent>options()
+                .sideEffect(newEvents -> newEvents
+                        .filter(event -> event instanceof GameWasStarted)
+                        .findFirst()
+                        .map(GameWasStarted.class::cast)
+                        .ifPresent(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)),
+        events -> WordGuessingGame.guessWord(events, guess)
+);
+{% endcapture %}
+{% capture kotlin %}
+applicationService.executeSequence(
+    gameId,
+    sideEffect { event: GameWasStarted ->
+        registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
+    }
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Kotlin Examples
+
+For Kotlin, use the collection-oriented extension names:
+
+* `executeSequence(...)` when the domain model works with `Sequence`
+* `executeList(...)` when the domain model works with `List`
+
+You can start from either `options()` or the top-level helper functions:
+
+```kotlin
+applicationService.executeSequence(
+    gameId,
+    sideEffect(
+        { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
+    )
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+```kotlin
+applicationService.executeSequence(
+    gameId,
+    filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+        { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
+    )
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+### When Not to Use Filtering
+
+Filtering is a read optimization, not a correctness feature.
+Do not filter away events that are needed to enforce invariants, rebuild state correctly, or make valid domain decisions.
+If the command depends on the whole stream, read the whole stream.
+
 ### Application Service Side-Effects
 
 The `GenericApplicationService` supports executing side-effects after the events returned from the domain model have been written to the event store.
-This is useful if you need to, for example, update a view _synchronously_ after events have been written to the event store. Note that to perform side-effects (or policies)
-asynchronously you should use a [subscription](#subscriptions). As an example, consider that you want to synchronously register a game as ongoing when it is started. 
-It may be defined like this:
+This is useful if you need to update a view _synchronously_ after a successful write. To perform side-effects asynchronously, use a [subscription](#subscriptions) instead.
+
+For synchronous side effects, use `ExecuteOptions.sideEffect(...)` going forward. This is now the preferred API.
+
+As an example, consider that you want to synchronously register a game as ongoing when it is started. It may be defined like this:
 
 {% capture java %}
 public class RegisterOngoingGame {
     private final DatabaseApi someDatabaseApi;
-    
-    pubic RegisterOngoingGame(DatabaseApi someDatabaseApi) {
+
+    public RegisterOngoingGame(DatabaseApi someDatabaseApi) {
         this.someDatabaseApi = someDatabaseApi;
     }
 
     public void registerGameAsOngoingWhenGameWasStarted(GameWasStarted event) {
         // Add the id of the game started event to a set to handle duplicates and idempotency.
-        someDatabaseApi.addToSet("ongoingGames", Map.of("gameId", e.gameId(), "date", e.getDate()));                
+        someDatabaseApi.addToSet("ongoingGames", Map.of("gameId", event.gameId(), "date", event.getDate()));
     }
 }
 {% endcapture %}
@@ -1228,81 +1436,56 @@ public class RegisterOngoingGame {
 class RegisterOngoingGame(private val someDatabaseApi : DatabaseApi) {
     fun registerGameAsOngoingWhenGameWasStarted(event : GameWasStarted) {
         // Add the id of the game started event to a set to handle duplicates and idempotency.
-        someDatabaseApi.addToSet("ongoingGames", Map.of("gameId", e.gameId(), "date", e.getDate()));                
+        someDatabaseApi.addToSet("ongoingGames", Map.of("gameId", event.gameId(), "date", event.getDate()));
     }
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The reason for doing this synchronously is, for example, if you have a REST API and the player expects the ongoing games view to be updated once the "start game" 
-command has executed. This can be achieved by other means (RSocket, Websockets, server-sent events, polling) but synchronous updates is simple and works quite well in many cases.
-
-Now that we have the code that registers ongoing games, we can call it from our from the application service:
+Now that we have the code that registers ongoing games, we can call it from the application service like this:
 
 {% capture java %}
 RegisterOngoingGame registerOngoingGame = ..
-applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess), events -> {
-    events.filter(event -> event instanceof GameWasStarted)
-         .findFirst()
-         .map(GameWasStarted.class::cast)
-         .ifPresent(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)
-});
+applicationService.execute(
+        gameId,
+        ExecuteOptions.<DomainEvent>options()
+                .sideEffect(newEvents -> newEvents
+                        .filter(event -> event instanceof GameWasStarted)
+                        .findFirst()
+                        .map(GameWasStarted.class::cast)
+                        .ifPresent(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)),
+        events -> WordGuessingGame.guessWord(events, guess)
+);
 {% endcapture %}
 {% capture kotlin %}
 val registerOngoingGame : RegisterOngoingGame = ..
-applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events, guess) }) { events -> 
-    val gameWasStarted = events.find { event is GameWasStarted }
-    if(gameWasStarted != null) {
-        registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(gameWasStarted) 
+applicationService.executeSequence(
+    gameId,
+    sideEffect { event: GameWasStarted ->
+        registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
     }
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Voila! Now `registerGameAsOngoingWhenGameWasStarted` will be called after the events returned from `WordGuessingGame.guessWord(..)` is written to the event store.
-You can however improve on the code above and make use of the `executePolicy` method shipped with the application service in the `org.occurrent.application.service.blocking.PolicySideEffect`.
-The code can then be refactored to this:
+Voila! Now `registerGameAsOngoingWhenGameWasStarted` will be called after the events returned from `WordGuessingGame.guessWord(..)` are written to the event store.
 
-```java
-applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess), executePolicy(GameWasStarted.class, registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)); 
-```                            
-
-If using the [Kotlin extension functions](#application-service-kotlin-extensions) (`org.occurrent.application.service.blocking.executePolicy`) you can write the code like this:
-
-```kotlin
-applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events, guess) }, executePolicy<GameWasStarted>(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted))
-```
-
-Policies can also be composed:
-
-{% capture java %}
-RegisterOngoingGame registerOngoingGame  = ..
-RemoveFromOngoingGamesWhenGameEnded removeFromOngoingGamesWhenGameEnded = ..
-
-applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess), 
-                           executePolicy(GameWasStarted.class, registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)
-                            .andThenExecuteAnotherPolicy(removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded));
-{% endcapture %}
-{% capture kotlin %}
-val registerOngoingGame : RegisterOngoingGame = ..
-val removeFromOngoingGamesWhenGameEnded : RemoveFromOngoingGamesWhenGameEnded = ..
-
-applicationService.execute(gameId, { events -> WordGuessingGame.guessWord(events, guess) }, 
-                            executePolicies(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted, 
-                                            removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded))
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+The older `executePolicy(...)` and `executePolicies(...)` helpers still exist, but they are no longer the preferred primary approach for new code.
+If you already use them, you can keep doing so, but new examples and new synchronous side-effect code should prefer `ExecuteOptions.sideEffect(...)`.
 
 ### Application Service Transactional Side-Effects
 
-In the example above, writing the events to the event store and executing policies is not an atomic operation. If your app crashes after the call to `registerOngoingGame::registerGameAsOngoingWhenGameWasStarted`
-but before `removeFromOngoingGamesWhenGameEnded::removeFromOngoingGamesWhenGameEnded`, you will need to handle idempotency. But if your policies/side-effects are writing data to the same database as the event store
-you can make use of transactions to write everything atomically! This is very easy if you're using a [Spring EventStore](#eventstore-with-spring-mongotemplate-blocking). What you need to do is to wrap the `ApplicationService` provided
+In the example above, writing the events to the event store and executing synchronous side effects is not an atomic operation.
+If your app crashes after one side effect has run, but before the rest of the work completes, you will need to handle idempotency.
+But if your side effects write data to the same database as the event store, you can make use of transactions to write everything atomically.
+This is very easy if you're using a [Spring EventStore](#eventstore-with-spring-mongotemplate-blocking). What you need to do is to wrap the `ApplicationService` provided
 by Occurrent in your own application service, something like this:
 
 {% capture java %}
 @Service
-public class CustomApplicationServiceImpl implements ApplicationService<DomainEvent> {
+public class CustomApplicationServiceImpl {
 	private final GenericApplicationService<DomainEvent> occurrentApplicationService;
 
 	public CustomApplicationService(GenericApplicationService<DomainEvent> occurrentApplicationService) {
@@ -1310,51 +1493,82 @@ public class CustomApplicationServiceImpl implements ApplicationService<DomainEv
 	}
 
 	@Transactional
-	@Override
-    public void execute(String gameId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel, Consumer<Stream<DomainEvent>> sideEffect) {
-		occurrentApplicationService.execute(gameId, functionThatCallsDomainModel, sideEffect);
+    public WriteResult execute(String gameId,
+                               ExecuteOptions<DomainEvent> executeOptions,
+                               Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel) {
+		return occurrentApplicationService.execute(gameId, executeOptions, functionThatCallsDomainModel);
     }
 }
 {% endcapture %}
 {% capture kotlin %}
 @Service
-class CustomApplicationServiceImpl(val occurrentApplicationService:  GenericApplicationService<DomainEvent>) : ApplicationService<DomainEvent> {
+class CustomApplicationServiceImpl(private val occurrentApplicationService: GenericApplicationService<DomainEvent>) {
 
-	@Transactional
-    override fun execute(gameId : String, functionThatCallsDomainModel: Function<Stream<DomainEvent>, Stream<DomainEvent>> , sideEffect : Consumer<Stream<DomainEvent>>) {
-		occurrentApplicationService.execute(gameId, functionThatCallsDomainModel, sideEffect)
+    @Transactional
+    fun execute(
+        gameId: String,
+        executeOptions: ExecuteOptions<DomainEvent>,
+        functionThatCallsDomainModel: Function<Stream<DomainEvent>, Stream<DomainEvent>>
+    ): WriteResult {
+        return occurrentApplicationService.execute(gameId, executeOptions, functionThatCallsDomainModel)
     }
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Given that you've defined a `MongoTransactionManager` in your Spring Boot configuration (and using this when creating your [event store instance](#eventstore-with-spring-mongotemplate-blocking)) the side-effects and events
-are written atomically in the same transaction! 
+Given that you've defined a `MongoTransactionManager` in your Spring Boot configuration (and use this when creating your [event store instance](#eventstore-with-spring-mongotemplate-blocking)) the side effects and events
+are written atomically in the same transaction!
 
 ### Application Service Kotlin Extensions
 
 If you're using [Kotlin](https://kotlinlang.org/) chances are that your domain model is using a [Sequence](https://kotlinlang.org/docs/sequences.html)
-instead of a java `Stream`:
+or a `List` instead of a Java `Stream`.
 
-```kotlin
-object WordGuessingGame {
-    fun guessWord(events : Sequence<DomainEvent>, guess : String) : Sequence<DomainEvent> {
-        // Implementation
-    }    
-}
-```           
-
-Occurrent provides a set of extension functions for Kotlin in the application service module:
+Occurrent provides Kotlin extensions for this in the application service module:
 
 {% include macros/applicationservice/blocking-maven.md %}
 
-You can then use one of the `org.occurrent.application.service.blocking.execute` extension functions to do:
+Use these names going forward:
+
+* `executeSequence(...)` when the domain model works with `Sequence`
+* `executeList(...)` when the domain model works with `List`
+* `options()` when you want to start an `ExecuteOptions` chain explicitly
+* `filter(...)` when you want to start directly with a `StreamReadFilter`
+* `sideEffect(...)` when you want to configure synchronous side effects
+* `sideEffectOnSequence(...)` / `sideEffectOnList(...)` when the side effect itself wants a filtered collection view
+
+For example:
 
 ```kotlin
-applicationService.execute(gameId) { events : Sequence<DomainEvent> -> 
+applicationService.executeSequence(gameId) { events ->
     WordGuessingGame.guessWord(events, guess)
 }
 ```
+
+```kotlin
+applicationService.executeSequence(
+    gameId,
+    sideEffect { event: GameWasStarted ->
+        registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
+    }
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+```kotlin
+applicationService.executeSequence(
+    gameId,
+    filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+        { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
+    )
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+The old collection-based `execute(...)` Kotlin extensions are still available for compatibility, but they are deprecated because Java/Kotlin overload resolution can otherwise become ambiguous.
+For synchronous side effects, prefer `sideEffect(...)` or `options().sideEffect(...)` rather than the older policy-style helpers.
 
 ## Sagas
 
@@ -1792,6 +2006,8 @@ For example:
 {% include macros/eventstore/mongodb/native/example-configuration.md %}
 
 
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering and Execute Options](#stream-filtering-and-execute-options) for when and how to use it.
+
 Now you can start reading and writing events to the EventStore:
 
 {% include macros/eventstore/mongodb/native/read-and-write-events.md %}
@@ -1818,13 +2034,15 @@ If you're already using Spring and you don't need reactive support then this is 
 
 #### Getting Started
 
-Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.blocking.SpringMongoEventStore`.
-It takes two arguments, a [MongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/MongoTemplate.html) and 
-an `org.occurrent.eventstore.mongodb.spring.blocking.EventStoreConfig`.
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.reactor.ReactorMongoEventStore`.
+It takes two arguments, a [ReactiveMongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/ReactiveMongoTemplate.html) and 
+an `org.occurrent.eventstore.mongodb.spring.reactor.EventStoreConfig`.
 
 For example:  
 
 {% include macros/eventstore/mongodb/spring/blocking/example-configuration.md %}
+
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering and Execute Options](#stream-filtering-and-execute-options) for when and how to use it.
 
 Now you can start reading and writing events to the EventStore:
 
@@ -1856,13 +2074,15 @@ If you're already using Spring and want to use the reactive driver ([project rea
 
 #### Getting Started
 
-Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.blocking.SpringMongoEventStore`.
-It takes two arguments, a [MongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/MongoTemplate.html) and 
-an `org.occurrent.eventstore.mongodb.spring.blocking.EventStoreConfig`.
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.reactor.ReactorMongoEventStore`.
+It takes two arguments, a [ReactiveMongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/ReactiveMongoTemplate.html) and 
+an `org.occurrent.eventstore.mongodb.spring.reactor.EventStoreConfig`.
 
 For example:  
 
 {% include macros/eventstore/mongodb/spring/reactor/example-configuration.md %}
+
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`. See [Stream Filtering and Execute Options](#stream-filtering-and-execute-options) for when and how to use it.
 
 Now you can start reading and writing events to the EventStore:
 
@@ -1891,6 +2111,8 @@ Mainly for testing purposes or for integration tests that doesn't require a dura
 Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.inmemory.InMemoryEventStore`. For example:  
 
 {% include macros/eventstore/in-memory/example-configuration.md %}
+
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering and Execute Options](#stream-filtering-and-execute-options) for when and how to use it.
 
 Now you can start reading and writing events to the EventStore:
 

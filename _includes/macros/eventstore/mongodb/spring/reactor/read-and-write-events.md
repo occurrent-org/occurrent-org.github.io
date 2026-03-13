@@ -14,6 +14,14 @@ Mono<Void> mono = eventStore.write("streamId", Flux.just(event));
 
 // Read
 Mono<EventStream<CloudEvent>> eventStream = eventStore.read("streamId");
+
+// Read filtered events when the store supports it
+if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+    Mono<EventStream<CloudEvent>> filteredEventStream = filteredEventStore.read(
+            "streamId",
+            StreamReadFilter.type("com.example.NameDefined")
+    );
+}
 {% endcapture %}
 
 {% capture kotlin %}
@@ -25,12 +33,19 @@ val event = CloudEventBuilder.v1()
                     .withSubject("subject")
                     .withDataContentType("application/json")
                     .withData("{ \"message\" : \"hello\" }".toByteArray())
-                    .build();
+                    .build()
 
 // Write                    
 val mono = eventStore.write("streamId", Flux.just(event))
 
 // Read
 val eventStream : Mono<EventStream<CloudEvent>> = eventStore.read("streamId")
+
+// Read filtered events when the store supports it
+val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+val filteredEventStream = filteredEventStore?.read(
+    "streamId",
+    StreamReadFilter.type(NameDefined::class.java.name)
+)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}

@@ -10,7 +10,7 @@ permalink: /news/
 <h1 class="no-margin-top">News</h1>
 Follow the development of Occurrent on <a href="https://twitter.com/johanhaleby">Twitter</a>.
 
-{% assign newsposts = (site.posts | where: "category" , "news") | sort: 'date' | reverse %}
+{% assign newsposts = site.posts | where: "category", "news" | sort: "date" | reverse %}
 
 <div class="posts-overview">
     <ul class="post-list">
