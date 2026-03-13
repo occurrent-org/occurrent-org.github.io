@@ -1395,7 +1395,7 @@ applicationService.executeSequence(
 ```kotlin
 applicationService.executeSequence(
     gameId,
-    filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+    options().filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
         { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
     )
 ) { events ->
@@ -1533,8 +1533,9 @@ Use these names going forward:
 * `executeSequence(...)` when the domain model works with `Sequence`
 * `executeList(...)` when the domain model works with `List`
 * `options()` when you want to start an `ExecuteOptions` chain explicitly
-* `filter(...)` when you want to start directly with a `StreamReadFilter`
+* `filter(...)` when you want to start directly with a `StreamReadFilter` or `ExecuteFilter`
 * `sideEffect(...)` when you want to configure synchronous side effects
+* `ExecuteFilters.type(...)` / `ExecuteFilters.includeTypes(...)` / `ExecuteFilters.excludeTypes(...)` when you want typed filters based on domain event classes
 * `sideEffectOnSequence(...)` / `sideEffectOnList(...)` when the side effect itself wants a filtered collection view
 
 For example:
@@ -1559,7 +1560,7 @@ applicationService.executeSequence(
 ```kotlin
 applicationService.executeSequence(
     gameId,
-    filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+    options().filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
         { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
     )
 ) { events ->
@@ -1567,7 +1568,6 @@ applicationService.executeSequence(
 }
 ```
 
-The old collection-based `execute(...)` Kotlin extensions are still available for compatibility, but they are deprecated because Java/Kotlin overload resolution can otherwise become ambiguous.
 For synchronous side effects, prefer `sideEffect(...)` or `options().sideEffect(...)` rather than the older policy-style helpers.
 
 ## Sagas
