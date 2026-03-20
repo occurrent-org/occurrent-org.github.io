@@ -914,29 +914,39 @@ You can also configure how different attributes of the domain event should be re
 
 ### Jackson CloudEvent Converter
 
-This cloud event converter uses [Jackson](https://github.com/FasterXML/jackson) to convert domain events to cloud events to JSON and back. To use it, first depend on this module:
+Occurrent `0.20.0` provides a Jackson 3-native CloudEvent converter and that is the recommended choice for new code.
+To use it, first depend on this module:
 
 {% include macros/cloudevent-converter/jackson-maven.md %}
 
 Next you can instantiate it like this:
 
 {% capture java %}
-ObjectMapper objectMapper = new ObjectMapper();
+import org.occurrent.application.converter.jackson3.JacksonCloudEventConverter;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
+
+ObjectMapper objectMapper = JsonMapper.builder().build();
 URI cloudEventSource = URI.create("urn:company:domain")
 JacksonCloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
 {% endcapture %}
 {% capture kotlin %}
+import org.occurrent.application.converter.jackson3.JacksonCloudEventConverter
+import tools.jackson.module.kotlin.jacksonObjectMapper
+
 val objectMapper = jacksonObjectMapper()
 val cloudEventSource = URI.create("urn:company:domain")
-val cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource)
+val cloudEventConverter = JacksonCloudEventConverter<MyDomainEvent>(objectMapper, cloudEventSource)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-You can also configure how different attributes of the domain event should be represented in the cloud event by using the builder, `new JacksonCloudEventConverter.Builder<MyDomainEvent>().. build()`.
+You can also configure how different attributes of the domain event should be represented in the cloud event by using the builder.
 In production, you almost certainly want to change the way the `JacksonCloudEventConverter` generates the cloud event type from the domain event. By default, the cloud event type will be generated
 from the fully-qualified class name of the domain event class type. I.e. if you do:
 
 ```java
+import org.occurrent.application.converter.jackson3.JacksonCloudEventConverter;
+
 CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
 CloudEvent cloudEvent = cloudEventConverter.toCloudEvent(new SomeDomainEvent());
 ```
@@ -945,7 +955,9 @@ Then `cloudEvent.getType()` will return `com.mycompany.SomeDomainEvent`. Typical
 `cloudEvent.getType()` return `SomeDomainEvent` instead. The `JacksonCloudEventConverter` allows us to do this by using the builder: 
 
 ```java
-CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter.Builder<MyDomainEvent>()
+import org.occurrent.application.converter.jackson3.JacksonCloudEventConverter;
+
+CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter.Builder<MyDomainEvent>(objectMapper, cloudEventSource)
         .typeMapper(..) // Specify a custom way to map the domain event to a cloud event and vice versa
         .build();
 ```
@@ -976,6 +988,9 @@ If you don't want to use reflection or don't want to couple the class name to th
 [org.occurrent.application.converter.typemapper.CloudEventTypeMapper](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/cloudevent-type-mapper/api/src/main/java/org/occurrent/application/converter/typemapper/CloudEventTypeMapper.java)
 interface.
 
+If you are migrating an existing application and need to stay on the old Jackson 2 API for a while, `org.occurrent:cloudevent-converter-jackson` is still available as a compatibility lane.
+However, the recommended direction for new applications and updated documentation is Jackson 3.
+
 ### Custom CloudEvent Converter
 
 To create a custom cloud event converter first depend on:
@@ -986,7 +1001,7 @@ Let's have a look at a naive example of how we can create a custom converter tha
 Note that instead of using the code below you might as well use the [Jackson CloudEvent Converter](#jackson-cloudevent-converter), this is just an example showing how you could roll your own.
 
 ```java
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import io.cloudevents.CloudEvent;
 import io.cloudevents.core.builder.CloudEventBuilder;
 import org.occurrent.application.converter.CloudEventConverter;
@@ -1055,7 +1070,7 @@ A more performant option would be to make use of the `io.cloudevents.core.data.P
 allows passing a pre-baked `Map` or `org.bson.Document` instance to it. Then no additional conversion will need to take place! Here's an example:
 
 ```java
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import io.cloudevents.CloudEvent;
 import io.cloudevents.core.builder.CloudEventBuilder;
 import io.cloudevents.core.data.PojoCloudEventData;
@@ -3022,7 +3037,7 @@ There are also some Kotlin extensions that you can use to query for a `Sequence`
              
 # Spring Boot Starter
 
-Use the "Spring Boot Starter" project to bootstrap Occurrent quickly if using Spring. Add the following to your build script:
+Use the "Spring Boot Starter" project to bootstrap Occurrent quickly if using Spring Boot 4. Add the following to your build script:
 
 {% include macros/spring-boot-starter/maven.md %}
 
@@ -3032,7 +3047,8 @@ Occurrent will then configure the following components automatically:
 * A Spring MongoDB Event Store instance (`EventStore`)
 * A Spring `SubscriptionPositionStorage` instance 
 * A durable Spring MongoDB competing consumer subscription model (`SubscriptionModel`)
-* A Jackson-based `CloudEventConverter`. It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases).
+* A Jackson-based `CloudEventConverter`. From `0.20.0`, the starter supports both the Jackson 3 lane and the Jackson 2 compatibility lane. New applications should use Jackson 3.
+  It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases).
   You can do this, for example, by doing:
   ```java
   @Bean
@@ -3060,6 +3076,14 @@ Occurrent will then configure the following components automatically:
 * A subscription dsl instance (`Subscriptions`)
 * A query dsl instance (`DomainQueries`)
 * Support for [annotations](#spring-boot-annotations)
+
+For most new Spring Boot applications, the recommended setup is:
+
+* Spring Boot 4
+* `spring-boot-starter-mongodb`
+* `cloudevent-converter-jackson3` if you configure the converter explicitly
+
+If you are upgrading an existing application that still depends on the Jackson 2 converter API, you can continue to use that compatibility lane while migrating incrementally.
 
 You can of course override other beans as well to tailor them to your needs. 
 See the source code of [org.occurrent.springboot.mongo.blocking.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java)
