@@ -72,6 +72,7 @@ if (document.location.pathname.includes("/documentation")) {
         "competing-consumer-subscription-blocking" : "0.9.0",
         "xstream-cloudevent-converter" : "0.12.0",
         "jackson-cloudevent-converter" : "0.12.0",
+        "jackson3-cloudevent-converter" : "0.20.0",
         "query-dsl" : "0.14.0",
         "spring-boot-starter" : "0.14.0",
         "deadlines" : "0.15.0",

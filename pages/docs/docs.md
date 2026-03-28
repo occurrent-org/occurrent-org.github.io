@@ -19,6 +19,7 @@ permalink: /documentation
 * * * [WriteCondition](#write-condition)
 * * * [Queries](#eventstore-queries)
 * * * [Operations](#eventstore-operations)
+* * * [Stream Filtering](#eventstore-stream-filtering)
 * * [Subscriptions](#subscriptions)
 * * [Views](#views)
 * * [Commands](#commands)
@@ -30,9 +31,12 @@ permalink: /documentation
 * * * [Generic](#generic-cloudevent-converter)
 * * * [XStream](#xstream-cloudevent-converter)
 * * * [Jackson](#jackson-cloudevent-converter)
+* * * * [Jackson 3](#jackson3-cloudevent-converter)
+* * * * [Jackson 2](#jackson2-cloudevent-converter)
 * * * [Custom](#custom-cloudevent-converter)
 * * [Application Service](#application-service)
 * * * [Usage](#using-the-application-service)
+* * * [Stream Filtering and Execute Options](#application-service-stream-filtering-and-execute-options)
 * * * [Side-Effects](#application-service-side-effects)
 * * * [Transactional Side-Effects](#application-service-transactional-side-effects)
 * * * [Kotlin](#application-service-kotlin-extensions)
@@ -500,23 +504,6 @@ val events : Stream<CloudEvent> = eventStore.all(42, 1024)
 
 To get started with an event store refer to [Choosing An EventStore](#choosing-an-eventstore).
 
-## Subscriptions
-
-A subscription is a way to get notified when new events are written to an event store. Typically, a subscription will be used to create views from events (such as projections, sagas, snapshots etc) or
-create integration events that can be forwarded to another piece of infrastructure such as a message bus. There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
-represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` interface (in the `org.occurrent:subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
-represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:subscription-api-reactor` module). 
-
-
-The blocking API is callback based, which is fine if you're working with individual events (you can of course use a simple function that aggregates events into batches yourself).
-If you want to work with streams of data, the reactor `SubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
-publisher from [project reactor](https://projectreactor.io/).
-
-Note that it's fine to use reactive `SubscriptionModel`, even though the event store is implemented using the blocking api, and vice versa.
-If the datastore allows it, you can also run subscriptions in a different process than the processes reading and writing to the event store.   
-
-To get started with subscriptions refer to [Using Subscriptions](#using-subscriptions).
-
 ### EventStore Operations
 
 Occurrent event store implementations may optionally also implement the `EventStoreOperations` interface. It provides means to delete a specific event, or an entire 
@@ -560,6 +547,83 @@ eventStoreOperations.updateEvent("cloudEventId", cloudEventSource) { cloudEvent 
 })
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Stream Filtering {#eventstore-stream-filtering}
+
+`org.occurrent.eventstore.api.StreamReadFilter` is an EventStore read capability for cases where a command or use case only depends on a subset of the events in a stream.
+It is useful when you want to avoid reading and deserializing events that are irrelevant for a specific decision.
+
+Filtering is a read optimization, not a correctness feature.
+Do not filter away events that are needed to enforce invariants, rebuild state correctly, or make valid domain decisions.
+
+`StreamReadFilter` is intentionally scoped to stream reads and validates reserved stream fields such as `streamid` and `streamversion`.
+
+Filtered stream reads are exposed via optional capability interfaces:
+
+* `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`
+* `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`
+
+The following event stores support filtered stream reads:
+
+* `InMemoryEventStore`
+* `MongoEventStore`
+* `SpringMongoEventStore`
+* `ReactorMongoEventStore`
+
+A blocking example:
+
+{% capture java %}
+if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+    EventStream<CloudEvent> eventStream = filteredEventStore.read(
+            "streamId",
+            StreamReadFilter.type("com.acme.NameDefined")
+    );
+}
+{% endcapture %}
+{% capture kotlin %}
+val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+val eventStream = filteredEventStore?.read(
+    "streamId",
+    StreamReadFilter.type(NameDefined::class.java.name)
+)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A reactor example:
+
+{% capture java %}
+if (eventStore instanceof org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter filteredEventStore) {
+    Mono<EventStream<CloudEvent>> eventStream = filteredEventStore.read(
+            "streamId",
+            StreamReadFilter.type("com.acme.NameDefined")
+    );
+}
+{% endcapture %}
+{% capture kotlin %}
+val filteredEventStore = eventStore as? org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter
+val eventStream = filteredEventStore?.read(
+    "streamId",
+    StreamReadFilter.type(NameDefined::class.java.name)
+)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+## Subscriptions
+
+A subscription is a way to get notified when new events are written to an event store. Typically, a subscription will be used to create views from events (such as projections, sagas, snapshots etc) or
+create integration events that can be forwarded to another piece of infrastructure such as a message bus. There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
+represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` interface (in the `org.occurrent:subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
+represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:subscription-api-reactor` module). 
+
+
+The blocking API is callback based, which is fine if you're working with individual events (you can of course use a simple function that aggregates events into batches yourself).
+If you want to work with streams of data, the reactor `SubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
+publisher from [project reactor](https://projectreactor.io/).
+
+Note that it's fine to use reactive `SubscriptionModel`, even though the event store is implemented using the blocking api, and vice versa.
+If the datastore allows it, you can also run subscriptions in a different process than the processes reading and writing to the event store.   
+
+To get started with subscriptions refer to [Using Subscriptions](#using-subscriptions).
      
 ## Views
 
@@ -914,6 +978,8 @@ You can also configure how different attributes of the domain event should be re
 
 ### Jackson CloudEvent Converter
 
+#### Jackson 3 {#jackson3-cloudevent-converter}
+
 Occurrent `0.20.0` provides a Jackson 3-native CloudEvent converter and that is the recommended choice for new code.
 To use it, first depend on this module:
 
@@ -990,6 +1056,42 @@ interface.
 
 If you are migrating an existing application and need to stay on the old Jackson 2 API for a while, `org.occurrent:cloudevent-converter-jackson` is still available as a compatibility lane.
 However, the recommended direction for new applications and updated documentation is Jackson 3.
+
+#### Jackson 2 Compatibility {#jackson2-cloudevent-converter}
+
+If you're maintaining an existing application that still uses the Jackson 2 API, you can continue to use the Jackson 2 compatibility lane.
+Depend on `org.occurrent:cloudevent-converter-jackson`:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>cloudevent-converter-jackson</artifactId>
+    <version>{{site.occurrentversion}}</version>
+</dependency>
+```
+
+Then instantiate it like this:
+
+{% capture java %}
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.occurrent.application.converter.jackson.JacksonCloudEventConverter;
+
+ObjectMapper objectMapper = new ObjectMapper();
+URI cloudEventSource = URI.create("urn:company:domain");
+JacksonCloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
+{% endcapture %}
+{% capture kotlin %}
+import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+import org.occurrent.application.converter.jackson.JacksonCloudEventConverter
+
+val objectMapper = jacksonObjectMapper()
+val cloudEventSource = URI.create("urn:company:domain")
+val cloudEventConverter = JacksonCloudEventConverter<MyDomainEvent>(objectMapper, cloudEventSource)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Jackson 2 still works and is intended for existing applications that are not yet ready to move to the Jackson 3 API.
+For new applications, prefer the Jackson 3 converter documented above.
 
 ### Custom CloudEvent Converter
 
@@ -1242,87 +1344,17 @@ applicationService.executeSequence(
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-For a more complete explanation of filtered reads, `ExecuteOptions`, and how they fit together, see [Stream Filtering and Execute Options](#stream-filtering-and-execute-options).
+For EventStore capability details and supported implementations, see [Stream Filtering](#eventstore-stream-filtering).
 
-## Stream Filtering and Execute Options
+### Stream Filtering and Execute Options {#application-service-stream-filtering-and-execute-options}
 
-`StreamReadFilter` and `ExecuteOptions` are designed to solve two related problems:
-
-* Some commands only depend on a subset of the events in a stream.
-* Some applications need synchronous side effects immediately after a successful write.
-
-Together they let you keep the domain code focused while still making read- and execution-behavior explicit.
-
-### Why Use It
-
-Filtered stream reads are useful when a stream contains many event types, but a particular use case only depends on one or a few of them.
-For supported event stores, this can reduce unnecessary IO and deserialization work.
-
-`ExecuteOptions` is useful when you want to express both of these concerns explicitly at the `ApplicationService` boundary:
+At the `ApplicationService` level, stream filtering is exposed through `ExecuteOptions`.
+This is the preferred way to say both:
 
 * which events should be read before command execution
-* which synchronous side effects should run after the write succeeds
+* which synchronous side effects should run after a successful write
 
-### StreamReadFilter
-
-`org.occurrent.eventstore.api.StreamReadFilter` represents a filter that is applied when reading an individual event stream.
-It is intentionally limited to stream reads and validates reserved stream fields such as `streamid` and `streamversion`.
-
-Use `StreamReadFilter` when the domain decision only needs a subset of events in the stream, for example a small set of event types.
-
-### Event Store Support
-
-Filtered stream reads are exposed via optional capability interfaces:
-
-* `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`
-* `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`
-
-The following event stores support filtered stream reads:
-
-* `InMemoryEventStore`
-* `MongoEventStore`
-* `SpringMongoEventStore`
-* `ReactorMongoEventStore`
-
-A blocking example:
-
-{% capture java %}
-if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
-    EventStream<CloudEvent> eventStream = filteredEventStore.read(
-            "streamId",
-            StreamReadFilter.type("com.acme.NameDefined")
-    );
-}
-{% endcapture %}
-{% capture kotlin %}
-val filteredEventStore = eventStore as? ReadEventStreamWithFilter
-val eventStream = filteredEventStore?.read(
-    "streamId",
-    StreamReadFilter.type(NameDefined::class.java.name)
-)
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-A reactor example:
-
-{% capture java %}
-if (eventStore instanceof org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter filteredEventStore) {
-    Mono<EventStream<CloudEvent>> eventStream = filteredEventStore.read(
-            "streamId",
-            StreamReadFilter.type("com.acme.NameDefined")
-    );
-}
-{% endcapture %}
-{% capture kotlin %}
-val filteredEventStore = eventStore as? org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter
-val eventStream = filteredEventStore?.read(
-    "streamId",
-    StreamReadFilter.type(NameDefined::class.java.name)
-)
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-### ExecuteOptions
+As of `0.20.0` the `ApplicationService` supports filtered reads and side effects by using the `ExecuteOptions` object.
 
 `org.occurrent.application.service.blocking.ExecuteOptions` is the preferred way to configure blocking `ApplicationService` execution when you need:
 
@@ -1352,6 +1384,8 @@ val result = applicationService.executeSequence(
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+For EventStore support details, filtering semantics, and direct EventStore examples, see [Stream Filtering](#eventstore-stream-filtering).
 
 ### Synchronous Side Effects
 
@@ -2021,7 +2055,7 @@ For example:
 {% include macros/eventstore/mongodb/native/example-configuration.md %}
 
 
-This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering and Execute Options](#stream-filtering-and-execute-options) for when and how to use it.
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering](#eventstore-stream-filtering) for when and how to use it.
 
 Now you can start reading and writing events to the EventStore:
 
@@ -2057,7 +2091,7 @@ For example:
 
 {% include macros/eventstore/mongodb/spring/blocking/example-configuration.md %}
 
-This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering and Execute Options](#stream-filtering-and-execute-options) for when and how to use it.
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering](#eventstore-stream-filtering) for when and how to use it.
 
 Now you can start reading and writing events to the EventStore:
 
@@ -2097,7 +2131,7 @@ For example:
 
 {% include macros/eventstore/mongodb/spring/reactor/example-configuration.md %}
 
-This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`. See [Stream Filtering and Execute Options](#stream-filtering-and-execute-options) for when and how to use it.
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`. See [Stream Filtering](#eventstore-stream-filtering) for when and how to use it.
 
 Now you can start reading and writing events to the EventStore:
 
@@ -2127,7 +2161,7 @@ Once you've imported the dependencies you create a new instance of `org.occurren
 
 {% include macros/eventstore/in-memory/example-configuration.md %}
 
-This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering and Execute Options](#stream-filtering-and-execute-options) for when and how to use it.
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering](#eventstore-stream-filtering) for when and how to use it.
 
 Now you can start reading and writing events to the EventStore:
 
@@ -3047,7 +3081,7 @@ Occurrent will then configure the following components automatically:
 * A Spring MongoDB Event Store instance (`EventStore`)
 * A Spring `SubscriptionPositionStorage` instance 
 * A durable Spring MongoDB competing consumer subscription model (`SubscriptionModel`)
-* A Jackson-based `CloudEventConverter`. From `0.20.0`, the starter supports both the Jackson 3 lane and the Jackson 2 compatibility lane. New applications should use Jackson 3.
+* A Jackson-based `CloudEventConverter`. From `0.20.0`, the starter supports both the Jackson 3 lane and the Jackson 2 compatibility lane. New applications should use Jackson 3, while existing applications can stay on Jackson 2 during migration.
   It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases).
   You can do this, for example, by doing:
   ```java
