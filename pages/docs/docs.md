@@ -3081,7 +3081,7 @@ Occurrent will then configure the following components automatically:
 * A Spring MongoDB Event Store instance (`EventStore`)
 * A Spring `SubscriptionPositionStorage` instance 
 * A durable Spring MongoDB competing consumer subscription model (`SubscriptionModel`)
-* A Jackson-based `CloudEventConverter`. From `0.20.0`, the starter supports both the Jackson 3 lane and the Jackson 2 compatibility lane. New applications should use Jackson 3, while existing applications can stay on Jackson 2 during migration.
+* A Jackson-based `CloudEventConverter`. From `0.20.1`, the starter autoconfigures the Jackson 3 lane by default. Existing applications can still use the Jackson 2 compatibility lane during migration, but in that case you need to define your own `CloudEventConverter` bean explicitly.
   It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases).
   You can do this, for example, by doing:
   ```java
@@ -3117,7 +3117,24 @@ For most new Spring Boot applications, the recommended setup is:
 * `spring-boot-starter-mongodb`
 * `cloudevent-converter-jackson3` if you configure the converter explicitly
 
-If you are upgrading an existing application that still depends on the Jackson 2 converter API, you can continue to use that compatibility lane while migrating incrementally.
+If you are upgrading an existing application that still depends on the Jackson 2 converter API, you can continue to use that compatibility lane while migrating incrementally. The Spring Boot starter will not autoconfigure the Jackson 2 converter for you, so you must register a `CloudEventConverter` bean yourself, for example:
+
+```java
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
+import org.occurrent.application.converter.CloudEventConverter;
+import org.occurrent.application.converter.jackson.JacksonCloudEventConverter;
+import org.occurrent.application.converter.typemapper.CloudEventTypeMapper;
+
+@Bean
+CloudEventConverter<GameEvent> cloudEventConverter(ObjectMapper objectMapper, CloudEventTypeMapper<GameEvent> cloudEventTypeMapper) {
+    return new JacksonCloudEventConverter.Builder<GameEvent>(objectMapper, URI.create("urn:example:game"))
+            .typeMapper(cloudEventTypeMapper)
+            .build();
+}
+```
+
+Any user-defined `CloudEventConverter` bean takes precedence over the starter's built-in fallback converter, regardless of whether your custom converter uses Jackson 2 or Jackson 3.
 
 You can of course override other beans as well to tailor them to your needs. 
 See the source code of [org.occurrent.springboot.mongo.blocking.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java)
