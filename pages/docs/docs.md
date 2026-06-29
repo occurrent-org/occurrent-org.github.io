@@ -88,6 +88,7 @@ permalink: /documentation
 * * [Application Service](#using-an-applicationservice-with-deciders)
 * * * [Java](#application-service-decider-java)
 * * * [Kotlin](#application-service-decider-kotlin)
+* * [Combining Deciders](#combining-deciders)
 * [Retry](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
@@ -1053,6 +1054,25 @@ you are responsible to, somehow, map the cloud event type (`cloudEventType`) bac
 If you don't want to use reflection or don't want to couple the class name to the event name (which is recommended) you can roll your own custom `CloudEventTypeMapper` by implementing the 
 [org.occurrent.application.converter.typemapper.CloudEventTypeMapper](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/application/cloudevent-type-mapper/api/src/main/java/org/occurrent/application/converter/typemapper/CloudEventTypeMapper.java)
 interface.
+
+As of version 0.20.5 the builder can also truncate the cloud event time to a given precision with `timePrecision(ChronoUnit)`:
+
+{% capture java %}
+CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter.Builder<MyDomainEvent>(objectMapper, cloudEventSource)
+        .timePrecision(ChronoUnit.MILLIS)
+        .build();
+{% endcapture %}
+{% capture kotlin %}
+val cloudEventConverter = JacksonCloudEventConverter.Builder<MyDomainEvent>(objectMapper, cloudEventSource)
+        .timePrecision(ChronoUnit.MILLIS)
+        .build()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+This matters when the event store uses `TimeRepresentation.DATE`, which cannot store the nanoseconds that `Instant.now()` and `OffsetDateTime.now()`
+carry on modern JVMs, so an append would otherwise fail. With the Spring Boot starter you set it through the `occurrent.cloud-event-converter.time-precision`
+property (a `ChronoUnit`, for example `millis`). When that property is unset and the event store `time-representation` is `DATE`, the converter defaults
+to truncating to `MILLIS`, so the common case needs no configuration. `RFC_3339_STRING` keeps full precision.
 
 If you are migrating an existing application and need to stay on the old Jackson 2 API for a while, `org.occurrent:cloudevent-converter-jackson` is still available as a compatibility lane.
 However, the recommended direction for new applications and updated documentation is Jackson 3.
@@ -2800,7 +2820,7 @@ Some benefits of using deciders are:
 2. You get a good structure for defining your aggregate/use case.
 3. A decider can return either the new events, the new state, or both events and state (called `Decision` in Occurrent), for a specific command.
 4. Occurrent's decider implementation supports sending multiple commands to a decider atomically.
-5. Deciders are also combinable, however this feature is not yet available in Occcurrent.
+5. Deciders are combinable. You can widen a decider to broader command and event types with `adapt`, and combine several feature deciders into one with `compose` (see [Combining Deciders](#combining-deciders)).
 
 To use a decider, you need to model your commands as explicit data structures instead of functions.
 
@@ -2913,6 +2933,99 @@ val state = applicationService.executeAndReturnState(streamId, command, decider)
 val newEvents = applicationService.executeAndReturnEvents(streamId, command, decider)
 ```
            
+## Combining Deciders
+
+As of version 0.20.5 deciders are combinable. You can write one small decider per feature, each over its own command, state, and event
+types, and combine them into a larger decider without losing the type safety of the small ones. The combinators live in the
+`org.occurrent:decider` module.
+
+### Widening a decider with `adapt`
+
+A feature decider is usually written over its own narrow types, for example `Decider<CourseCommand, CourseState, CourseEvent>`, while an
+`ApplicationService` is over the broadest event type in your domain. `adapt` widens a decider to the shared supertypes, ignoring foreign
+events and treating foreign commands as no-ops.
+
+From Java you pass the narrow command and event types as `Class` tokens. In Kotlin it is a `reified` extension, so the narrow types
+come from the receiver and the broad types from the call site, and you just write `courseDecider.adapt()`:
+
+{% capture java %}
+// courseDecider is a Decider<CourseCommand, CourseState, CourseEvent>, but the application service
+// works with the whole domain's commands and events.
+Decider<DomainCommand, CourseState, DomainEvent> widened =
+        Decider.adapt(courseDecider, CourseCommand.class, CourseEvent.class);
+{% endcapture %}
+{% capture kotlin %}
+import org.occurrent.dsl.decider.adapt
+
+// courseDecider: Decider<CourseCommand, CourseState, CourseEvent>
+val widened: Decider<DomainCommand, CourseState, DomainEvent> = courseDecider.adapt()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Combining with `compose`
+
+`compose` merges several feature deciders into one whose state is the product of the individual states. A command is routed to whichever
+decider recognizes it, each event updates only its own decider's state, and the composed decider is terminal once every part is.
+
+In Kotlin the two and three decider forms adapt each decider for you and return a typed `Pair` or `Triple`, so you can pass the feature
+deciders directly. In Java, and in Kotlin for four or more deciders, the state is a `CompositeState` and you widen each decider with `adapt`
+first and read each slice back by the order the deciders were passed in:
+
+{% capture java %}
+// Widen each decider, then compose. The combined state is a CompositeState, read each slice back by position.
+Decider<DomainCommand, CompositeState, DomainEvent> combined = Decider.compose(
+        Decider.adapt(courseDecider, CourseCommand.class, CourseEvent.class),
+        Decider.adapt(studentDecider, StudentCommand.class, StudentEvent.class));
+
+CompositeState state = combined.initialState();
+CourseState course = state.slice(0);
+StudentState student = state.slice(1);
+{% endcapture %}
+{% capture kotlin %}
+import org.occurrent.dsl.decider.compose
+
+// Two deciders, adapted for you, state is a Pair
+val twoDeciders: Decider<DomainCommand, Pair<CourseState, StudentState>, DomainEvent> =
+        compose(courseDecider, studentDecider)
+
+// Three deciders, adapted for you, state is a Triple
+val threeDeciders: Decider<DomainCommand, Triple<CourseState, StudentState, EnrollmentState>, DomainEvent> =
+        compose(courseDecider, studentDecider, enrollmentDecider)
+
+// The two decider case also has an infix form
+val infix = courseDecider compose studentDecider
+
+// Four or more: widen each with adapt yourself, state is a CompositeState, read a slice with slice(index)
+val many: Decider<DomainCommand, CompositeState, DomainEvent> =
+        compose(courseDecider.adapt(), studentDecider.adapt(), enrollmentDecider.adapt(), roomDecider.adapt())
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The typed `Pair` and `Triple` results are Kotlin only. In Java `compose` always yields a `CompositeState`.
+
+### Passing a feature decider to an ApplicationService
+
+The Kotlin `execute` extensions widen a decider's event type for you, so a feature decider over its own narrow event type can go straight
+to an `ApplicationService` over a broader event type, without calling `adapt` first. From Java you widen the decider with `adapt` and then
+use it the same way as the [Java decider example above](#application-service-decider-java):
+
+{% capture java %}
+// applicationService: ApplicationService<DomainEvent>, courseDecider: Decider<CourseCommand, CourseState, CourseEvent>
+Decider<DomainCommand, CourseState, DomainEvent> widened =
+        Decider.adapt(courseDecider, CourseCommand.class, CourseEvent.class);
+var writeResult = applicationService.execute("streamId", toStreamCommand(events -> widened.decideOnEventsAndReturnEvents(events, command)));
+{% endcapture %}
+{% capture kotlin %}
+import org.occurrent.dsl.decider.execute
+
+// applicationService: ApplicationService<DomainEvent>, courseDecider: Decider<CourseCommand, CourseState, CourseEvent>
+// The execute extension widens the decider's event type for you, so no adapt is needed.
+val writeResult = applicationService.execute(streamId, command, courseDecider)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+If you only need to widen the event type yourself, there is `adaptEvents`, the event-only counterpart to `adapt`.
+
 # Retry
 
 ## Retry Configuration (Blocking)
