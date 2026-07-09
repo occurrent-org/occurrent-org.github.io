@@ -11,8 +11,8 @@ public class ApplicationService {
     
     @Transactional
     public void execute(String streamId, BiFunction<Snapshot, List<CloudEvent>, List<CloudEvent>> functionThatCallsDomainModel) {
-        // Read snapshot from a the snapshot repsitory 
-        Snapshot snapshot = snapshotRepsitory.findByStreamId(streamId);
+        // Read snapshot from the snapshot repository 
+        Snapshot snapshot = snapshotRepository.findByStreamId(streamId);
         long snapshotVersion = snapshot.version();        
     
         // Read all events for "streamId" from snapshotVersion  
@@ -22,12 +22,12 @@ public class ApplicationService {
         // Call a pure function from the domain model which returns a List of new events
         List<CloudEvent> newEvents = functionThatCallsDomainModel.apply(snapshot.state(), eventsSinceSnapshot);
 
-        // Convert domain events to cloud events and write them to the event store  
+        // Write the new events to the event store  
         eventStore.write(streamId, eventStream.version(), newEvents);
         
         // Update the snapshot
         Snapshot updatedSnapshot = snapshot.updateFrom(newEvents, eventStream.version());
-        snapshotRepsitory.save(updatedSnapshot);
+        snapshotRepository.save(updatedSnapshot);
     }
 }
 {% endcapture %}
@@ -36,10 +36,10 @@ public class ApplicationService {
 class ApplicationService(val eventStore : EventStore, val snapshotRepository : SnapshotRepository) {
     
     @Transactional
-    fun execute(String streamId, functionThatCallsDomainModel : (Snapshot, List<CloudEvent>) -> List<CloudEvent>) {
-        // Read snapshot from a the snapshot repsitory 
-        val snapshot : Snapshot = snapshotRepsitory.findByStreamId(streamId)
-        long snapshotVersion = snapshot.streamVersion()        
+    fun execute(streamId : String, functionThatCallsDomainModel : (Snapshot, List<CloudEvent>) -> List<CloudEvent>) {
+        // Read snapshot from the snapshot repository 
+        val snapshot : Snapshot = snapshotRepository.findByStreamId(streamId)
+        val snapshotVersion = snapshot.streamVersion()        
     
         // Read all events for "streamId" from snapshotVersion  
         val eventStream = eventStore.read(streamId, snapshotVersion, Long.MAX_VALUE)
@@ -48,12 +48,12 @@ class ApplicationService(val eventStore : EventStore, val snapshotRepository : S
         // Call a pure function from the domain model which returns a List of new events
         val newEvents = functionThatCallsDomainModel(snapshot.state(), eventsSinceSnapshot)
 
-        // Convert domain events to cloud events and write them to the event store  
+        // Write the new events to the event store  
         eventStore.write(streamId, eventStream.version(), newEvents)
         
         // Update the snapshot
         val updatedSnapshot = snapshot.updateFrom(newEvents, eventStream.version())
-        snapshotRepsitory.save(updatedSnapshot)
+        snapshotRepository.save(updatedSnapshot)
     }
 }
 {% endcapture %}

@@ -294,7 +294,7 @@ String gameId = ...
 String guess = ...;
 
 // We thus invoke the application service again to guess the word:
-applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, gameId, guess));
+applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess));
 {% endcapture %}
 {% capture kotlin %}
 // Here we image that we have received the data required to start a new game, e.g. from a REST endpoint. 
@@ -312,7 +312,7 @@ val guess : String = ...;
 
 // We thus invoke the application service again to guess the word:
 applicationService.execute(gameId) { events ->
-    WordGuessingGame.guessWord(events, gameId, guess)
+    WordGuessingGame.guessWord(events, guess)
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
