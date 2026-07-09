@@ -26,7 +26,6 @@ permalink: /documentation
 * * * [Philosophy](#command-philosophy)
 * * * [In Occurrent](#commands-in-occurrent)
 * * * [Composition](#command-composition)
-* * * [Conversion](#command-conversion)
 * * [CloudEvent Conversion](#cloudevent-conversion)
 * * * [Generic](#generic-cloudevent-converter)
 * * * [XStream](#xstream-cloudevent-converter)
@@ -89,6 +88,15 @@ permalink: /documentation
 * * * [Java](#application-service-decider-java)
 * * * [Kotlin](#application-service-decider-kotlin)
 * * [Combining Deciders](#combining-deciders)
+* [Dynamic Consistency Boundary](#dynamic-consistency-boundary)
+* * [Enabling DCB](#enabling-dcb)
+* * [Tags and Criteria](#tags-and-criteria)
+* * [The DCB Event Store](#the-dcb-event-store)
+* * [The DCB Application Service](#the-dcb-application-service)
+* * [Deriving Tags From Annotations](#deriving-tags-from-annotations)
+* * [Coupling a Decider to a Boundary](#coupling-a-decider-to-a-boundary)
+* * [Subscribing to DCB Events](#subscribing-to-dcb-events)
+* * [Reactive DCB](#reactive-dcb)
 * [Retry](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
@@ -192,6 +200,8 @@ Occurrent automatically adds two [extension attributes]({{cloudevents_spec}}#ext
 
 These are required for Occurrent to operate. A long-term goal of Occurrent is to come up with a standardized set of cloud event extensions that are agreed upon and used by several different vendors.
 
+Since version {{site.occurrentversion}}, Occurrent also stamps every event with a global, monotonically increasing `position` extension, shared by stream-written and DCB events alike. It gives stream consumers the same total-ordering guarantee that DCB relies on, and stream catch-up reconciles on it rather than on wall-clock time. It is enabled by default. A stream-only store can opt out with `EventStoreConfig.withoutStreamPosition()` (or the property `occurrent.event-store.stream.position=false`), but a store with the DCB capability always has it enabled.
+
 In the meantime, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#cloudevent-metadata)), 
 you would typically do this by creating or extending/wrapping an already existing [application service](#application-service).    
 
@@ -225,7 +235,7 @@ for both entity creation and subsequent use cases. For example consider this sim
 
 {% include macros/domain/wordGuessingGameCloudEvents.md java=java kotlin=kotlin %}
  
-Then we could write a generic application service that takes a higher-order function `(Stream<CloudEvent>) -> Stream<CloudEvent>`:
+Then we could write a generic application service that takes a higher-order function `(List<CloudEvent>) -> List<CloudEvent>`:
 
 {% capture java %}
 public class ApplicationService {
@@ -236,12 +246,12 @@ public class ApplicationService {
         this.eventStore = eventStore;
     }
 
-    public void execute(String streamId, Function<Stream<CloudEvent>, Stream<CloudEvent>> functionThatCallsDomainModel) {
+    public void execute(String streamId, Function<List<CloudEvent>, List<CloudEvent>> functionThatCallsDomainModel) {
         // Read all events from the event store for a particular stream
         EventStream<CloudEvent> eventStream = eventStore.read(streamId);
 
         // Invoke the domain model  
-        Stream<CloudEvent> newEvents = functionThatCallsDomainModel.apply(eventStream.events());
+        List<CloudEvent> newEvents = functionThatCallsDomainModel.apply(eventStream.eventList());
 
         // Persist the new events  
         eventStore.write(streamId, eventStream.version(), newEvents);
@@ -251,12 +261,12 @@ public class ApplicationService {
 {% capture kotlin %}
 class ApplicationService constructor (val eventStore : EventStore) {
 
-    fun execute(streamId : String, functionThatCallsDomainModel : (Stream<CloudEvent>) -> Stream<CloudEvent>) {
+    fun execute(streamId : String, functionThatCallsDomainModel : (List<CloudEvent>) -> List<CloudEvent>) {
         // Read all events from the event store for a particular stream
         val  eventStream : EventStream<CloudEvent> = eventStore.read(streamId)
         
          // Invoke the domain model 
-        val newEvents = functionThatCallsDomainModel(eventStream.events())
+        val newEvents = functionThatCallsDomainModel(eventStream.eventList())
 
         // Persist the new events
         eventStore.write(streamId, eventStream.version(), newEvents)
@@ -264,7 +274,7 @@ class ApplicationService constructor (val eventStore : EventStore) {
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
-<div class="comment">Note that typically the domain model, WordGuessingGame in this example, would not return CloudEvents but rather a stream or list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvent's. 
+<div class="comment">Note that typically the domain model, WordGuessingGame in this example, would not return CloudEvents but rather a list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvent's. 
 This is not shown in this example above for brevity.</div>
 
 You could then call the application service like this regardless of you're starting a new game or not:
@@ -299,7 +309,9 @@ val gameId : String = ...
 val guess : String = ...;
 
 // We thus invoke the application service again to guess the word:
-applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, gameId, guess));
+applicationService.execute(gameId) { events ->
+    WordGuessingGame.guessWord(events, gameId, guess)
+}
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -321,10 +333,10 @@ the money at the same time? Let's have a look:
 // Person A at _time 1_
 EventStream<CloudEvent> eventStream = eventStore.read("account1"); // A
 
-// "withdraw" is a pure function in the Account domain model which takes a Stream
+// "withdraw" is a pure function in the Account domain model which takes a List
 //  of all current events and the amount to withdraw, and returns new events. 
 // In this case, a "MoneyWasWithdrawn" event is returned,  since 15 EUR is OK to withdraw.     
-Stream<CloudEvent> events = Account.withdraw(eventStream.events(), Money.of(15, EUR));
+List<CloudEvent> events = Account.withdraw(eventStream.eventList(), Money.of(15, EUR));
 
 // We write the new events to the event store  
 eventStore.write("account1", events);
@@ -334,7 +346,7 @@ EventStream<CloudEvent> eventStream = eventStore.read("account1"); // B
 
 // Again we want to withdraw money, and the system will think this is OK, 
 // since event streams for A and B has not yet recorded that the balance is negative.   
-Stream<CloudEvent> events = Account.withdraw(eventStream.events(), Money.of(10, EUR));
+List<CloudEvent> events = Account.withdraw(eventStream.eventList(), Money.of(10, EUR));
 
 // We write the new events to the event store without any problems! 😱 
 // But this shouldn't work since it would violate the business rule!   
@@ -344,10 +356,10 @@ eventStore.write("account1", events);
 // Person A at _time 1_
 val eventStream = eventStore.read("account1") // A
 
-// "withdraw" is a pure function in the Account domain model which takes a Stream
-//  of all current events and the amount to withdraw. It returns a stream of 
+// "withdraw" is a pure function in the Account domain model which takes a List
+//  of all current events and the amount to withdraw. It returns a list of 
 // new events, in this case only a "MoneyWasWithdrawn" event,  since 15 EUR is OK to withdraw.     
-val events = Account.withdraw(eventStream.events(), Money.of(15, EUR))
+val events = Account.withdraw(eventStream.eventList(), Money.of(15, EUR))
 
 // We write the new events to the event store  
 eventStore.write("account1", events)
@@ -358,7 +370,7 @@ val eventStream = eventStore.read("account1") // B
 // Again we want to withdraw money, and the system will think this is OK, 
 // since the Account thinks that 10 EUR will have a balance of 10 EUR after 
 // the withdrawal.   
-val events = Account.withdraw(eventStream.events(), Money.of(10, EUR))
+val events = Account.withdraw(eventStream.eventList(), Money.of(10, EUR))
 
 // We write the new events to the event store without any problems! 😱 
 // But this shouldn't work since it would violate the business rule!   
@@ -366,7 +378,7 @@ eventStore.write("account1", events)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-<div class="comment">Note that typically the domain model, Account in this example, would not return CloudEvents but rather a stream or list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvent's. 
+<div class="comment">Note that typically the domain model, Account in this example, would not return CloudEvents but rather a list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvent's. 
 This is not shown in the example above for brevity, look at the <a href="#commands">command</a> section for a more real-life example.</div>
 
 To avoid the problem above we want to make use of conditional writes. Let's see how:
@@ -377,7 +389,7 @@ EventStream<CloudEvent> eventStream = eventStore.read("account1"); // A
 long currentVersion = eventStream.version(); 
 
 // Withdraw money
-Stream<CloudEvent> events = Account.withdraw(eventStream.events(), Money.of(15, EUR));
+List<CloudEvent> events = Account.withdraw(eventStream.eventList(), Money.of(15, EUR));
 
 // We write the new events to the event store with a write condition that implies
 // that the version of the event stream must be A.   
@@ -389,7 +401,7 @@ long currentVersion = eventStream.version();
 
 // Again we want to withdraw money, and the system will think this is OK, 
 // since event streams for A and B has not yet recorded that the balance is negative.   
-Stream<CloudEvent> events = Account.withdraw(eventStream.events(), Money.of(10, EUR));
+List<CloudEvent> events = Account.withdraw(eventStream.eventList(), Money.of(10, EUR));
 
 // We write the new events to the event store with a write condition that implies
 // that the version of the event stream must be B. But now Occurrent will throw
@@ -405,7 +417,7 @@ val eventStream = eventStore.read("account1") // A
 val currentVersion = eventStream.version() 
 
 // Withdraw money
-val events = Account.withdraw(eventStream.events(), Money.of(15, EUR));
+val events = Account.withdraw(eventStream.eventList(), Money.of(15, EUR));
 
 // We write the new events to the event store with a write condition that implies
 // that the version of the event stream must be A.   
@@ -417,7 +429,7 @@ val currentVersion = eventStream.version()
 
 // Again we want to withdraw money, and the system will think this is OK, 
 // since event streams for A and B has not yet recorded that the balance is negative.   
-val events = Account.withdraw(eventStream.events(), Money.of(10, EUR))
+val events = Account.withdraw(eventStream.eventList(), Money.of(10, EUR))
 
 // We write the new events to the event store with a write condition that implies
 // that the version of the event stream must be B. But now Occurrent will throw
@@ -867,11 +879,10 @@ As an example consider this simple domain model:
 {% include macros/command/composition-domain.md %}
 
 Imagine that for a specific API you want to allow starting a new game and making a guess in the same request. Instead of changing your domain model, 
-you can use function composition! If you import `org.occurrent.application.composition.command.StreamCommandComposition.composeCommands` you can do like this:
+you can use function composition! If you statically import `composeCommands` from `org.occurrent.application.composition.command.ListCommandComposition` you can do like this:
 
 {% include macros/command/composition-example.md %}
-<div class="comment">If you're using commands that takes and returns a "java.util.List" instead of a Stream, you can instead statically import "composeCommands"
-from "org.occurrent.application.composition.command.ListCommandComposition". If you're using Kotlin you should import the "composeCommands" extension function from 
+<div class="comment">If you're using Kotlin you should import the "composeCommands" extension function from 
 "org.occurrent.application.composition.command.composeCommands".</div>
 
 If you're using Kotlin you can also make use of the `andThen` (infix) function for command composition (import `org.occurrent.application.composition.command.andThen`):
@@ -900,33 +911,6 @@ applicationService.execute(gameId,
     WordGuessingGame::startNewGame.partial(gameId, wordToGuess)
             andThen WordGuessingGame::makeGuess.partial(guess))
 ```
-
-### Command Conversion  
-
-If you have an [application service](#application-service) that takes a higher-order function in the form of `Function<Stream<DomainEvent>, Stream<DomainEvent>>` but your 
-domain model is defined with list's (`Function<List<DomainEvent, List<DomainEvent>`) then Occurrent provides means to easily convert between them. First you need 
-to depend on the [Command Composition](#command-composition) library:
-
-{% include macros/command/composition-maven.md %}
-
-Let's say you have a domain model defined like this:
-
-{% include macros/command/conversion-domain.md %}
-
-But you [application service](#application-service) takes a `Function<Stream<DomainEvent>, Stream<DomainEvent>>`:
-
-```java
-public class ApplicationService {
-    public void execute(String streamId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel) {
-        // Implementation
-    }
-}
-```
-
-Then you can make use of the `toStreamCommand` in `org.occurrent.application.composition.command.CommandConversion` to call the domain function:
-
-{% include macros/command/conversion-example.md %}
-<div class="comment">You can also use the "toListCommand" method to convert a "Function&lt;Stream&lt;DomainEvent&gt;, Stream&lt;DomainEvent&gt;&gt;" into a "Function&lt;List&lt;DomainEvent&gt;, List&lt;DomainEvent&gt;&gt;"</div>
 
 ## CloudEvent Conversion
 
@@ -1322,7 +1306,7 @@ As an example let's say you have a domain model with a method defined like this:
 
 ```java
 public class WordGuessingGame {
-    public static Stream<DomainEvent> guessWord(Stream<DomainEvent> events, String guess) {
+    public static List<DomainEvent> guessWord(List<DomainEvent> events, String guess) {
         // Implementation
     }    
 }
@@ -1334,7 +1318,7 @@ You can call it using the application service:
 applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess));
 {% endcapture %}
 {% capture kotlin %}
-applicationService.executeSequence(gameId) { events ->
+applicationService.execute(gameId) { events ->
     WordGuessingGame.guessWord(events, guess)
 }
 {% endcapture %}
@@ -1353,7 +1337,7 @@ applicationService.execute(
 );
 {% endcapture %}
 {% capture kotlin %}
-applicationService.executeSequence(
+applicationService.execute(
     gameId,
     filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
         { event: GameWasStarted -> publish(event) }
@@ -1394,7 +1378,7 @@ WriteResult result = applicationService.execute(
 );
 {% endcapture %}
 {% capture kotlin %}
-val result = applicationService.executeSequence(
+val result = applicationService.execute(
     gameId,
     options().filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
         { event: GameWasStarted -> publish(event) }
@@ -1412,7 +1396,7 @@ For EventStore support details, filtering semantics, and direct EventStore examp
 Use `ExecuteOptions.sideEffect(...)` for synchronous side effects going forward.
 This is now the preferred API for new code.
 
-The older `executePolicy(...)` and `executePolicies(...)` helpers still exist, but they are no longer the recommended primary approach.
+The lower-level `SideEffect.executeSideEffect(...)` helper (formerly `PolicySideEffect.executePolicy(...)`) still exists, but it is no longer the recommended primary approach.
 If you are documenting or writing new synchronous side-effect code, prefer `ExecuteOptions.sideEffect(...)`.
 
 ### Java Examples
@@ -1430,7 +1414,7 @@ applicationService.execute(
 );
 {% endcapture %}
 {% capture kotlin %}
-applicationService.executeSequence(
+applicationService.execute(
     gameId,
     sideEffect { event: GameWasStarted ->
         registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
@@ -1443,15 +1427,10 @@ applicationService.executeSequence(
 
 ### Kotlin Examples
 
-For Kotlin, use the collection-oriented extension names:
-
-* `executeSequence(...)` when the domain model works with `Sequence`
-* `executeList(...)` when the domain model works with `List`
-
-You can start from either `options()` or the top-level helper functions:
+For Kotlin, the domain function is a `(List<DomainEvent>) -> List<DomainEvent>` lambda passed straight to `execute`. You can start from either `options()` or the top-level helper functions:
 
 ```kotlin
-applicationService.executeSequence(
+applicationService.execute(
     gameId,
     sideEffect(
         { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
@@ -1462,7 +1441,7 @@ applicationService.executeSequence(
 ```
 
 ```kotlin
-applicationService.executeSequence(
+applicationService.execute(
     gameId,
     options().filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
         { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
@@ -1528,7 +1507,7 @@ applicationService.execute(
 {% endcapture %}
 {% capture kotlin %}
 val registerOngoingGame : RegisterOngoingGame = ..
-applicationService.executeSequence(
+applicationService.execute(
     gameId,
     sideEffect { event: GameWasStarted ->
         registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
@@ -1541,8 +1520,8 @@ applicationService.executeSequence(
 
 Voila! Now `registerGameAsOngoingWhenGameWasStarted` will be called after the events returned from `WordGuessingGame.guessWord(..)` are written to the event store.
 
-The older `executePolicy(...)` and `executePolicies(...)` helpers still exist, but they are no longer the preferred primary approach for new code.
-If you already use them, you can keep doing so, but new examples and new synchronous side-effect code should prefer `ExecuteOptions.sideEffect(...)`.
+The lower-level `SideEffect.executeSideEffect(...)` helper (formerly `PolicySideEffect.executePolicy(...)`) still exists, but it is no longer the preferred primary approach for new code.
+If you already use it, you can keep doing so, but new examples and new synchronous side-effect code should prefer `ExecuteOptions.sideEffect(...)`.
 
 ### Application Service Transactional Side-Effects
 
@@ -1564,7 +1543,7 @@ public class CustomApplicationServiceImpl {
 	@Transactional
     public WriteResult execute(String gameId,
                                ExecuteOptions<DomainEvent> executeOptions,
-                               Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel) {
+                               Function<List<DomainEvent>, List<DomainEvent>> functionThatCallsDomainModel) {
 		return occurrentApplicationService.execute(gameId, executeOptions, functionThatCallsDomainModel);
     }
 }
@@ -1577,7 +1556,7 @@ class CustomApplicationServiceImpl(private val occurrentApplicationService: Gene
     fun execute(
         gameId: String,
         executeOptions: ExecuteOptions<DomainEvent>,
-        functionThatCallsDomainModel: Function<Stream<DomainEvent>, Stream<DomainEvent>>
+        functionThatCallsDomainModel: Function<List<DomainEvent>, List<DomainEvent>>
     ): WriteResult {
         return occurrentApplicationService.execute(gameId, executeOptions, functionThatCallsDomainModel)
     }
@@ -1590,33 +1569,30 @@ are written atomically in the same transaction!
 
 ### Application Service Kotlin Extensions
 
-If you're using [Kotlin](https://kotlinlang.org/) chances are that your domain model is using a [Sequence](https://kotlinlang.org/docs/sequences.html)
-or a `List` instead of a Java `Stream`.
+If you're using [Kotlin](https://kotlinlang.org/), the domain function you pass to `execute` is a `(List<E>) -> List<E>` lambda that binds directly to the Java `execute(..., Function<List<E>, List<E>>)` member.
 
-Occurrent provides Kotlin extensions for this in the application service module:
+Occurrent provides Kotlin extensions for the surrounding options in the application service module:
 
 {% include macros/applicationservice/blocking-maven.md %}
 
-Use these names going forward:
+Use these:
 
-* `executeSequence(...)` when the domain model works with `Sequence`
-* `executeList(...)` when the domain model works with `List`
 * `options()` when you want to start an `ExecuteOptions` chain explicitly
 * `filter(...)` when you want to start directly with a `StreamReadFilter` or `ExecuteFilter`
 * `sideEffect(...)` when you want to configure synchronous side effects
 * `ExecuteFilters.type(...)` / `ExecuteFilters.includeTypes(...)` / `ExecuteFilters.excludeTypes(...)` when you want typed filters based on domain event classes
-* `sideEffectOnSequence(...)` / `sideEffectOnList(...)` when the side effect itself wants a filtered collection view
+* `sideEffectOnList(...)` when the side effect itself wants a filtered collection view
 
 For example:
 
 ```kotlin
-applicationService.executeSequence(gameId) { events ->
+applicationService.execute(gameId) { events ->
     WordGuessingGame.guessWord(events, guess)
 }
 ```
 
 ```kotlin
-applicationService.executeSequence(
+applicationService.execute(
     gameId,
     sideEffect { event: GameWasStarted ->
         registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
@@ -1627,7 +1603,7 @@ applicationService.executeSequence(
 ```
 
 ```kotlin
-applicationService.executeSequence(
+applicationService.execute(
     gameId,
     options().filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
         { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
@@ -2014,7 +1990,7 @@ and is not defined in UTC (so that there won't be any surprises). I.e. using `DA
 var cloudEvent = new CloudEventBuilder().time(OffsetDateTime.now()). .. .build();
 
 // Will throw exception since OffsetDateTime.now() will include nanoseconds by default in Java 9+
-eventStore.write(Stream.of(cloudEvent));
+eventStore.write(List.of(cloudEvent));
 ```
 
 Instead, you need to remove nano seconds do like this explicitly:
@@ -2893,13 +2869,10 @@ To use the existing [ApplicationService](#application-service) infrastructure wi
 ApplicationService<Event> applicationService = ...
 Command command = ...
 
-// Because the decider expects a List<Event>, and not Stream<Event> as expected by the ApplicationService,
-// we first convert the Stream to a List using the "toStreamCommand" function provided by Occurrent.
-var writeResult = applicationService.execute("streamId", toStreamCommand(events -> decider.decideOnEventsAndReturnEvents(events, defineName)));
+// The decider works with a List<Event>, which is exactly what the ApplicationService now expects,
+// so you can pass the decision function straight to execute.
+var writeResult = applicationService.execute("streamId", events -> decider.decideOnEventsAndReturnEvents(events, defineName));
 ```
-<div class="comment">
-<code>toStreamCommand</code> can be statically imported from <code>org.occurrent.application.composition.command.toStreamCommand</code>.
-</div>
 
 
 ### Kotlin<a id="application-service-decider-kotlin"></a>
@@ -3013,7 +2986,7 @@ use it the same way as the [Java decider example above](#application-service-dec
 // applicationService: ApplicationService<DomainEvent>, courseDecider: Decider<CourseCommand, CourseState, CourseEvent>
 Decider<DomainCommand, CourseState, DomainEvent> widened =
         Decider.adapt(courseDecider, CourseCommand.class, CourseEvent.class);
-var writeResult = applicationService.execute("streamId", toStreamCommand(events -> widened.decideOnEventsAndReturnEvents(events, command)));
+var writeResult = applicationService.execute("streamId", events -> widened.decideOnEventsAndReturnEvents(events, command));
 {% endcapture %}
 {% capture kotlin %}
 import org.occurrent.dsl.decider.execute
@@ -3025,6 +2998,228 @@ val writeResult = applicationService.execute(streamId, command, courseDecider)
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 If you only need to widen the event type yourself, there is `adaptEvents`, the event-only counterpart to `adapt`.
+
+
+# Dynamic Consistency Boundary
+
+Most invariants live inside a single entity: an order cannot ship twice, an account cannot go negative. Occurrent's stream event store handles those well, because a stream is exactly the boundary the invariant needs.
+
+Some invariants do not respect a single stream. Take a course-enrollment system: a student can enroll in a course only if the course still has a free seat, and only if the student has not already reached the maximum number of courses they are allowed to take at once. The first half of that rule lives on the course. The second half lives on the student. Classic domain-driven design pushes you toward picking one aggregate to own the rule, inventing a saga, or accepting eventual consistency to bridge the two. Dynamic Consistency Boundary (DCB) removes the need for any of that. It lets a single decision read events from both the course and the student, and append its result under one atomic, conditional write that is guarded against both invariants at once.
+
+DCB is not a different storage model bolted onto Occurrent. It is a capability layered on the same CloudEvent storage you already use for streams, not a new store and not a new event format. A DCB event is a normal CloudEvent. What makes it a DCB event is two extensions the store stamps on it: `dcbtags`, a canonical encoding of the event's DCB tags, and `position`, the same shared global sequence position extension that stream reads use once stream position is enabled. Because the position is shared, stream consumers and subscriptions still see a DCB event, and a store can freely mix stream-written and DCB-written events, reading either with whichever vocabulary fits the decision at hand.
+
+## Enabling DCB
+
+An event store advertises which of its APIs are switched on through a set of `EventStoreCapability` values, `STREAM`, `DCB`, or both. The default is `STREAM` only, so an existing application that has never heard of DCB keeps behaving exactly as before, with no new indexes and no new guards added underneath it. Turning DCB on is a deliberate opt-in on the store's configuration (for example `EventStoreConfig.Builder.eventStoreCapabilities(...)` on the MongoDB stores), and a store can enable both `STREAM` and `DCB` at once if an application wants to keep using streams for some entities and DCB for others.
+
+## Tags and Criteria
+
+A `Tag` is an opaque string. Build the common `key:value` form with `Tag.of("course", courseId)`, or a value-less marker tag with `Tag.of("premium")`. `Tag.parse` reads a tag back from its string form, and `canonical()` returns it. Tags are how you scope events to a consistency boundary without threading a stream id through the model.
+
+A `DcbCriteria` describes which events belong to a boundary. Build one alternative with `DcbCriteria.type(...)`, `DcbCriteria.types(...)`, or `DcbCriteria.tags(...)`, then refine it fluently. Inside one alternative, types are matched any-of and tags are matched all-of, so `DcbCriteria.type("StudentEnrolledInCourse").tags(course, student)` reads as "this type, and both of these tags together". `excludingTypes` removes matching events whose type is in that set. Several alternatives are OR'd together with `DcbCriteria.anyOf(...)`, and `DcbCriteria.tagsAnyOf(...)` is a shortcut for OR-ing several single-tag alternatives.
+
+{% capture java %}
+Tag course = Tag.of("course", courseId);
+Tag student = Tag.of("student", studentId);
+
+// One alternative: this type, and both tags together (all-of)
+DcbCriterion enrollment = DcbCriteria.type("StudentEnrolledInCourse").tags(course, student);
+
+// Two alternatives OR'd together: the course's own events, or the student's own events
+DcbCriteria boundary = DcbCriteria.anyOf(
+        DcbCriteria.type("CourseDefined").tags(course),
+        DcbCriteria.type("StudentRegistered").tags(student)
+);
+
+// Shortcut for OR-ing single-tag alternatives
+DcbCriteria eitherEntity = DcbCriteria.tagsAnyOf(course, student);
+
+// Course events, but never a cancellation
+DcbCriterion activeCourse = DcbCriteria.type("CourseDefined").excludingTypes("CourseCancelled");
+{% endcapture %}
+{% capture kotlin %}
+val course = Tag.of("course", courseId)
+val student = Tag.of("student", studentId)
+
+// One alternative: this type, and both tags together (all-of)
+val enrollment = DcbCriteria.type("StudentEnrolledInCourse").tags(course, student)
+
+// Two alternatives OR'd together: the course's own events, or the student's own events
+val boundary = DcbCriteria.anyOf(
+    DcbCriteria.type("CourseDefined").tags(course),
+    DcbCriteria.type("StudentRegistered").tags(student)
+)
+
+// Shortcut for OR-ing single-tag alternatives
+val eitherEntity = DcbCriteria.tagsAnyOf(course, student)
+
+// Course events, but never a cancellation
+val activeCourse = DcbCriteria.type("CourseDefined").excludingTypes("CourseCancelled")
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+## The DCB Event Store
+
+`DcbEventStore` is the low-level API. `read(criteria)` returns a `DcbEventStream`, `exists(criteria)` and `count(criteria)` answer cheaper yes-or-no and how-many questions over the same criteria, and `append(events)` or `append(events, condition)` writes DCB-tagged CloudEvents.
+
+The read-decide-append cycle is how you use it directly, without an application service. Read the events for your boundary. The returned `DcbEventStream` carries both the events and a `DcbConsistencyToken`. Decide the new events from what you read, then append them under a `DcbAppendCondition.failIfEventsMatch(criteria, consistencyToken)`. That condition fails the append with a `DcbAppendConditionNotFulfilledException` if anything matching your boundary was committed after your read, and that exception is your signal to retry the whole cycle.
+
+{% capture java %}
+DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId));
+
+DcbEventStream stream = eventStore.read(boundary);
+List<CloudEvent> currentEvents = stream.events();
+
+// Decide the new events from what is currently true for this boundary
+List<CloudEvent> newEvents = decideEnrollment(currentEvents, courseId, studentId);
+
+DcbAppendCondition condition = DcbAppendCondition.failIfEventsMatch(boundary, stream.consistencyToken());
+try {
+    DcbAppendResult result = eventStore.append(newEvents, condition);
+} catch (DcbAppendConditionNotFulfilledException e) {
+    // Something matching the boundary was committed after the read, retry the cycle
+}
+{% endcapture %}
+{% capture kotlin %}
+val boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId))
+
+val stream = eventStore.read(boundary)
+val currentEvents = stream.events()
+
+// Decide the new events from what is currently true for this boundary
+val newEvents = decideEnrollment(currentEvents, courseId, studentId)
+
+val condition = DcbAppendCondition.failIfEventsMatch(boundary, stream.consistencyToken())
+try {
+    val result = eventStore.append(newEvents, condition)
+} catch (e: DcbAppendConditionNotFulfilledException) {
+    // Something matching the boundary was committed after the read, retry the cycle
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+## The DCB Application Service
+
+Running that cycle by hand for every command gets repetitive, and it is easy to forget the retry. `DcbApplicationService` does the read, decide, tag, and append for you, retrying automatically on a `DcbAppendConditionNotFulfilledException` (five attempts by default, with exponential backoff). `execute(criteria, fn)` reads the events matching `criteria`, hands them to your function, converts and tags whatever new domain events it returns, and appends them under the same boundary. The service needs a way to derive DCB tags for the events it appends, supplied once as a `TagGenerator` when constructing `GenericDcbApplicationService`, or per call through `DcbExecuteOptions.tagGenerator(...)`.
+
+The Java signature returns `Optional<DcbAppendResult>`, empty when your function decided there was nothing to do. The Kotlin extension `executeOrNull` returns a nullable `DcbAppendResult` instead, so a no-op command reads as `null` rather than an `Optional`.
+
+{% capture java %}
+DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId));
+
+Optional<DcbAppendResult> result = applicationService.execute(boundary, events -> {
+    if (isCourseFull(events, courseId) || isStudentAtEnrollmentLimit(events, studentId)) {
+        return List.of();
+    }
+    return List.of(new StudentEnrolledInCourse(courseId, studentId));
+});
+{% endcapture %}
+{% capture kotlin %}
+val boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId))
+
+val result: DcbAppendResult? = applicationService.executeOrNull(boundary) { events ->
+    if (isCourseFull(events, courseId) || isStudentAtEnrollmentLimit(events, studentId)) {
+        emptyList()
+    } else {
+        listOf(StudentEnrolledInCourse(courseId, studentId))
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+## Deriving Tags From Annotations
+
+Hand-writing a `TagGenerator` works, but for the common case, where an event's own fields are the tag values, `AnnotationTagGenerator` derives one from `@DcbTag`. Annotate a record component, field, or no-arg getter. The tag key comes from `@DcbTag`'s `value` (or its alias `key`), and falls back to the member's own name when neither is set. The tag value is the member's runtime value converted with `toString()`. A null or blank value skips that tag rather than failing.
+
+{% capture java %}
+public record StudentEnrolledInCourse(
+        @DcbTag("course") String courseId,
+        @DcbTag("student") String studentId) {
+}
+
+TagGenerator<StudentEnrolledInCourse> tagGenerator = new AnnotationTagGenerator<>();
+// tagGenerator.tags(event) returns {Tag.of("course", courseId), Tag.of("student", studentId)}
+{% endcapture %}
+{% capture kotlin %}
+// On a Kotlin data class, apply @DcbTag to the generated getter with the @get use-site target
+data class StudentEnrolledInCourse(
+    @get:DcbTag("course") val courseId: String,
+    @get:DcbTag("student") val studentId: String
+)
+
+val tagGenerator: TagGenerator<StudentEnrolledInCourse> = AnnotationTagGenerator()
+// tagGenerator.tags(event) returns setOf(Tag.of("course", courseId), Tag.of("student", studentId))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+## Coupling a Decider to a Boundary
+
+A `DcbDecider` couples three things a feature would otherwise have to keep in sync by hand: the plain `Decider` (decide and evolve), a function from command to the `DcbCriteria` boundary that command needs, and a `TagGenerator` for the events it emits. Build one with `DcbDecider.create(...)` (or `DcbDecider.from` around an existing `Decider`), or the Kotlin `dcbDecider(...)` factory, which reads a little more naturally at the call site.
+
+Once a decider is a `DcbDecider`, it is self-describing: given a command, it knows both what to decide and where to read from. The Kotlin DSL's `execute(command, dcbDecider)` puts that to work directly: it asks the decider for the command's boundary, reads the matching events, decides, tags the new events with the decider's own `TagGenerator`, and appends, all without you naming a `DcbCriteria` at the call site.
+
+{% capture java %}
+DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> enrollmentDecider = DcbDecider.create(
+        new EnrollmentState(),
+        (command, state) -> decide(command, state),
+        (state, event) -> evolve(state, event),
+        command -> DcbCriteria.tagsAnyOf(Tag.of("course", command.courseId()), Tag.of("student", command.studentId())),
+        event -> tagsFor(event)
+);
+
+// The decider knows its own read boundary for a given command
+DcbCriteria boundary = enrollmentDecider.criteria().apply(new EnrollStudent(courseId, studentId));
+{% endcapture %}
+{% capture kotlin %}
+val enrollmentDcbDecider: DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> = dcbDecider(
+    initialState = EnrollmentState(),
+    decide = ::decide,
+    evolve = ::evolve,
+    criteria = { command -> DcbCriteria.tagsAnyOf(Tag.of("course", command.courseId), Tag.of("student", command.studentId)) },
+    tags = { event -> tagsFor(event) }
+)
+
+// execute(command, dcbDecider) resolves the boundary, decides, tags, and appends in one call
+val result: DcbAppendResult? = applicationService.execute(
+    EnrollStudent(courseId, studentId),
+    enrollmentDcbDecider
+)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+## Subscribing to DCB Events
+
+A DCB read model needs to see DCB events as they are written, and for a durable one, catch up on history first. `@DcbSubscription` is the declarative, framework-managed way to do that. It is the DCB counterpart to `@StreamSubscription`, filtering by event types and tags instead of an Occurrent `Filter`, and starting at a `position` instead of a time.
+
+For an ephemeral, per-connection subscription you start and cancel by hand, a Server-Sent-Events feed scoped to one request, for example, inject the `DcbSubscriptions` DSL instead and call `subscribe` (or the Kotlin `subscribeDcb`) directly, passing a `DcbCriteria` and a `DcbStartAt`. `DcbStartAt.beginning()` replays the whole DCB sequence by position before switching to live delivery, the same catch-up behavior `@DcbSubscription`'s `startAt = DcbStartPosition.BEGINNING` gives you declaratively.
+
+{% capture java %}
+@DcbSubscription(id = "courseDashboard", startAt = DcbStartPosition.BEGINNING)
+void onEvent(CourseEvent event) {
+    dashboard.update(event);
+}
+{% endcapture %}
+{% capture kotlin %}
+val subscriptions = DcbSubscriptions(subscriptionModel, cloudEventConverter)
+
+subscriptions.subscribeDcb(
+    subscriptionId = "courseDashboard-$connectionId",
+    criteria = DcbCriteria.tags(Tag.of("course", courseId)),
+    startAt = DcbStartAt.beginning()
+) { event: CourseEvent ->
+    dashboard.update(event)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+## Reactive DCB
+
+Everything above has a reactive counterpart, the same way Occurrent pairs a blocking and a reactive API everywhere else. `org.occurrent.eventstore.api.dcb.reactor.DcbEventStore` returns `Mono<DcbEventStream>` from `read` and `Mono<DcbAppendResult>` from `append`, using the same criteria, tags, and append-condition types as the blocking store. The reactive `DcbApplicationService.execute(criteria, fn)` returns a `Mono<DcbAppendResult>` that completes empty when the domain function produced no new events. The domain function itself stays a plain synchronous `Function<List<E>, List<E>>`, since deciding is a pure computation over a list the read has already materialized, only the read and the append are reactive. `DcbSubscriptions` has a Project Reactor variant too, so a live subscription or a from-the-beginning catch-up works the same way over `Flux` as it does over the blocking callback API.
+
+## Notes
+
+- Existing historical stream events are not automatically DCB-readable. A DCB read matches on the `dcbtags` extension, and a stream-written event never carries one, so history written before DCB was enabled needs its own tag metadata and a `position` backfill before a DCB query can see it.
+- Enabling a capability can create indexes and other support structures on startup. Turning on `DCB` (or `STREAM`) for the first time on an existing store may add what that capability needs, so plan for that the same way you would for any other startup migration.
 
 # Retry
 
@@ -3265,6 +3460,10 @@ occurrent:
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.mongo.blocking.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentProperties.java)
 to find which configuration properties that are supported.
 
+## Reactive Spring Boot Starter
+
+If your application is reactive (Spring WebFlux with reactive MongoDB), use the reactive starter (`org.occurrent:spring-boot-starter-mongodb-reactive`) and annotate your application with `@EnableOccurrentReactive` (package `org.occurrent.springboot.mongo.reactor`) instead of `@EnableOccurrent`. It auto-configures the reactive counterparts of everything the blocking starter sets up: a reactive `EventStore`, a reactive transaction manager, a reactive application service (both the stream and the DCB application service), the query DSLs, a reactive `SubscriptionModel` backed by `CheckpointStorage`, and the reactive `StreamSubscriptions` and `DcbSubscriptions` DSLs. The blocking and reactive starters are mutually exclusive, so pick the one that matches your stack.
+
 ## Spring Boot Annotations
 
 If using the [Spring Boot Starter](#spring-boot-starter) you have the option to start subscriptions using the `@Subscription` annotation (`org.occurrent.annotation.Subscription`). 
@@ -3277,6 +3476,8 @@ you can create a subscription to _all_ events like this:
 {% include macros/annotation/basic-example.md %}
 
 Note that subscriptions started by the `Subscription` annotation will make use of [competing consumers](#competing-consumer-subscription-blocking) so that if you run multiple instances of the application one of them will receive the event(s).
+
+Since version {{site.occurrentversion}}, `@Subscription` is capability-neutral. On an event store that has both the stream and the DCB capability it delivers both stream-written and DCB-appended events, filtered by event type, with catch-up over the shared global position. Use `@StreamSubscription` when you want stream events only, and [`@DcbSubscription`](#subscribing-to-dcb-events) when you want DCB events only with tag-based filtering.
 
 #### Subscription Start Position
 

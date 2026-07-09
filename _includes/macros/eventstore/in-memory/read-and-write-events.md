@@ -10,7 +10,7 @@ CloudEvent event = CloudEventBuilder.v1()
                     .build();
 
 // Write                    
-eventStore.write("streamId", Stream.of(event));
+eventStore.write("streamId", List.of(event));
 
 // Read
 EventStream<CloudEvent> eventStream = eventStore.read("streamId");
@@ -36,7 +36,7 @@ val event = CloudEventBuilder.v1()
                     .build()
 
 // Write                    
-eventStore.write("streamId", Stream.of(event))
+eventStore.write("streamId", listOf(event))
 
 // Read
 val eventStream : EventStream<CloudEvent> = eventStore.read("streamId")

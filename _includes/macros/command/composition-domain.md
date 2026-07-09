@@ -1,21 +1,21 @@
 {% capture java %}
 public class WordGuessingGame {
-    public Stream<DomainEvent> startNewGame(Stream<DomainEvents> events, String gameId, String wordToGuess) {
+    public List<DomainEvent> startNewGame(List<DomainEvent> events, String gameId, String wordToGuess) {
         // Implementation
     }
     
-    public Stream<DomainEvent> guessWord(Stream<DomainEvents> events, String guess) {
+    public List<DomainEvent> makeGuess(List<DomainEvent> events, String guess) {
         // Implementation
     }
 }
 {% endcapture %}
 {% capture kotlin %}
 object WordGuessingGame {
-    fun startNewGame(events : Sequence<DomainEvent>), gameId : String, wordToGuess : String) : Sequence<DomainEvent> {
+    fun startNewGame(events : List<DomainEvent>, gameId : String, wordToGuess : String) : List<DomainEvent> {
         // Implementation
     } 
 
-    fun guessWord(events : Sequence<DomainEvent>, guess : String) : Sequence<DomainEvent> {
+    fun makeGuess(events : List<DomainEvent>, guess : String) : List<DomainEvent> {
         // Implementation
     }    
 }

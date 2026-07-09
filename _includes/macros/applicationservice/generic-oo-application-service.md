@@ -13,17 +13,18 @@ public class ApplicationService {
         this.convertDomainEventToCloudEvent = convertDomainEventToCloudEvent;
     }
 
-    public void execute(String streamId, Function<Stream<DomainEvent>, Stream<DomainEvent>> functionThatCallsDomainModel) {
+    public void execute(String streamId, Function<List<DomainEvent>, List<DomainEvent>> functionThatCallsDomainModel) {
         // Read all events from the event store for a particular stream
         EventStream<CloudEvent> eventStream = eventStore.read(streamId);
         // Convert the cloud events into domain events
-        Stream<DomainEvent> domainEventsInStream = eventStream.events().map(convertCloudEventToDomainEvent);
+        List<DomainEvent> domainEventsInStream = eventStream.events().map(convertCloudEventToDomainEvent).toList();
 
-        // Call a pure function from the domain model which returns a Stream of domain events  
-        Stream<DomainEvent> newDomainEvents = functionThatCallsDomainModel.apply(domainEventsInStream);
+        // Call a pure function from the domain model which returns a List of domain events
+        List<DomainEvent> newDomainEvents = functionThatCallsDomainModel.apply(domainEventsInStream);
 
-        // Convert domain events to cloud events and write them to the event store  
-        eventStore.write(streamId, eventStream.version(), newDomainEvents.map(convertDomainEventToCloudEvent));
+        // Convert domain events to cloud events and write them to the event store
+        List<CloudEvent> newCloudEvents = newDomainEvents.stream().map(convertDomainEventToCloudEvent).toList();
+        eventStore.write(streamId, eventStream.version(), newCloudEvents);
     }
 }
 {% endcapture %}
@@ -33,17 +34,18 @@ class ApplicationService constructor (val eventStore : EventStore,
                                       val convertCloudEventToDomainEvent : (CloudEvent) -> DomainEvent, 
                                       val convertDomainEventToCloudEvent : (DomainEvent) -> CloudEvent) {
 
-    fun execute(streamId : String, functionThatCallsDomainModel : (Stream<DomainEvent>) -> Stream<DomainEvent>) {
+    fun execute(streamId : String, functionThatCallsDomainModel : (List<DomainEvent>) -> List<DomainEvent>) {
         // Read all events from the event store for a particular stream
         val  eventStream : EventStream<CloudEvent> = eventStore.read(streamId)
         // Convert the cloud events into domain events
-        val domainEventsInStream : Stream<DomainEvent> = eventStream.events().map(convertCloudEventToDomainEvent)
+        val domainEventsInStream : List<DomainEvent> = eventStream.events().map(convertCloudEventToDomainEvent).toList()
 
-        // Call a pure function from the domain model which returns a Stream of domain events
+        // Call a pure function from the domain model which returns a List of domain events
         val newDomainEvents = functionThatCallsDomainModel(domainEventsInStream)
 
         // Convert domain events to cloud events and write them to the event store
-        eventStore.write(streamId, eventStream.version(), newDomainEvents.map(convertDomainEventToCloudEvent))
+        val newCloudEvents = newDomainEvents.map(convertDomainEventToCloudEvent)
+        eventStore.write(streamId, eventStream.version(), newCloudEvents)
     }
 }
 {% endcapture %}

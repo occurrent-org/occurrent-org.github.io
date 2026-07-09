@@ -1,21 +1,20 @@
 {% capture java %}
 public class WordGuessingGame {
-	public static Stream<DomainEvent> startNewGame(String gameId, String wordToGuess) {	
+	public static List<DomainEvent> startNewGame(String gameId, String wordToGuess) {	
 		...
 	}
 
-	public static Stream<DomainEvent> guessWord(Stream<DomainEvent> eventStream, String word) {
+	public static List<DomainEvent> guessWord(List<DomainEvent> eventStream, String word) {
 		...
 	}
 }
 {% endcapture %}  
 {% capture kotlin %}
 // Note that the functions could might as well be placed directly in a package.
-// You might also want to use a Kotlin Sequence or List instead of a Stream
  object WordGuessingGame {
-    fun startNewGame(gameId : String, wordToGuess : String) : Stream<CloudEvent> = ...	
+    fun startNewGame(gameId : String, wordToGuess : String) : List<DomainEvent> = ...	
  
-    fun guessWord(eventStream : Stream<DomainEvent>, word : String) : Stream<DomainEvent> = ...
+    fun guessWord(eventStream : List<DomainEvent>, word : String) : List<DomainEvent> = ...
  }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
