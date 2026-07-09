@@ -97,11 +97,13 @@ permalink: /documentation
 * * [Coupling a Decider to a Boundary](#coupling-a-decider-to-a-boundary)
 * * [Subscribing to DCB Events](#subscribing-to-dcb-events)
 * * [Reactive DCB](#reactive-dcb)
+* * [Notes](#notes)
 * [Retry](#retry-configuration-blocking)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
 * * [Query DSL](#query-dsl)
 * [Spring Boot Starter](#spring-boot-starter)
+* * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
 * * * [Start Position](#subscription-start-position)
 * * * [Selective Events](#selective-events)
@@ -3477,7 +3479,7 @@ you can create a subscription to _all_ events like this:
 
 Note that subscriptions started by the `Subscription` annotation will make use of [competing consumers](#competing-consumer-subscription-blocking) so that if you run multiple instances of the application one of them will receive the event(s).
 
-Since version {{site.occurrentversion}}, `@Subscription` is capability-neutral. On an event store that has both the stream and the DCB capability it delivers both stream-written and DCB-appended events, filtered by event type, with catch-up over the shared global position. Use `@StreamSubscription` when you want stream events only, and [`@DcbSubscription`](#subscribing-to-dcb-events) when you want DCB events only with tag-based filtering.
+Since version {{site.occurrentversion}}, `@Subscription` is capability-neutral. On an event store that has both the stream and the DCB capability it delivers both stream-written and DCB-appended events, filtered by event type, with catch-up over the shared global position. Use `@StreamSubscription` when you want stream events only, and [`@DcbSubscription`](#subscribing-to-dcb-events) when you want DCB events only with tag-based filtering. `@StreamSubscription` is configured the same way as `@Subscription` described below, only scoped to stream events.
 
 #### Subscription Start Position
 
