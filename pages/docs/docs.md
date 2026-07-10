@@ -3216,6 +3216,31 @@ subscriptions.subscribeDcb(
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+`@DcbSubscription` filters by the DCB query built from its `eventTypes` (matched as any-of, and taken from the handler's event parameter when left empty) and its `tags` (matched as all-of, each in `"key:value"` form and validated at startup so a malformed tag fails fast). `startAt = DcbStartPosition.BEGINNING` replays from the start of the DCB sequence, or use `startAtDcbPosition` to resume after a specific position instead.
+
+{% capture java %}
+@DcbSubscription(
+        id = "courseDashboard",
+        eventTypes = {CourseRegistered.class, StudentEnrolled.class},
+        tags = {"course:123"},
+        startAt = DcbStartPosition.BEGINNING)
+void onEvent(CourseEvent event) {
+    dashboard.update(event);
+}
+{% endcapture %}
+{% capture kotlin %}
+@DcbSubscription(
+    id = "courseDashboard",
+    eventTypes = [CourseRegistered::class, StudentEnrolled::class],
+    tags = ["course:123"],
+    startAt = DcbStartPosition.BEGINNING
+)
+fun onEvent(event: CourseEvent) {
+    dashboard.update(event)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
 ### Reading DCB Metadata
 
 A DCB subscription handler can read the event's metadata the same way a stream subscription can. Declare an `org.occurrent.dsl.subscription.EventMetadata` parameter for the generic parts (stream id, version, `position`, and any CloudEvent extension), or an `org.occurrent.dsl.dcb.DcbEventMetadata` parameter for a DCB-focused view that also exposes the event's tags and its position as an `OptionalLong`. `DcbEventMetadata` wraps an `EventMetadata`, so `eventMetadata()` always gets you back to the generic view. In Kotlin there is also a `dcbTags` extension property on `EventMetadata`, for handlers that take the generic type.
@@ -3326,6 +3351,8 @@ There's a both a Kotlin DSL and Java DSL. First you need to depend on the `subsc
 
 {% include macros/subscription/blocking/dsl/maven.md %}
 
+As of version {{site.occurrentversion}} this DSL comes in three flavors that mirror the [subscription annotations](#spring-boot-annotations): `subscriptions(...)` builds a capability-neutral `Subscriptions` that delivers both stream and DCB events, `streamSubscriptions(...)` builds a stream-only `StreamSubscriptions`, and [`DcbSubscriptions`](#subscribing-to-dcb-events) (from the `dcb-dsl` module) subscribes to DCB events by tags and event types. The examples below use the neutral `subscriptions(...)`.
+
 If you're using Kotlin you can then define subscriptions like this:
 
 ```kotlin
@@ -3406,6 +3433,33 @@ There are also some Kotlin extensions that you can use to query for a `Sequence`
  val event2 = domainQueries.queryOne<GamePlayed>(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")) // Find event with this id
  ```
              
+### DCB Query DSL
+
+The Query DSL has a DCB counterpart, `org.occurrent.dsl.dcb.blocking.DcbDomainEventQueries`, that queries by a [`DcbCriteria`](#the-dcb-event-store) (event types and tags) instead of a `Filter`, and returns domain events. Depend on `org.occurrent:dcb-dsl-blocking` and wrap a regular `DomainEventQueries`. The [Spring Boot starter](#spring-boot-starter) registers one for you when the DCB capability is enabled, so you normally just inject it.
+
+{% capture java %}
+DomainEventQueries<CourseEvent> domainEventQueries = ..
+DcbDomainEventQueries<CourseEvent> dcbQueries = new DcbDomainEventQueries<>(domainEventQueries);
+
+// All events tagged with this course
+Stream<CourseEvent> events = dcbQueries.query(DcbCriteria.tags(Tag.of("course", courseId)));
+
+// Restrict the position range with DcbReadOptions, and read each event's position too
+DcbDomainEventStream<CourseEvent> recent = dcbQueries.queryWithPosition(DcbCriteria.all(), DcbReadOptions.afterPosition(1000));
+{% endcapture %}
+{% capture kotlin %}
+val dcbQueries = DcbDomainEventQueries(domainEventQueries)
+
+// All events tagged with this course (tags are all-of), or use queryForListAnyOf for any-of
+val events: List<CourseEvent> = dcbQueries.queryForList(Tag.of("course", courseId))
+
+// Restrict the position range with DcbReadOptions
+val recent: List<CourseEvent> = dcbQueries.queryForList(DcbCriteria.all(), DcbReadOptions.afterPosition(1000))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Use `DcbReadOptions` (`fromBeginning`, `afterPosition`, `upToPosition`, `between`) to restrict the position range, and `queryWithPosition` (Kotlin `queryForListWithPosition`) when you also need each event's global position. Call `domainEventQueries()` to drop back to the regular stream [Query DSL](#query-dsl).
+
 # Spring Boot Starter
 
 <div class="notification">Occurrent {{site.occurrentversion}} requires <b>Java 21</b> or later.</div>
@@ -3448,6 +3502,7 @@ Occurrent will then configure the following components automatically:
 * A `GenericApplication` instance (`ApplicationService`)
 * A subscription dsl instance (`Subscriptions`)
 * A query dsl instance (`DomainQueries`)
+* When the DCB capability is enabled, the DCB counterparts too: a DCB application service (`DcbApplicationService`), a DCB subscription dsl (`DcbSubscriptions`), and a DCB query dsl (`DcbDomainEventQueries`)
 * Support for [annotations](#spring-boot-annotations)
 
 For most new Spring Boot applications, the recommended setup is:
