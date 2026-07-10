@@ -6,6 +6,7 @@ public class Example {
     void printAllDomainEvents(DomainEvent e, EventMetadata metadata) {
         String streamId = metadata.getStreamId();
         long streamVersion = metadata.getStreamVersion();
+        Long position = metadata.getPosition();
         Object myCustomValue = metadata.get("MyCustomValue");
         ...
     }
@@ -20,6 +21,7 @@ class Example {
     fun printAllDomainEvents(e: DomainEvent, metadata: EventMetadata) {
         val streamId: String = metadata.streamId
         val streamVersion: Long = metadata.streamVersion
+        val position: Long? = metadata.position
         val myCustomValue: Any? = metadata["MyCustomValue"]
         // ...
     }

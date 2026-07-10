@@ -3216,6 +3216,31 @@ subscriptions.subscribeDcb(
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+### Reading DCB Metadata
+
+A DCB subscription handler can read the event's metadata the same way a stream subscription can. Declare an `org.occurrent.dsl.subscription.EventMetadata` parameter for the generic parts (stream id, version, `position`, and any CloudEvent extension), or an `org.occurrent.dsl.dcb.DcbEventMetadata` parameter for a DCB-focused view that also exposes the event's tags and its position as an `OptionalLong`. `DcbEventMetadata` wraps an `EventMetadata`, so `eventMetadata()` always gets you back to the generic view. In Kotlin there is also a `dcbTags` extension property on `EventMetadata`, for handlers that take the generic type.
+
+{% capture java %}
+@DcbSubscription(id = "courseDashboard")
+void onEvent(CourseEvent event, DcbEventMetadata metadata) {
+    Set<Tag> tags = metadata.dcbTags();
+    OptionalLong position = metadata.position();
+    long streamVersion = metadata.eventMetadata().getStreamVersion();
+    dashboard.update(event);
+}
+{% endcapture %}
+{% capture kotlin %}
+subscriptions.subscribeDcbWithMetadata(
+    subscriptionId = "courseDashboard-$connectionId",
+    criteria = DcbCriteria.tags(Tag.of("course", courseId))
+) { metadata: DcbEventMetadata, event: CourseEvent ->
+    val tags: Set<Tag> = metadata.dcbTags()
+    val position = metadata.eventMetadata().position
+    dashboard.update(event)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
 ## Reactive DCB
 
 Everything above has a reactive counterpart, the same way Occurrent pairs a blocking and a reactive API everywhere else. `org.occurrent.eventstore.api.dcb.reactor.DcbEventStore` returns `Mono<DcbEventStream>` from `read` and `Mono<DcbAppendResult>` from `append`, using the same criteria, tags, and append-condition types as the blocking store. The reactive `DcbApplicationService.execute(criteria, fn)` returns a `Mono<DcbAppendResult>` that completes empty when the domain function produced no new events. The domain function itself stays a plain synchronous `Function<List<E>, List<E>>`, since deciding is a pure computation over a list the read has already materialized, only the read and the append are reactive. `DcbSubscriptions` has a Project Reactor variant too, so a live subscription or a from-the-beginning catch-up works the same way over `Flux` as it does over the blocking callback API.
@@ -3536,8 +3561,8 @@ For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` 
 
 #### Event Metadata
 
-Sometimes it can be useful to get the metadata associated with the received event. For this reason, you can add a parameter to the method annotated with `@Subscription` of type `org.occurrent.dsl.subscription.blocking.EventMetadata`. 
-It'll contain all extension properties added to the [CloudEvent](#cloudevent-metadata), for example:
+Sometimes it can be useful to get the metadata associated with the received event. For this reason, you can add a parameter of type `org.occurrent.dsl.subscription.EventMetadata` to a method annotated with `@Subscription` or `@StreamSubscription`.
+It contains all extension properties added to the [CloudEvent](#cloudevent-metadata), with typed accessors for the common ones: `streamId`, `streamVersion`, and `position` (the global sequence number, or `null` for a stream-written event on a store that does not record a position). Note that for an event delivered through the capability-neutral `@Subscription` or the DCB path, `streamId` is the internal generated partition id rather than a domain stream id, but it is always present. For example:
 
 {% include macros/annotation/metadata-example.md %}
 
