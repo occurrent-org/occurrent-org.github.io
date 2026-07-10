@@ -66,7 +66,7 @@ permalink: /documentation
 * * [Blocking](#blocking-subscriptions)
 * * * [Filters](#blocking-subscription-filters)
 * * * [Start Position](#blocking-subscription-start-position)
-* * * [Position Storage](#blocking-subscription-position-storage)
+* * * [Checkpoint Storage](#blocking-subscription-position-storage)
 * * * [Implementations](#blocking-subscription-implementations)
 * * * * [MongoDB Native Driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * * * * [MongoDB with Spring](#blocking-subscription-using-spring-mongotemplate)
@@ -79,7 +79,7 @@ permalink: /documentation
 * * [Reactive](#reactive-subscriptions)
 * * * [Filters](#reactive-subscription-filters)
 * * * [Start Position](#reactive-subscription-start-position)
-* * * [Position Storage](#reactive-subscription-position-storage)
+* * * [Checkpoint Storage](#reactive-subscription-position-storage)
 * * * [Implementations](#reactive-subscription-implementations)
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
 * * * * [Durable Subscriptions](#durable-subscriptions-reactive)
@@ -664,7 +664,7 @@ subscriptionModel.subscribe("my-view", filter(type("GameEnded"))) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Where `filter` is imported `from org.occurrent.subscription.OccurrentSubscriptionFilter` and `type` is imported from `org.occurrent.condition.Condition`.
+Where `filter` is imported `from org.occurrent.subscription.StreamSubscriptionFilter` and `type` is imported from `org.occurrent.condition.Condition`.
 
 While this is a trivial example it shouldn't be difficult to create a view that is backed by a JPA entity in a relational database based on a subscription.
 
@@ -1878,6 +1878,8 @@ If you don't want to use any of the Occurrent libraries for deadline scheduling,
 
 # Getting started
 
+<div class="notification">Occurrent {{site.occurrentversion}} requires <b>Java 21</b> or later (earlier versions required Java 17).</div>
+
 <div class="comment">If you're using Spring Boot, you might consider using the <a href="#spring-boot-starter">spring-boot-starter</a> project to get started quickly. Then you can return to this section.</div>
 
 Getting started with Occurrent involves these steps:
@@ -1887,9 +1889,9 @@ Getting started with Occurrent involves these steps:
 1. Once a datastore has been decided, it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
 1. If you need [subscriptions](#using-subscriptions) (i.e. the ability to subscribe to changes from an EventStore) then you need to pick a library that implements this for the datastore that you've chosen. 
    Again, there may be several implementations to choose from.
-1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [position storage](#blocking-subscription-position-storage) library. 
-   These libraries provide means to automatically (or selectively) store the position for a subscriber to a datastore. Note that the datastore that stores this position
-   can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store subscription positions in Redis.
+1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [checkpoint storage](#blocking-subscription-position-storage) library. 
+   These libraries provide means to automatically (or selectively) store the checkpoint for a subscriber to a datastore. Note that the datastore that stores this checkpoint
+   can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store checkpoints in Redis.
 1. You're now good to go, but you may also want to look into more higher-level components if you don't have the need to role your own. We recommend looking into:
     * [Application Service](#application-service)
     * [Subscription DSL](#subscription-dsl)
@@ -2213,22 +2215,22 @@ public interface SubscriptionModel {
 ``` 
 
 It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
-the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
+the checkpoint (if the datastore doesn't maintain the checkpoint on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this checkpoint 
 for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `SubscriptionModel` implementation that also implement the 
-`org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel` interface. The `PositionAwareSubscriptionModel`  is an example of a `SubscriptionModel` that returns a wrapper around 
-`io.cloudevents.CloudEvent` called `org.occurrent.subscription.PositionAwareCloudEvent` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
-the current subscription position. You can check if a cloud event contains a subscription position by calling `PositionAwareCloudEvent.hasSubscriptionPosition(cloudEvent)`
-and then get the position by using `PositionAwareCloudEvent.getSubscriptionPositionOrThrowIAE(cloudEvent)`. Note that `PositionAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
-you're subscribing from a `PositionAwareSubscriptionModel`, you are responsible for [keeping track of the subscription position](#blocking-subscription-position-storage), so 
-that it's possible to resume this subscription from the last known position on application restart. This interface also provides means to get the so called "current global subscription position", 
-by calling the `globalSubscriptionPosition` method which can be useful when starting a new subscription. 
+`org.occurrent.subscription.api.blocking.CheckpointAwareSubscriptionModel` interface. The `CheckpointAwareSubscriptionModel`  is an example of a `SubscriptionModel` that returns a wrapper around 
+`io.cloudevents.CloudEvent` called `org.occurrent.subscription.CheckpointAwareCloudEvent` which adds an additional method, `Checkpoint getCheckpoint()`, that you can use to get  
+the current checkpoint. You can check if a cloud event contains a checkpoint by calling `CheckpointAwareCloudEvent.hasCheckpoint(cloudEvent)`
+and then get the checkpoint by using `CheckpointAwareCloudEvent.getCheckpointOrThrowIAE(cloudEvent)`. Note that `CheckpointAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
+you're subscribing from a `CheckpointAwareSubscriptionModel`, you are responsible for [keeping track of the checkpoint](#blocking-subscription-position-storage), so 
+that it's possible to resume this subscription from the last known checkpoint on application restart. This interface also provides means to get the so called "current global checkpoint", 
+by calling the `globalCheckpoint` method which can be useful when starting a new subscription. 
 
 For example, consider the case when subscription "A" starts 
 subscribing at the current time (T1). Event E1 is written to the `EventStore` and propagated to subscription "A". But imagine there's a bug in "A" that prevents it
 from performing its action. Later, the bug is fixed and the application is restarted at the "current time" (T2). But since T2 is after T1, E1 will not sent to "A" again since
 it happened before T2. Thus this event is missed! Whether or not this is actually a problem depends on your use case. But to avoid it you should not start the subscription
-at the "current time", but rather from the "global subscription position". This position should be written to a [subscription position storage](#blocking-subscription-position-storage)
-_before_ subscription "A" is started. Thus the subscription can continue from this position on application restart and no events will be missed.               
+at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](#blocking-subscription-position-storage)
+_before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.               
 
 ### Blocking Subscription Filters
 
@@ -2244,8 +2246,8 @@ subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")), ::pri
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 This will  print each cloud event written to the event store, and has type equal to "GameEnded", to the console.
-The `filter` method is statically imported from `org.occurrent.subscription.OccurrentSubscriptionFilter` and `type` is statically imported from `org.occurrent.condition.Condition`.
-The `OccurrentSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations
+The `filter` method is statically imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is statically imported from `org.occurrent.condition.Condition`.
+The `StreamSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations
 may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
 
 {% capture java %}
@@ -2257,50 +2259,50 @@ subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 Now `filter` is statically imported from `org.occurrent.subscription.mongodb.MongoDBFilterSpecification` and `Filters` is imported from 
-`com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with an `OccurrentSubscriptionFilter`
-and only pick a more specific implementation if you cannot express your filter using the capabilities of `OccurrentSubscriptionFilter`. 
+`com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with a `StreamSubscriptionFilter`
+and only pick a more specific implementation if you cannot express your filter using the capabilities of `StreamSubscriptionFilter`. 
 
 ### Blocking Subscription Start Position
 
 A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
 `org.occurrent.subscription.StartAt` instance. It provides several ways to specify the start position, either by using `StartAt.now()`, `StartAt.subscriptionModelDefault()` (default if `StartAt` is not defined when 
-calling the `subscribe` function), or `StartAt.subscriptionPosition(<subscriptionPosition>)`, where `<subscriptionPosition>` is a datastore-specific 
-implementation of the `org.occurrent.subscription.SubscriptionPosition` interface which provides the start position as a `String`. You may want to store the 
-`String` returned by a `SubscriptionPosition` in a database so that it's possible to resume a subscription from the last processed position on application restart.
-You can do this anyway you like, but for most cases you probably should consider if there's a [Subscription Position Storage](#blocking-subscription-position-storage)
+calling the `subscribe` function), or `StartAt.checkpoint(<checkpoint>)`, where `<checkpoint>` is a datastore-specific 
+implementation of the `org.occurrent.subscription.Checkpoint` interface which provides the start position as a `String`. You may want to store the 
+`String` returned by a `Checkpoint` in a database so that it's possible to resume a subscription from the last processed checkpoint on application restart.
+You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](#blocking-subscription-position-storage)
 available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
 
    
-### Blocking Subscription Position Storage
+### Blocking Subscription Checkpoint Storage {#blocking-subscription-position-storage}
 
-It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the subscription position
+It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the checkpoint
 provided by a [blocking subscription](#blocking-subscriptions) any way you like, Occurrent provides an interface
-called `org.occurrent.subscription.api.blocking.SubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `SubscriptionPositionStorage` 
+called `org.occurrent.subscription.api.blocking.CheckpointStorage` acts as a uniform abstraction for this purpose. A `CheckpointStorage` 
 is defined like this:
 
 ```java
-public interface SubscriptionPositionStorage {
-    SubscriptionPosition read(String subscriptionId);
-    SubscriptionPosition save(String subscriptionId, SubscriptionPosition subscriptionPosition);
+public interface CheckpointStorage {
+    Checkpoint read(String subscriptionId);
+    Checkpoint save(String subscriptionId, Checkpoint checkpoint);
     void delete(String subscriptionId);
 }
 ```
 
-I.e. it's a way to read/write/delete the `SubscriptionPosition` for a given subscription. Occurrent ships with three pre-defined implementations:
+I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships with three pre-defined implementations:
 
-1\. **NativeMongoSubscriptionPositionStorage**<br>
-    Uses the vanilla MongoDB Java (sync) driver to store `SubscriptionPosition`'s in MongoDB.
+1\. **NativeMongoCheckpointStorage**<br>
+    Uses the vanilla MongoDB Java (sync) driver to store `Checkpoint`'s in MongoDB.
     {% include macros/subscription/blocking/mongodb/native/storage/maven.md %}   
-2\. **SpringMongoSubscriptionPositionStorage**<br>
-    Uses the Spring MongoTemplate to store `SubscriptionPosition`'s in MongoDB.    
+2\. **SpringMongoCheckpointStorage**<br>
+    Uses the Spring MongoTemplate to store `Checkpoint`'s in MongoDB.    
     {% include macros/subscription/blocking/mongodb/spring/storage/maven.md %}
-3\. **SpringRedisSubscriptionPositionStorage**<br>
-    Uses the Spring RedisTemplate to store `SubscriptionPosition`'s in Redis.    
+3\. **SpringRedisCheckpointStorage**<br>
+    Uses the Spring RedisTemplate to store `Checkpoint`'s in Redis.    
     {% include macros/subscription/blocking/redis/spring/storage/maven.md %} 
 
 
 
-If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "blocking subscription API" which contains the `SubscriptionPositionStorage` interface:
+If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "blocking subscription API" which contains the `CheckpointStorage` interface:
 
 {% include macros/subscription/blocking/api/maven.md %}
 
@@ -2318,20 +2320,20 @@ These are the _non-durable_ [blocking subscription implementations](#blocking-su
 
 * [In-Memory subscription](#inmemory-subscription)
 
-By "non-durable" we mean implementations that doesn't store the subscription position in a durable storage automatically.  
-It might be that the datastore does this automatically _or_ that [subscription position storage](#blocking-subscription-position-storage) is not required
-for your use case. If the datastore _doesn't_ support storing the subscription position automatically, a subscription will typically implement the
-`org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel` interface (since these types of subscriptions needs to be aware of the position).
+By "non-durable" we mean implementations that doesn't store the checkpoint in a durable storage automatically.  
+It might be that the datastore does this automatically _or_ that [checkpoint storage](#blocking-subscription-position-storage) is not required
+for your use case. If the datastore _doesn't_ support storing the checkpoint automatically, a subscription will typically implement the
+`org.occurrent.subscription.api.blocking.CheckpointAwareSubscriptionModel` interface (since these types of subscriptions needs to be aware of the checkpoint).
 
    
-Typically, if you want the stream to continue where it left off on application restart you want to store away the subscription position. You can do this anyway you like,
-but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.PositionAwareSubscriptionModel`. 
-These subscriptions can be combined with a [subscription position storage](#blocking-subscription-position-storage) implementation to store the position in a durable 
+Typically, if you want the stream to continue where it left off on application restart you want to store away the checkpoint. You can do this anyway you like,
+but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.CheckpointAwareSubscriptionModel`. 
+These subscriptions can be combined with a [checkpoint storage](#blocking-subscription-position-storage) implementation to store the checkpoint in a durable 
 datastore. 
 
-Occurrent provides a [utility](#durable-subscriptions-blocking) that combines a `PositionAwareSubscriptionModel` and 
-a `SubscriptionPositionStorage` (see [here](#blocking-subscription-position-storage)) to automatically store the subscription position   
-_after each processed event_. You can tweak how often the position should be persisted in the configuration.
+Occurrent provides a [utility](#durable-subscriptions-blocking) that combines a `CheckpointAwareSubscriptionModel` and 
+a `CheckpointStorage` (see [here](#blocking-subscription-position-storage)) to automatically store the checkpoint   
+_after each processed event_. You can tweak how often the checkpoint should be persisted in the configuration.
 
 #### Blocking Subscription using the "Native" Java MongoDB Driver
 
@@ -2352,7 +2354,7 @@ There are a few things to note here that needs explaining. First we have the `Ti
 Last we have the [RetryStrategy](#retry-configuration-blocking) which defines what should happen if there's e.g. a connection issue during the life-time of a subscription or if subscription fails to process a cloud event
 (i.e. the `action` throws an exception). 
 
-Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [position persistence](#blocking-subscription-position-storage) for this subscription implementation. 
+Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [checkpoint persistence](#blocking-subscription-position-storage) for this subscription implementation. 
 
 #### Blocking Subscription using Spring MongoTemplate
 
@@ -2376,7 +2378,7 @@ It should also be noted that Spring takes care of re-attaching to MongoDB if the
 
 When it comes to retries, if the "action" fails (i.e. if the higher-order function you provide when calling `subscribe` throws an exception), either using something like [Spring Retry](https://github.com/spring-projects/spring-retry)
 or the [Occurrent Retry Module](#retry-configuration-blocking). By default, all subscription models will use the Occurrent retry module with exponential backoff starting with 100 ms and progressively
- go up to max 2 seconds wait time between each retry when reading/saving/deleting the subscription position. You can customize this by passing an instance of `RetryStrategy` to the `SpringMongoSubscriptionModel` constructor.  
+ go up to max 2 seconds wait time between each retry when reading/saving/deleting the checkpoint. You can customize this by passing an instance of `RetryStrategy` to the `SpringMongoSubscriptionModel` constructor.  
 
 If you want to disable the Occurrent retry module, pass `RetryStrategy.none()` to the `SpringMongoSubscriptionModel` constructor and then handle retries anyway you find fit. For example, let's say you want to use `spring-retry`, and you have a simple Spring bean that writes each cloud event to a repository:
 
@@ -2424,7 +2426,7 @@ public class WriteToRepository {
      
 Don't forget to add `@EnableRetry` in to your Spring Boot application as well.
 
-Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [position persistence](#blocking-subscription-position-storage) for this subscription implementation.
+Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [checkpoint persistence](#blocking-subscription-position-storage) for this subscription implementation.
 
 ##### Restart Subscription when Oplog Lost 
 
@@ -2452,23 +2454,23 @@ Then you can use it like this:
 
 #### Durable Subscriptions (Blocking)
 
-Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application. 
-Occurrent provides a utility that implements `SubscriptionModel` and combines a `PositionAwareSubscriptionModel` and a `SubscriptionPositionStorage` implementation 
-(see [here](#blocking-subscription-position-storage)) to automatically store the subscription position, by default,   
-after each processed event. If you don't want the position to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
+Storing the checkpoint is useful if you need to resume a subscription from its last known checkpoint when restarting an application. 
+Occurrent provides a utility that implements `SubscriptionModel` and combines a `CheckpointAwareSubscriptionModel` and a `CheckpointStorage` implementation 
+(see [here](#blocking-subscription-position-storage)) to automatically store the checkpoint, by default,   
+after each processed event. If you don't want the checkpoint to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
 to `DurableSubscriptionModelConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
-the position to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new DurableSubscriptionModelConfig(3)` that 
-creates an instance of `EveryN` that stores the position for every third event. 
+the checkpoint to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new DurableSubscriptionModelConfig(3)` that 
+creates an instance of `EveryN` that stores the checkpoint for every third event. 
 
-If you want full control, it's recommended to pick a [subscription position storage](#blocking-subscription-position-storage) implementation, 
-and store the position yourself using its API.
+If you want full control, it's recommended to pick a [checkpoint storage](#blocking-subscription-position-storage) implementation, 
+and store the checkpoint yourself using its API.
 
 To use it, first we need to add the dependency:
 
 {% include macros/subscription/blocking/util/autopersistence/maven.md %}
 
-Then we should instantiate a `PositionAwareSubscriptionModel`, that subscribes to the events from the event store, and an instance of a `SubscriptionPositionStorage`, 
-that stores the subscription position, and combine them to a `DurableSubscriptionModel`: 
+Then we should instantiate a `CheckpointAwareSubscriptionModel`, that subscribes to the events from the event store, and an instance of a `CheckpointStorage`, 
+that stores the checkpoint, and combine them to a `DurableSubscriptionModel`: 
 
 {% include macros/subscription/blocking/util/autopersistence/example.md %}
 
@@ -2476,7 +2478,7 @@ that stores the subscription position, and combine them to a `DurableSubscriptio
 
 When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events
 as they arrive. A catch-up subscription allows for exactly this! It combines the [EventStoreQueries](#eventstore-queries) API with a 
-[subscription](#blocking-subscriptions) and an optional [subscription storage](#blocking-subscription-position-storage). It starts off by streaming
+[subscription](#blocking-subscriptions) and an optional [checkpoint storage](#blocking-subscription-position-storage). It starts off by streaming
 historic events from the event store and then automatically switch to continuous streaming mode once the historic events have caught up.
 
 To get start you need to add the following dependency:
@@ -2493,8 +2495,8 @@ that event written _exactly_ when the switch from replay mode to continuous mode
 starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the 
 switch. If the cache is too small, duplicate events will be sent to the continuous subscription. Typically, you want your application to be idempotent anyways and if so this shouldn't be a problem.        
 
-A `CatchupSubscriptionModel` can be configured to store the subscription position in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to 
-start replaying from the beginning again. Note that if you don't want subscription persistence during replay, you can disable this by doing `new CatchupSubscriptionModelConfig(dontUseSubscriptionPositionStorage())`.
+A `CatchupSubscriptionModel` can be configured to store the checkpoint in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to 
+start replaying from the beginning again. Note that if you don't want checkpoint persistence during replay, you can disable this by doing `new CatchupSubscriptionModelConfig(dontUseCheckpointStorage())`.
 
 It's also possible to change how the `CatchupSubscriptionModel` sorts events read from the event store during catch-up phase. For example:
   
@@ -2509,13 +2511,13 @@ By default, events are sorted by time and then stream version (if two or more ev
 
 ##### Catch-up Subscription Usage
 
-The subscription model will only stream historic events if started with a `StartAt` instance with a so called `TimeBasedSubscriptionPosition`, for example:
+The subscription model will only stream historic events if started with a `StartAt` instance with a so called `TimeBasedCheckpoint`, for example:
 
 {% capture java %}
-subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeBasedSubscription.beginningOfTime()), e -> System.out.println("Event: " + e);
+subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e);
 {% endcapture %}
 {% capture kotlin %}
-subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeBasedSubscription.beginningOfTime())) { e -> 
+subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())) { e -> 
     println("Event: $e")
 }
 {% endcapture %}
@@ -2532,14 +2534,14 @@ var subscriptionModel = new CatchupSubscriptionModel(..);
 // All examples below are equivalent:
 subscriptionModel.subscribeFromBeginningOfTime("subscriptionId", e -> System.out.println("Event: " + e);
 subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime(), e -> System.out.println("Event: " + e);
-subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeBasedSubscription.beginningOfTime()), e -> System.out.println("Event: " + e);
+subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e);
 {% endcapture %}
 {% capture kotlin %}
 val subscriptionModel = new CatchupSubscriptionModel(..);
 // All examples below are equivalent:
 subscriptionModel.subscribeFromBeginningOfTime("subscriptionId") { e -> println("Event: $") }
 subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime()) { e -> println("Event: $e") }
-subscriptionModel.subscribe("subscriptionId", StartAt.subscriptionPosition(TimeBasedSubscription.beginningOfTime()) { e -> println("Event: $") }
+subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()) { e -> println("Event: $") }
 // beginningOfTime is an extension function imported from org.occurrent.subscription.blocking.durable.catchup.CatchupSubscriptionModelExtensions.kt  
 subscriptionModel.subscribe("subscriptionId", StartAt.beginningOfTime()) { e -> println("Event: $") }
 {% endcapture %}
@@ -2628,7 +2630,7 @@ public interface SubscriptionModel {
     /**
      * Stream events from the event store as they arrive. Use this method if want to start streaming from a specific position.
      *
-     * @return A Flux with cloud events which may also includes the SubscriptionPosition that can be used to resume the stream from the current position.
+     * @return A Flux with cloud events which may also includes the Checkpoint that can be used to resume the stream from the current checkpoint.
      */
     Flux<CloudEvent> subscribe(SubscriptionFilter filter, StartAt startAt);
 
@@ -2638,22 +2640,22 @@ public interface SubscriptionModel {
 ``` 
 
 It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
-the subscription position (if the datastore doesn't maintain the subscription position on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this position 
+the checkpoint (if the datastore doesn't maintain the checkpoint on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this checkpoint 
 for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `SubscriptionModel` implementation that also implement the 
-`org.occurrent.subscription.api.reactor.PositionAwareSubscriptionModel` interface. The `PositionAwareSubscriptionModel`  is an example of a `SubscriptionModel` that returns a wrapper around 
-`io.cloudevents.CloudEvent` called `org.occurrent.subscription.PositionAwareCloudEvent` which adds an additional method, `SubscriptionPosition getStreamPosition()`, that you can use to get  
-the current subscription position. You can check if a cloud event contains a subscription position by calling `PositionAwareCloudEvent.hasSubscriptionPosition(cloudEvent)`
-and then get the position by using `PositionAwareCloudEvent.getSubscriptionPositionOrThrowIAE(cloudEvent)`. 
-Note that `PositionAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
-you're subscribing from a `PositionAwareSubscriptionModel`, you are responsible for [keeping track of the subscription position](#reactive-subscription-position-storage), so 
-that it's possible to resume this subscription from the last known position on application restart. This interface also provides means to get the so called "current global subscription position", 
-by calling the `globalSubscriptionPosition` method which can be useful when starting a new subscription. 
+`org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface. The `CheckpointAwareSubscriptionModel`  is an example of a `SubscriptionModel` that returns a wrapper around 
+`io.cloudevents.CloudEvent` called `org.occurrent.subscription.CheckpointAwareCloudEvent` which adds an additional method, `Checkpoint getCheckpoint()`, that you can use to get  
+the current checkpoint. You can check if a cloud event contains a checkpoint by calling `CheckpointAwareCloudEvent.hasCheckpoint(cloudEvent)`
+and then get the checkpoint by using `CheckpointAwareCloudEvent.getCheckpointOrThrowIAE(cloudEvent)`. 
+Note that `CheckpointAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
+you're subscribing from a `CheckpointAwareSubscriptionModel`, you are responsible for [keeping track of the checkpoint](#reactive-subscription-position-storage), so 
+that it's possible to resume this subscription from the last known checkpoint on application restart. This interface also provides means to get the so called "current global checkpoint", 
+by calling the `globalCheckpoint` method which can be useful when starting a new subscription. 
 
 For example, consider the case when subscription "A" starts subscribing at the current time (T1). Event E1 is written to the `EventStore` and propagated to subscription "A". But imagine there's a bug in "A" that prevents it
 from performing its action. Later, the bug is fixed and the application is restarted at the "current time" (T2). But since T2 is after T1, E1 will not sent to "A" again since
 it happened before T2. Thus this event is missed! Whether or not this is actually a problem depends on your use case. But to avoid it you should not start the subscription
-at the "current time", but rather from the "global subscription position". This position should be written to a [subscription position storage](#reactive-subscription-position-storage)
-_before_ subscription "A" is started. Thus the subscription can continue from this position on application restart and no events will be missed.               
+at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](#reactive-subscription-position-storage)
+_before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.               
 
 
 ### Reactive Subscription Filters
@@ -2670,8 +2672,8 @@ subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")).doOnNe
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 This will  print each cloud event written to the event store, and has type equal to "GameEnded", to the console.
-The `filter` method is statically imported from `org.occurrent.subscription.OccurrentSubscriptionFilter` and `type` is statically imported from `org.occurrent.condition.Condition`.
-The `OccurrentSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations
+The `filter` method is statically imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is statically imported from `org.occurrent.condition.Condition`.
+The `StreamSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations
 may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
 
 {% capture java %}
@@ -2683,43 +2685,43 @@ subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 Now `filter` is statically imported from `org.occurrent.subscription.mongodb.MongoDBFilterSpecification` and `Filters` is imported from 
-`com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with an `OccurrentSubscriptionFilter`
-and only pick a more specific implementation if you cannot express your filter using the capabilities of `OccurrentSubscriptionFilter`. 
+`com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with a `StreamSubscriptionFilter`
+and only pick a more specific implementation if you cannot express your filter using the capabilities of `StreamSubscriptionFilter`. 
 
 ### Reactive Subscription Start Position
 
 A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
 `org.occurrent.subscription.StartAt` instance. It provides several ways to specify the start position, either by using `StartAt.now()`, `StartAt.subscriptionModelDefault()` (default if `StartAt` is not defined when 
-calling the `subscribe` function), or `StartAt.subscriptionPosition(<subscriptionPosition>)`, where `<subscriptionPosition>` is a datastore-specific 
-implementation of the `org.occurrent.subscription.SubscriptionPosition` interface which provides the start position as a `String`. You may want to store the 
-`String` returned by a `SubscriptionPosition` in a database so that it's possible to resume a subscription from the last processed position on application restart.
-You can do this anyway you like, but for most cases you probably should consider if there's a [Subscription Position Storage](#reactive-subscription-position-storage)
+calling the `subscribe` function), or `StartAt.checkpoint(<checkpoint>)`, where `<checkpoint>` is a datastore-specific 
+implementation of the `org.occurrent.subscription.Checkpoint` interface which provides the start position as a `String`. You may want to store the 
+`String` returned by a `Checkpoint` in a database so that it's possible to resume a subscription from the last processed checkpoint on application restart.
+You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](#reactive-subscription-position-storage)
 available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
 
    
-### Reactive Subscription Position Storage
+### Reactive Subscription Checkpoint Storage {#reactive-subscription-position-storage}
 
-It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the subscription position
+It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the checkpoint
 provided by a [reactive subscription](#reactive-subscriptions) any way you like, Occurrent provides an interface
-called `org.occurrent.subscription.api.reactor.SubscriptionPositionStorage` acts as a uniform abstraction for this purpose. A `ReactorSubscriptionPositionStorage` 
+called `org.occurrent.subscription.api.reactor.CheckpointStorage` acts as a uniform abstraction for this purpose. A `ReactorCheckpointStorage` 
 is defined like this:
 
 ```java
-public interface ReactorSubscriptionPositionStorage {
-    Mono<SubscriptionPosition> read(String subscriptionId);
-    Mono<SubscriptionPosition> save(String subscriptionId, SubscriptionPosition subscriptionPosition);
+public interface ReactorCheckpointStorage {
+    Mono<Checkpoint> read(String subscriptionId);
+    Mono<Checkpoint> save(String subscriptionId, Checkpoint checkpoint);
     Mono<Void> delete(String subscriptionId);
 }
 ```
 
-I.e. it's a way to read/write/delete the `SubscriptionPosition` for a given subscription. Occurrent ships one pre-defined reactive implementation (please contribute!):
+I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships one pre-defined reactive implementation (please contribute!):
 
-1\. **ReactorSubscriptionPositionStorage**<br>
-    Uses the [project reactor](https://projectreactor.io/) driver to store `SubscriptionPosition`'s in MongoDB.
+1\. **ReactorCheckpointStorage**<br>
+    Uses the [project reactor](https://projectreactor.io/) driver to store `Checkpoint`'s in MongoDB.
     {% include macros/subscription/reactor/mongodb/spring/storage/maven.md %}   
 
 
-If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "reactive subscription API" which contains the `ReactorSubscriptionPositionStorage` interface:
+If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "reactive subscription API" which contains the `ReactorCheckpointStorage` interface:
 
 {% include macros/subscription/reactor/api/maven.md %}
 
@@ -2732,21 +2734,21 @@ These are the _non-durable_ [reactive subscription implementations](#reactive-su
 * [Reactive subscription using Spring ReactiveMongoTemplate](#reactive-subscription-using-spring-reactivemongotemplate)
 {% include macros/subscription/common/mongodb/oplog_warning.md %}
 
-By "non-durable" we mean implementations that doesn't store the subscription position in a durable storage automatically.  
-It might be that the datastore does this automatically _or_ that [subscription position storage](#reactive-subscription-position-storage) is not required
-for your use case. If the datastore _doesn't_ support storing the subscription position automatically, a subscription will typically implement the
-`org.occurrent.subscription.api.reactor.PositionAwareSubscriptionModel` interface (since these types of subscriptions doesn't need to be aware of the position).
+By "non-durable" we mean implementations that doesn't store the checkpoint in a durable storage automatically.  
+It might be that the datastore does this automatically _or_ that [checkpoint storage](#reactive-subscription-position-storage) is not required
+for your use case. If the datastore _doesn't_ support storing the checkpoint automatically, a subscription will typically implement the
+`org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface (since these types of subscriptions doesn't need to be aware of the checkpoint).
 However, you can do this anyway you like.
    
-Typically, if you want the stream to continue where it left off on application restart you want to store away the subscription position. You can do this anyway you like,
-but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.reactor.SubscriptionPositionStorage`. 
-These subscriptions can be combined with a [subscription position storage](#reactive-subscription-position-storage) implementation to store the position in a durable 
+Typically, if you want the stream to continue where it left off on application restart you want to store away the checkpoint. You can do this anyway you like,
+but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.reactor.CheckpointStorage`. 
+These subscriptions can be combined with a [checkpoint storage](#reactive-subscription-position-storage) implementation to store the checkpoint in a durable 
 datastore. 
 
-Occurrent provides a [utility](#durable-subscriptions-reactive) that combines a `PositionAwareSubscriptionModel` and 
-a `ReactorSubscriptionPositionStorage` (see [here](#reactive-subscription-position-storage)) to automatically store the subscription position   
-_after each processed event_. If you don't want the position to be persisted after _every_ event, it's recommended to pick a 
-[subscription position storage](#reactive-subscription-position-storage) implementation, and store the position yourself when you find fit.
+Occurrent provides a [utility](#durable-subscriptions-reactive) that combines a `CheckpointAwareSubscriptionModel` and 
+a `ReactorCheckpointStorage` (see [here](#reactive-subscription-position-storage)) to automatically store the checkpoint   
+_after each processed event_. If you don't want the checkpoint to be persisted after _every_ event, it's recommended to pick a 
+[checkpoint storage](#reactive-subscription-position-storage) implementation, and store the checkpoint yourself when you find fit.
 
 #### Reactive Subscription using Spring ReactiveMongoTemplate
 
@@ -2768,24 +2770,24 @@ used by the `EventStore` implementation. Secondly, we have the `TimeRepresentati
 
 It should also be noted that Spring takes care of re-attaching to MongoDB if there's a connection issue or other transient errors. This can be configured when creating the `ReactiveMongoTemplate` instance. 
 
-Note that you can provide a [filter](#reactive-subscription-filters), [start position](#reactive-subscription-start-position) and [position persistence](#reactive-subscription-position-storage) for this subscription implementation.
+Note that you can provide a [filter](#reactive-subscription-filters), [start position](#reactive-subscription-start-position) and [checkpoint persistence](#reactive-subscription-position-storage) for this subscription implementation.
 
 #### Durable Subscriptions (Reactive)
  
-Storing the subscription position is useful if you need to resume a subscription from its last known position when restarting an application.
-Occurrent provides a utility that combines a `PositionAwareSubscriptionModel` and a `ReactorSubscriptionPositionStorage` implementation 
-(see [here](#reactive-subscription-position-storage)) to automatically store the subscription position, by default,   
-after each processed event. If you don't want the position to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
+Storing the checkpoint is useful if you need to resume a subscription from its last known checkpoint when restarting an application.
+Occurrent provides a utility that combines a `CheckpointAwareSubscriptionModel` and a `ReactorCheckpointStorage` implementation 
+(see [here](#reactive-subscription-position-storage)) to automatically store the checkpoint, by default,   
+after each processed event. If you don't want the checkpoint to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
 to `ReactorDurableSubscriptionModelConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
-the position to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new ReactorDurableSubscriptionModelConfig(3)` that 
-creates an instance of `EveryN` that stores the position for every third event. 
+the checkpoint to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new ReactorDurableSubscriptionModelConfig(3)` that 
+creates an instance of `EveryN` that stores the checkpoint for every third event. 
 
 To use it, first to add the following dependency:
 
 {% include macros/subscription/reactor/util/autopersistence/maven.md %}
 
-Then we should instantiate a `PositionAwareSubscriptionModel`, that subscribes to the events from the event store, and an instance of a `ReactorSubscriptionPositionStorage`, 
-that stores the subscription position, and combine them to a `ReactorDurableSubscriptionModel`: 
+Then we should instantiate a `CheckpointAwareSubscriptionModel`, that subscribes to the events from the event store, and an instance of a `ReactorCheckpointStorage`, 
+that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionModel`: 
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
 
@@ -3232,7 +3234,7 @@ Occurrent contains a retry module that you can depend on using:
 {% include macros/retry/blocking/maven.md %}
 <div class="comment">Typically you don't need to depend on this module explicitly since many of Occurrent's components already uses this library under the hood and is thus depended on transitively.</div>
 
-Occurrent components that support retry ([subscription model](#blocking-subscriptions) and [subscription position storage](#blocking-subscription-position-storage) implementations)
+Occurrent components that support retry ([subscription model](#blocking-subscriptions) and [checkpoint storage](#blocking-subscription-position-storage) implementations)
 typically accepts an instance of `org.occurrent.retry.RetryStrategy` to their constructors. This allows you to configure how they should do retry. You can configure max attempts, 
 a retry predicate, error listener, before/after retry listener, as well as the backoff strategy. Here's an example:
   
@@ -3329,7 +3331,7 @@ subscribe<GameStarted> { gameStarted ->
 i.e. you don't need to specify an id explicitly. Be careful here though, since the name of the
 subscription will be generated from the event name (the unqualified name, in this case the subscription 
 id would be "GameStarted"). This can lead to trouble if you rename your event because then the id of your subscription 
-will change as well, and it won't continue from the previous position in the subscription position storage. 
+will change as well, and it won't continue from the previous checkpoint in the checkpoint storage. 
 
 If using Java you can do:
           
@@ -3381,6 +3383,8 @@ There are also some Kotlin extensions that you can use to query for a `Sequence`
              
 # Spring Boot Starter
 
+<div class="notification">Occurrent {{site.occurrentversion}} requires <b>Java 21</b> or later.</div>
+
 Use the "Spring Boot Starter" project to bootstrap Occurrent quickly if using Spring Boot 4. Add the following to your build script:
 
 {% include macros/spring-boot-starter/maven.md %}
@@ -3389,7 +3393,7 @@ Next create a Spring Boot application annotated with `@SpringBootApplication` as
 Occurrent will then configure the following components automatically:
  
 * A Spring MongoDB Event Store instance (`EventStore`)
-* A Spring `SubscriptionPositionStorage` instance 
+* A Spring `CheckpointStorage` instance 
 * A durable Spring MongoDB competing consumer subscription model (`SubscriptionModel`)
 * A Jackson-based `CloudEventConverter`. From `0.20.1`, the starter autoconfigures the Jackson 3 lane by default. Existing applications can still use the Jackson 2 compatibility lane during migration, but in that case you need to define your own `CloudEventConverter` bean explicitly.
   It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases).
@@ -3498,7 +3502,7 @@ Here's a description for each StartPosition:
 |---------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `BEGINNING_OF_TIME` | Start this subscription from the first event in the event store.                                                                                                                                                                                                       |
 | `NOW`               | Start this subscription from current time.                                                                                                                                                                                                                             |
-| `DEFAULT`           | Start this subscription using the default behavior of the subscription model. Typically, this means that it'll start from `NOW`, unless the subscription has already been started before, in which case the subscription will be started from its last known position. |
+| `DEFAULT`           | Start this subscription using the default behavior of the subscription model. Typically, this means that it'll start from `NOW`, unless the subscription has already been started before, in which case the subscription will be started from its last known checkpoint. |
                                             
 
 If you want a different behavior when the application is restarted, configure a different `resumeBehavior()` (`@Subscription(id="mySubscription", resumeBehavior=..)`):
@@ -3507,8 +3511,8 @@ Resume behavior:
 
 | ResumeBehavior     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 |--------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DEFAULT`          | Use the default resume behavior of the underlying subscription model. For example, if the `StartPosition` is set to `StartPosition.BEGINNING_OF_TIME`, and `ResumeBehavior` is set to `ResumeBehavior.DEFAULT`, then the subscription will _start_ from the beginning of time the first time it's run. Then, on application restart, it'll continue from the last received event (the subscription position (checkpoint) for the subscription) on restart. |
-| `SAME_AS_START_AT` | Always start at the same position as specified by the `StartPosition`. I.e., even if there's a subscription position (checkpoint) stored for the subscription, it'll be ignored on application restart and the subscription will resume from the specified `StartPosition`.                                                                                                                                                                                |
+| `DEFAULT`          | Use the default resume behavior of the underlying subscription model. For example, if the `StartPosition` is set to `StartPosition.BEGINNING_OF_TIME`, and `ResumeBehavior` is set to `ResumeBehavior.DEFAULT`, then the subscription will _start_ from the beginning of time the first time it's run. Then, on application restart, it'll continue from the last received event (the checkpoint for the subscription) on restart. |
+| `SAME_AS_START_AT` | Always start at the same position as specified by the `StartPosition`. I.e., even if there's a checkpoint stored for the subscription, it'll be ignored on application restart and the subscription will resume from the specified `StartPosition`.                                                                                                                                                                                |
 
 
 The combination of start and resume behavior can enable various use cases. For example:
@@ -3553,7 +3557,7 @@ Here's a summary of the different startup modes:
 | StartupMode          | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 |----------------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `DEFAULT`            | Determine the startup mode based on the properties of the subscription (such as `startAt()` and `resumeBehavior()`). It'll use `BACKGROUND` if the subscription needs to replay historic events before subscribing to new ones (e.g. if `startAt()` is `StartPosition.BEGINNING_OF_TIME`), otherwise `WAIT_UNTIL_STARTED` will be used.                                                                                                                                                                                                                                                                                                                                                                             |
-| `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.SubscriptionPositionStorage` (checkpointing), it'll never miss an event during startup.                                                                                      |
+| `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.CheckpointStorage`, it'll never miss an event during startup.                                                                                      |
 | `BACKGROUND`         | The subscription will NOT wait until it's started up fully before Spring continues starting the rest of the application; instead, it will be started in the background. Typically, this is useful if you instruct the subscription to start at an earlier date (such as the beginning of time), and you have a lot of events to read before the subscription has caught up. In this case, you may wish to start the Spring application before the subscription has fully started (i.e., before all historic events have been replayed) because waiting for all events to replay takes too long. The subscription will then replay all historic events in the background before switching to continuous mode. |
 
 # Blogs
