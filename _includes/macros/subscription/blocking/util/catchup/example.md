@@ -21,7 +21,7 @@ CatchupSubscriptionModel catchupSubscriptionModelModel = new CatchupSubscription
 catchupSubscriptionModelModel.subscribe("mySubscription", filter(type("GameEnded")), StartAtTime.beginningOfTime(), cloudEvent -> System.out.println(cloudEvent));
 
 // Note that excluding "StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())" like below would still start at 
-// the beginnning of time the first time, but on subsequent calls will start from the latest checkpoint stored in the storage.
+// the beginning of time the first time, but on subsequent calls will start from the latest checkpoint stored in the storage.
 // This is recommended if you want to continue using the CatchupSubscriptionModel later when no catch-up is required
 // (since the subscription has already caught up).
 catchupSubscriptionModelModel.subscribe("mySubscription", filter(type("GameEnded")), cloudEvent -> System.out.println(cloudEvent));
@@ -58,7 +58,7 @@ catchupSubscriptionModel.subscribe("mySubscription", filter(type("GameEnded")), 
 }
 
 // Note that excluding "StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())" like below would still start at 
-// the beginnning of time the first time, but on subsequent calls will start from the latest checkpoint stored in the storage.
+// the beginning of time the first time, but on subsequent calls will start from the latest checkpoint stored in the storage.
 // This is recommended if you want to continue using the CatchupSubscriptionModel later when no catch-up is required
 // (since the subscription has already caught up).
 catchupSubscriptionModel.subscribe("mySubscription", filter(type("GameEnded"))) { cloudEvent -> 
