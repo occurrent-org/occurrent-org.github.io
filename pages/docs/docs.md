@@ -2530,7 +2530,7 @@ By default, events are sorted by time and then stream version (if two or more ev
 The subscription model will only stream historic events if started with a `StartAt` instance with a so called `TimeBasedCheckpoint`, for example:
 
 {% capture java %}
-subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e);
+subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e));
 {% endcapture %}
 {% capture kotlin %}
 subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())) { e -> 
@@ -2548,18 +2548,18 @@ There are also some "shortcuts" to make it a bit more concise to start replay fr
 {% capture java %}
 var subscriptionModel = new CatchupSubscriptionModel(..);
 // All examples below are equivalent:
-subscriptionModel.subscribeFromBeginningOfTime("subscriptionId", e -> System.out.println("Event: " + e);
-subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime(), e -> System.out.println("Event: " + e);
-subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e);
+subscriptionModel.subscribeFromBeginningOfTime("subscriptionId", e -> System.out.println("Event: " + e));
+subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime(), e -> System.out.println("Event: " + e));
+subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e));
 {% endcapture %}
 {% capture kotlin %}
-val subscriptionModel = new CatchupSubscriptionModel(..);
+val subscriptionModel = CatchupSubscriptionModel(..)
 // All examples below are equivalent:
-subscriptionModel.subscribeFromBeginningOfTime("subscriptionId") { e -> println("Event: $") }
+subscriptionModel.subscribeFromBeginningOfTime("subscriptionId") { e -> println("Event: $e") }
 subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime()) { e -> println("Event: $e") }
-subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()) { e -> println("Event: $") }
+subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())) { e -> println("Event: $e") }
 // beginningOfTime is an extension function imported from org.occurrent.subscription.blocking.durable.catchup.CatchupSubscriptionModelExtensions.kt  
-subscriptionModel.subscribe("subscriptionId", StartAt.beginningOfTime()) { e -> println("Event: $") }
+subscriptionModel.subscribe("subscriptionId", StartAt.beginningOfTime()) { e -> println("Event: $e") }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 

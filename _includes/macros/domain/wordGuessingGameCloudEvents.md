@@ -10,7 +10,7 @@ public class WordGuessingGame {
 }
 {% endcapture %}  
 {% capture kotlin %}
-// Note that the functions could might as well be placed directly in a package 
+// Note that the functions might as well be placed directly in a package 
  object WordGuessingGame {
     fun startNewGame(gameId : String, wordToGuess : String) : List<CloudEvent> = ...	
  

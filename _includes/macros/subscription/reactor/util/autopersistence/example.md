@@ -8,7 +8,7 @@ ReactorCheckpointStorage storage = ...
 ReactorDurableSubscriptionModel durableSubscription = new ReactorDurableSubscriptionModel(nonDurableSubscription, storage);
 
 // Start a subscription
-durableSubscription.subscribe("mySubscriptionId", cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent)).subscribe(); 
+Subscription subscription = durableSubscription.subscribe("mySubscriptionId", cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent));
 {% endcapture %}
 
 {% capture kotlin %}
@@ -21,8 +21,8 @@ val storage : ReactorCheckpointStorage = ...
 val durableSubscription = ReactorDurableSubscriptionModel(nonDurableSubscription, storage)
 
 // Start a subscription
-durableSubscription.subscribe("mySubscriptionId") { cloudEvent -> 
+val subscription = durableSubscription.subscribe("mySubscriptionId") { cloudEvent -> 
     doSomethingWithTheCloudEvent(cloudEvent) 
-}.subscribe()
+}
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}

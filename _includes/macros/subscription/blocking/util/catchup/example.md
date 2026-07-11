@@ -15,7 +15,7 @@ EventStoreQueries eventStoreQueries = ...
 // from the beginning if the application where to crash during the catch-up phase.   
 CatchupSubscriptionModel catchupSubscriptionModelModel = new CatchupSubscriptionModel(continuousSubscriptionModel, eventStoreQueries, 
             new CatchupSubscriptionModelConfig(useCheckpointStorage(storage)
-                    .andPersistCheckpointDuringCatchupPhaseForEveryNEvents(3));
+                    .andPersistCheckpointDuringCatchupPhaseForEveryNEvents(3)));
 
 // Start a subscription that starts replaying events of type "GameEnded" from the beginning of time
 catchupSubscriptionModelModel.subscribe("mySubscription", filter(type("GameEnded")), StartAtTime.beginningOfTime(), cloudEvent -> System.out.println(cloudEvent));
@@ -50,7 +50,7 @@ val eventStoreQueries : EventStoreQueries = ...
 // a checkpoint in the storage.           
 val catchupSubscriptionModel = CatchupSubscriptionModel(continuousSubscription, eventStoreQueries, 
             CatchupSubscriptionModelConfig(useCheckpointStorage(storage)
-                    .andPersistCheckpointDuringCatchupPhaseForEveryNEvents(3))
+                    .andPersistCheckpointDuringCatchupPhaseForEveryNEvents(3)))
 
 // Start a subscription that starts replaying events of type "GameEnded" from the beginning of time
 catchupSubscriptionModel.subscribe("mySubscription", filter(type("GameEnded")), StartAtTime.beginningOfTime()) { cloudEvent -> 
