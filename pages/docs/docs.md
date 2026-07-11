@@ -1454,6 +1454,21 @@ applicationService.execute(
 }
 ```
 
+Both Kotlin forms above invoke the callback once per matching event. When you want the whole batch of matching events in a single call instead, use `sideEffectOnList`, which hands you a `List` of them (it filters to the event type the same way):
+
+```kotlin
+applicationService.execute(
+    gameId,
+    options().sideEffectOnList { startedGames: List<GameWasStarted> ->
+        registerOngoingGame.registerAll(startedGames)
+    }
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+It is `sideEffectOnList` rather than `sideEffect` because `ExecuteOptions` already has a Java `sideEffect(Consumer<List<E>>)` method, and a Kotlin extension of the same name would be shadowed by it. In Java, call that `sideEffect(...)` method directly with the whole list.
+
 ### When Not to Use Filtering
 
 Filtering is a read optimization, not a correctness feature.
