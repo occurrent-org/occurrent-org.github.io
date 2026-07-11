@@ -628,8 +628,8 @@ val eventStream = filteredEventStore?.read(
 
 A subscription is a way to get notified when new events are written to an event store. Typically, a subscription will be used to create views from events (such as projections, sagas, snapshots etc) or
 create integration events that can be forwarded to another piece of infrastructure such as a message bus. There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
-represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` interface (in the `org.occurrent:subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
-represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:subscription-api-reactor` module). 
+represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` interface (in the `org.occurrent:occurrent-subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
+represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:occurrent-subscription-api-reactor` module). 
 
 
 The blocking API is callback based, which is fine if you're working with individual events (you can of course use a simple function that aggregates events into batches yourself).
@@ -1061,18 +1061,18 @@ carry on modern JVMs, so an append would otherwise fail. With the Spring Boot st
 property (a `ChronoUnit`, for example `millis`). When that property is unset and the event store `time-representation` is `DATE`, the converter defaults
 to truncating to `MILLIS`, so the common case needs no configuration. `RFC_3339_STRING` keeps full precision.
 
-If you are migrating an existing application and need to stay on the old Jackson 2 API for a while, `org.occurrent:cloudevent-converter-jackson` is still available as a compatibility lane.
+If you are migrating an existing application and need to stay on the old Jackson 2 API for a while, `org.occurrent:occurrent-cloudevent-converter-jackson` is still available as a compatibility lane.
 However, the recommended direction for new applications and updated documentation is Jackson 3.
 
 #### Jackson 2 Compatibility {#jackson2-cloudevent-converter}
 
 If you're maintaining an existing application that still uses the Jackson 2 API, you can continue to use the Jackson 2 compatibility lane.
-Depend on `org.occurrent:cloudevent-converter-jackson`:
+Depend on `org.occurrent:occurrent-cloudevent-converter-jackson`:
 
 ```xml
 <dependency>
     <groupId>org.occurrent</groupId>
-    <artifactId>cloudevent-converter-jackson</artifactId>
+    <artifactId>occurrent-cloudevent-converter-jackson</artifactId>
     <version>{{site.occurrentversion}}</version>
 </dependency>
 ```
@@ -1273,7 +1273,7 @@ This module provides an interface, `org.occurrent.application.service.blocking.A
 `org.occurrent.application.service.blocking.generic.GenericApplicationService`. The `GenericApplicationService` takes an `EventStore` and 
 a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from 
 cloud events when loaded/written to the event store. There's a default implementation that you *may* decide to use called, 
-`org.occurrent.application.converter.implementation.GenericCloudEventConverter` available in the `org.occurrent:cloudevent-converter-generic` module. 
+`org.occurrent.application.converter.implementation.GenericCloudEventConverter` available in the `org.occurrent:occurrent-cloudevent-converter-generic` module. 
 You can see an example in the [next](#using-the-application-service) section.
 
 As of version 0.11.0, the `GenericApplicationService` also takes a [RetryStrategy](#retry) as an optional third parameter.  
@@ -2595,7 +2595,7 @@ The `CompetingConsumerStrategy` implementation in this module is called `SpringM
 of [Alec Henninger](https://github.com/alechenninger). To understand how these strategies work under the hood, refer to his [blog post](https://www.alechenninger.com/2020/05/building-kafka-like-message-queue-with.html).  
 
 Just like several other subscription models, the `CompetingConsumerSubscriptionModel` wraps another subscription model and decorates it with additional functionality, in this case to add competing consumer support to it. 
-Below is an example that uses `NativeMongoLeaseCompetingConsumerStrategy` from module `org.occurrent:subscription-mongodb-native-blocking-competing-consumer-strategy` with a [DurableSubscriptionModel](#durable-subscriptions-blocking) 
+Below is an example that uses `NativeMongoLeaseCompetingConsumerStrategy` from module `org.occurrent:occurrent-subscription-mongodb-native-blocking-competing-consumer-strategy` with a [DurableSubscriptionModel](#durable-subscriptions-blocking) 
 which in turn wraps the [Native MongoDB](#blocking-subscription-using-the-native-java-mongodb-driver) subscription model.
 
 {% include macros/subscription/blocking/util/competingconsumer/example.md %}
@@ -2897,7 +2897,7 @@ var writeResult = applicationService.execute("streamId", events -> decider.decid
 
 ### Kotlin<a id="application-service-decider-kotlin"></a>
 
-The `org.occurrent:decider` module contains Kotlin extension functions, located in the `org.occurrent.dsl.decider.ApplicationServiceDeciderExtensions.kt` file, that allows you to easily integrate deciders
+The `org.occurrent:occurrent-decider` module contains Kotlin extension functions, located in the `org.occurrent.dsl.decider.ApplicationServiceDeciderExtensions.kt` file, that allows you to easily integrate deciders
 with existing [ApplicationService](#application-service) infrastructure. Here's an example:
 
 ```kotlin
@@ -2930,7 +2930,7 @@ val newEvents = applicationService.executeAndReturnEvents(streamId, command, dec
 
 As of version 0.20.5 deciders are combinable. You can write one small decider per feature, each over its own command, state, and event
 types, and combine them into a larger decider without losing the type safety of the small ones. The combinators live in the
-`org.occurrent:decider` module.
+`org.occurrent:occurrent-decider` module.
 
 ### Widening a decider with `adapt`
 
@@ -3424,7 +3424,7 @@ As of version 0.17.0 you can also get metadata (such as stream version, stream i
 ## Query DSL
 
 The "Query DSL" (or "domain query DSL") is a small wrapper around the [EventStoreQueries](#eventstore-queries) API that lets you query for domain events instead of CloudEvents. 
-Depend on the `org.occurrent:query-dsl-blocking` module and create an instance of `org.occurrent.dsl.query.blocking.DomainEventQueries`. For example:
+Depend on the `org.occurrent:occurrent-query-dsl-blocking` module and create an instance of `org.occurrent.dsl.query.blocking.DomainEventQueries`. For example:
 
 ```java                                                      
 EventStoreQueries eventStoreQueries = .. 
@@ -3451,7 +3451,7 @@ There are also some Kotlin extensions that you can use to query for a `Sequence`
              
 ### DCB Query DSL
 
-The Query DSL has a DCB counterpart, `org.occurrent.dsl.dcb.blocking.DcbDomainEventQueries`, that queries by a [`DcbCriteria`](#the-dcb-event-store) (event types and tags) instead of a `Filter`, and returns domain events. Depend on `org.occurrent:dcb-dsl-blocking` and wrap a regular `DomainEventQueries`. The [Spring Boot starter](#spring-boot-starter) registers one for you when the DCB capability is enabled, so you normally just inject it.
+The Query DSL has a DCB counterpart, `org.occurrent.dsl.dcb.blocking.DcbDomainEventQueries`, that queries by a [`DcbCriteria`](#the-dcb-event-store) (event types and tags) instead of a `Filter`, and returns domain events. Depend on `org.occurrent:occurrent-dcb-dsl-blocking` and wrap a regular `DomainEventQueries`. The [Spring Boot starter](#spring-boot-starter) registers one for you when the DCB capability is enabled, so you normally just inject it.
 
 {% capture java %}
 DomainEventQueries<CourseEvent> domainEventQueries = ..
@@ -3564,7 +3564,7 @@ to find which configuration properties that are supported.
 
 ## Reactive Spring Boot Starter
 
-If your application is reactive (Spring WebFlux with reactive MongoDB), use the reactive starter (`org.occurrent:spring-boot-starter-mongodb-reactive`) and annotate your application with `@EnableOccurrentReactive` (package `org.occurrent.springboot.mongo.reactor`) instead of `@EnableOccurrent`. It auto-configures the reactive counterparts of everything the blocking starter sets up: a reactive `EventStore`, a reactive transaction manager, a reactive application service (both the stream and the DCB application service), the query DSLs, a reactive `SubscriptionModel` backed by `CheckpointStorage`, and the reactive `StreamSubscriptions` and `DcbSubscriptions` DSLs. The blocking and reactive starters are mutually exclusive, so pick the one that matches your stack.
+If your application is reactive (Spring WebFlux with reactive MongoDB), use the reactive starter (`org.occurrent:occurrent-mongodb-reactive-spring-boot-starter`) and annotate your application with `@EnableOccurrentReactive` (package `org.occurrent.springboot.mongo.reactor`) instead of `@EnableOccurrent`. It auto-configures the reactive counterparts of everything the blocking starter sets up: a reactive `EventStore`, a reactive transaction manager, a reactive application service (both the stream and the DCB application service), the query DSLs, a reactive `SubscriptionModel` backed by `CheckpointStorage`, and the reactive `StreamSubscriptions` and `DcbSubscriptions` DSLs. The blocking and reactive starters are mutually exclusive, so pick the one that matches your stack.
 
 ## Spring Boot Annotations
 
@@ -3661,6 +3661,8 @@ Here's a summary of the different startup modes:
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
 
 For the {{site.occurrentversion}} release, add the `rewrite-maven-plugin`, point it at the umbrella recipe `org.occurrent.UpgradeToOccurrent_0_30`, and run it. The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.30.0.md) has the full plugin setup, the steps the recipe cannot safely make for you (mostly `Stream` to `List` lambda bodies and a few Kotlin call sites), and the runtime defaults to read before you deploy.
+
+0.30.0 also renamed the module artifact coordinates (every artifact now has an `occurrent-` prefix). See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.30.0.md) for the full old to new mapping.
 
 If you are upgrading an existing MongoDB deployment, note that stream `position` is on by default for new stores, but the events already in your collection have none. The store detects this at startup and turns position off for itself rather than triggering a surprise index build on your existing data. To backfill `position` onto those old events and use position-based catch-up against them, follow the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) and its [tool](https://github.com/johanhaleby/occurrent/blob/main/eventstore/migration/position-backfill/README.md).
 
