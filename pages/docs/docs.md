@@ -3101,6 +3101,28 @@ The type names above are strings, which is convenient but unchecked. If you woul
 then call `type(...)`, `types(...)`, `tags(...)`, `tagsAnyOf(...)`, `anyOf(...)`, or `all()` on it with event classes in place of the type strings. It
 produces the same `DcbCriteria`, only spelled with `Class` references, and it is what the DCB DSL uses under the hood through its `criteria()` helper.
 
+{% capture java %}
+// A DcbCriteriaBuilder maps event classes to their CloudEvent type names
+DcbCriteriaBuilder<DomainEvent> c = new DcbCriteriaBuilder<>(cloudEventConverter);
+
+DcbCriterion enrollment = c.type(StudentEnrolledInCourse.class).tags(course, student);
+DcbCriteria boundary = c.anyOf(
+        c.type(CourseDefined.class).tags(course),
+        c.type(StudentRegistered.class).tags(student)
+);
+{% endcapture %}
+{% capture kotlin %}
+// DcbSubscriptions and DcbDomainEventQueries hand you a converter-bound builder via criteria()
+val c = dcbDomainEventQueries.criteria()
+
+val enrollment = c.typeOf<StudentEnrolledInCourse>().tags(course, student)
+val boundary = c.anyOf(
+    c.typeOf<CourseDefined>().tags(course),
+    c.typeOf<StudentRegistered>().tags(student)
+)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
 ## The DCB Event Store
 
 `DcbEventStore` is the low-level API. `read(criteria)` returns a `DcbEventStream`, `exists(criteria)` and `count(criteria)` answer cheaper yes-or-no and how-many questions over the same criteria, and `append(events)` or `append(events, condition)` writes DCB-tagged CloudEvents.
