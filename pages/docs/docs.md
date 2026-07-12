@@ -462,10 +462,10 @@ eventStore.write("streamId", WriteCondition.streamVersionEq(version), events)
 But you can compose a more advanced write condition using a `Condition`:
 
 {% capture java %}
-eventStore.write("streamId", WriteCondition.streamVersion(and(lt(10), ne(5)), events);
+eventStore.write("streamId", WriteCondition.streamVersion(and(lt(10), ne(5))), events);
 {% endcapture %}
 {% capture kotlin %}
-eventStore.write("streamId", WriteCondition.streamVersion(and(lt(10), ne(5)), events)
+eventStore.write("streamId", WriteCondition.streamVersion(and(lt(10), ne(5))), events)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
  
@@ -492,7 +492,7 @@ val events : Stream<CloudEvent> = eventStore.query(subject("123").and(time(gte(l
 
 <div class="comment"><span>&#42;</span>There's a trade-off when it's appropriate to query the database vs creating materialized views/projections and you should most likely create indexes to allow for fast queries.</div>
 
-The `subject` and `time` methods are statically imported from `org.occurrent.filter.Filter` and `lte` is statically imported from `org.occurrent.condition.Condition`.  
+The `subject` and `time` methods are statically imported from `org.occurrent.filter.Filter` and `gte` is statically imported from `org.occurrent.condition.Condition`.  
 
 `EventStoreQueries` is not bound to a particular stream, rather you can query _any_ stream (or multiple streams at the same time). 
 It also provides the ability to get an "all" stream:
@@ -532,7 +532,7 @@ eventStoreOperations.deleteEventStream("streamId");
 // Delete a specific event
 eventStoreOperations.deleteEvent("cloudEventId", cloudEventSource);
 // This will delete all events in stream "myStream" that has a version less than or equal to 19.
-eventStoreOperations.delete(streamId("myStream").and(streamVersion(lte(19L)));
+eventStoreOperations.delete(streamId("myStream").and(streamVersion(lte(19L))));
 {% endcapture %}
 {% capture kotlin %}
 // Delete an entire event stream
@@ -540,7 +540,7 @@ eventStoreOperations.deleteEventStream("streamId")
 // Delete a specific event
 eventStoreOperations.deleteEvent("cloudEventId", cloudEventSource)
 // This will delete all events in stream "myStream" that has a version less than or equal to 19.
-eventStoreOperations.delete(streamId("myStream").and(streamVersion(lte(19L)))
+eventStoreOperations.delete(streamId("myStream").and(streamVersion(lte(19L))))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -561,7 +561,7 @@ eventStoreOperations.updateEvent("cloudEventId", cloudEventSource, cloudEvent ->
 {% capture kotlin %}
 eventStoreOperations.updateEvent("cloudEventId", cloudEventSource) { cloudEvent -> 
     CloudEventBuilder.v1(cloudEvent).withData(removePersonalDetailsFrom(cloudEvent)).build()
-})
+}
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -1695,7 +1695,7 @@ with the writes to the event store. One way to do this is to use Spring's transa
 ```java
 if (eventStream.version() - snapshot.version() >= 3) {
     Snapshot updatedSnapshot = snapshot.updateFrom(newEvents.stream(), eventStream.version());
-    snapshotRepsitory.save(updatedSnapshot);
+    snapshotRepository.save(updatedSnapshot);
 }
 ```
 
@@ -1710,7 +1710,7 @@ that updates the snapshot. For example:
 ```java
 if (streamVersion - snapshot.version() >= 3) {
     Snapshot updatedSnapshot = snapshot.updateFrom(newEvents.stream(), eventStream.version());
-    snapshotRepsitory.save(updatedSnapshot);
+    snapshotRepository.save(updatedSnapshot);
 }
 ```  
 
@@ -2279,6 +2279,14 @@ Now `filter` is statically imported from `org.occurrent.subscription.mongodb.Mon
 `com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with a `StreamSubscriptionFilter`
 and only pick a more specific implementation if you cannot express your filter using the capabilities of `StreamSubscriptionFilter`. 
 
+These filters also decide which event-store capability a subscription sees. `StreamSubscriptionFilter` (the one built above) scopes delivery to
+stream-written events. On a store that also has the DCB capability enabled, `AgnosticSubscriptionFilter.filter(...)` wraps the same kind of plain
+`Filter` but delivers matching events from every enabled capability, so it sees stream-written and DCB-appended events together and catches up over
+the shared global `position`. `DcbSubscriptionFilter.filter(...)` wraps a `DcbCriteria` and narrows delivery to the DCB events matching it. The
+capability-neutral [`@Subscription`](#spring-boot-annotations) annotation and [`subscriptions(...)`](#subscription-dsl) DSL already deliver both on a
+dual-capability store, so you only reach for these filters when subscribing through a `SubscriptionModel` directly. See
+[Subscribing to DCB Events](#subscribing-to-dcb-events) for the DCB side.
+
 ### Blocking Subscription Start Position
 
 A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
@@ -2507,10 +2515,15 @@ For example:
 {% include macros/subscription/blocking/util/catchup/example.md %}
 
 To reduce the likelihood of duplicate events when switching from replay mode to continuous mode, a `CatchupSubscriptionModel` maintains an in-memory cache of event ids. 
-The size of this cache is configurable using a `CatchupSubscriptionModelConfig` but it defaults to 100. Otherwise, there would be a chance
+The size of this cache is configurable using a `CatchupSubscriptionModelConfig` but it defaults to 100,000. Otherwise, there would be a chance
 that event written _exactly_ when the switch from replay mode to continuous mode takes places, can be lost. To prevent this, the continuous mode subscription 
 starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the 
 switch. If the cache is too small, duplicate events will be sent to the continuous subscription. Typically, you want your application to be idempotent anyways and if so this shouldn't be a problem.        
+
+As of 0.30.0 a catch-up that starts from the beginning or from a position reconciles the handover on the global `position` rather than on wall-clock
+time, which closes a class of silent event loss during the switch. Starting from a specific point in time still uses time-based catch-up, since a
+timestamp has no position to map to. Catch-up also fails loud now: `StreamCatchupSubscriptionModel` and `DcbCatchupSubscriptionModel` throw an
+`IllegalStateException` instead of silently falling back to a start position that could drop events, so make sure to configure a valid start position.
 
 A `CatchupSubscriptionModel` can be configured to store the checkpoint in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to 
 start replaying from the beginning again. Note that if you don't want checkpoint persistence during replay, you can disable this by doing `new CatchupSubscriptionModelConfig(dontUseCheckpointStorage())`.
@@ -2705,6 +2718,10 @@ Now `filter` is statically imported from `org.occurrent.subscription.mongodb.Mon
 `com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with a `StreamSubscriptionFilter`
 and only pick a more specific implementation if you cannot express your filter using the capabilities of `StreamSubscriptionFilter`. 
 
+The capability-scoped filters (`StreamSubscriptionFilter`, `AgnosticSubscriptionFilter`, and `DcbSubscriptionFilter`) work the same way here as on
+the [blocking side](#blocking-subscription-filters): the agnostic filter delivers events from every enabled capability, and the DCB filter narrows
+delivery to matching DCB events.
+
 ### Reactive Subscription Start Position
 
 A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
@@ -2720,11 +2737,11 @@ available that suits your needs. If not, you can still have a look at them for i
 
 It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the checkpoint
 provided by a [reactive subscription](#reactive-subscriptions) any way you like, Occurrent provides an interface
-called `org.occurrent.subscription.api.reactor.CheckpointStorage` acts as a uniform abstraction for this purpose. A `ReactorCheckpointStorage` 
+called `org.occurrent.subscription.api.reactor.CheckpointStorage` acts as a uniform abstraction for this purpose. A `CheckpointStorage` 
 is defined like this:
 
 ```java
-public interface ReactorCheckpointStorage {
+public interface CheckpointStorage {
     Mono<Checkpoint> read(String subscriptionId);
     Mono<Checkpoint> save(String subscriptionId, Checkpoint checkpoint);
     Mono<Void> delete(String subscriptionId);
@@ -2738,7 +2755,7 @@ I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. 
     {% include macros/subscription/reactor/mongodb/spring/storage/maven.md %}   
 
 
-If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "reactive subscription API" which contains the `ReactorCheckpointStorage` interface:
+If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "reactive subscription API" which contains the `CheckpointStorage` interface:
 
 {% include macros/subscription/reactor/api/maven.md %}
 
@@ -2754,7 +2771,7 @@ These are the _non-durable_ [reactive subscription implementations](#reactive-su
 By "non-durable" we mean implementations that doesn't store the checkpoint in a durable storage automatically.  
 It might be that the datastore does this automatically _or_ that [checkpoint storage](#reactive-subscription-position-storage) is not required
 for your use case. If the datastore _doesn't_ support storing the checkpoint automatically, a subscription will typically implement the
-`org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface (since these types of subscriptions doesn't need to be aware of the checkpoint).
+`org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface (since these types of subscriptions needs to be aware of the checkpoint).
 However, you can do this anyway you like.
    
 Typically, if you want the stream to continue where it left off on application restart you want to store away the checkpoint. You can do this anyway you like,
@@ -2995,7 +3012,7 @@ val many: Decider<DomainCommand, CompositeState, DomainEvent> =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The typed `Pair` and `Triple` results are Kotlin only. In Java `compose` always yields a `CompositeState`.
+The typed `Pair` and `Triple` results are Kotlin only. In Java `compose` always yields a `CompositeState`. `compose` requires at least two deciders and throws `IllegalArgumentException` if given fewer, since composing zero or one would build a degenerate decider that combines nothing.
 
 ### Passing a feature decider to an ApplicationService
 
@@ -3079,11 +3096,16 @@ val activeCourse = DcbCriteria.type("CourseDefined").excludingTypes("CourseCance
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+The type names above are strings, which is convenient but unchecked. If you would rather build criteria from your event classes, a
+`DcbCriteriaBuilder` maps each class to its CloudEvent type name for you. Construct one from a `CloudEventConverter` (or a `CloudEventTypeMapper`),
+then call `type(...)`, `types(...)`, `tags(...)`, `tagsAnyOf(...)`, `anyOf(...)`, or `all()` on it with event classes in place of the type strings. It
+produces the same `DcbCriteria`, only spelled with `Class` references, and it is what the DCB DSL uses under the hood through its `criteria()` helper.
+
 ## The DCB Event Store
 
 `DcbEventStore` is the low-level API. `read(criteria)` returns a `DcbEventStream`, `exists(criteria)` and `count(criteria)` answer cheaper yes-or-no and how-many questions over the same criteria, and `append(events)` or `append(events, condition)` writes DCB-tagged CloudEvents.
 
-The read-decide-append cycle is how you use it directly, without an application service. Read the events for your boundary. The returned `DcbEventStream` carries both the events and a `DcbConsistencyToken`. Decide the new events from what you read, then append them under a `DcbAppendCondition.failIfEventsMatch(criteria, consistencyToken)`. That condition fails the append with a `DcbAppendConditionNotFulfilledException` if anything matching your boundary was committed after your read, and that exception is your signal to retry the whole cycle.
+The read-decide-append cycle is how you use it directly, without an application service. Read the events for your boundary. The returned `DcbEventStream` carries both the events and a `DcbConsistencyToken`. Decide the new events from what you read, then append them under a `DcbAppendCondition.failIfEventsMatch(criteria, consistencyToken)`. That condition fails the append with a `DcbAppendConditionNotFulfilledException` if anything matching your boundary was committed after your read, and that exception is your signal to retry the whole cycle. To fail on any concurrent append at all, rather than one matching a specific boundary, use `DcbAppendCondition.wholeStoreLock()` (or `wholeStoreLock(consistencyToken)`). It is the intent-revealing form of `failIfEventsMatch(DcbCriteria.all())` and is the recommended way to express a whole-store lock.
 
 {% capture java %}
 DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId));
@@ -3175,7 +3197,7 @@ val tagGenerator: TagGenerator<StudentEnrolledInCourse> = AnnotationTagGenerator
 
 ## Coupling a Decider to a Boundary
 
-A `DcbDecider` couples three things a feature would otherwise have to keep in sync by hand: the plain `Decider` (decide and evolve), a function from command to the `DcbCriteria` boundary that command needs, and a `TagGenerator` for the events it emits. Build one with `DcbDecider.create(...)` (or `DcbDecider.from` around an existing `Decider`), or the Kotlin `dcbDecider(...)` factory, which reads a little more naturally at the call site.
+A `DcbDecider` couples three things a feature would otherwise have to keep in sync by hand: the plain `Decider` (decide and evolve), a function from command to the `DcbCriteria` boundary that command needs, and a `TagGenerator` for the events it emits. Build one with `DcbDecider.create(...)` (or `DcbDecider.from` around an existing `Decider`), or the Kotlin `dcbDecider(...)` factory, which reads a little more naturally at the call site. In Kotlin you can also turn an existing `Decider` into a `DcbDecider` with the `toDcb { ... }` extension, supplying the `criteria` and `tags` for the boundary.
 
 Once a decider is a `DcbDecider`, it is self-describing: given a command, it knows both what to decide and where to read from. The Kotlin DSL's `execute(command, dcbDecider)` puts that to work directly: it asks the decider for the command's boundary, reads the matching events, decides, tags the new events with the decider's own `TagGenerator`, and appends, all without you naming a `DcbCriteria` at the call site.
 
@@ -3334,15 +3356,15 @@ retryStrategy.backoff(fixed(600)).execute(() -> SomethingElse.somethingElse());
 retryStrategy.execute(() -> Thing.thing());
 ```
  
-You can also disable retries by calling `RetryStartegy.none()`.
+You can also disable retries by calling `RetryStrategy.none()`.
 
 As of version 0.11.0 you can also use the `mapRetryPredicate` function easily allows you to map the current retry predicate into a new one. This is useful if you e.g. want to add a predicate to the existing predicate. For example:
 
 ```java
 // Let's say you have a retry strategy:
-Retry retry = RetryStrategy.exponentialBackoff(Duration.ofMillis(100), Duration.ofSeconds(2), 2.0f).maxAttempts(5).retryIf(WriteConditionNotFulfilledException.class::isInstance);
+RetryStrategy retry = RetryStrategy.exponentialBackoff(Duration.ofMillis(100), Duration.ofSeconds(2), 2.0f).maxAttempts(5).retryIf(WriteConditionNotFulfilledException.class::isInstance);
 // Now you also want to retry if an IllegalArgumentException is thrown:
-retry.mapRetryPredicate(currentRetryPredicate -> currentRetryPredicate.or(IllegalArgument.class::isInstance))
+retry.mapRetryPredicate(currentRetryPredicate -> currentRetryPredicate.or(IllegalArgumentException.class::isInstance))
 ```
 
 As of version 0.16.3, `RetryStrategy` now accepts a function that takes an instance of `org.occurrent.retry.RetryInfo`. This is useful if you need to know the current state of your of the retry while retrying. For example:
@@ -3520,17 +3542,17 @@ Occurrent will then configure the following components automatically:
   }
   ```
   or implement your own custom [CloudEventConverter](#cloudevent-conversion).
-* A `GenericApplication` instance (`ApplicationService`)
+* A `GenericApplicationService` instance (`ApplicationService`)
 * A subscription dsl instance (`Subscriptions`)
-* A query dsl instance (`DomainQueries`)
+* A query dsl instance (`DomainEventQueries`)
 * When the DCB capability is enabled, the DCB counterparts too: a DCB application service (`DcbApplicationService`), a DCB subscription dsl (`DcbSubscriptions`), and a DCB query dsl (`DcbDomainEventQueries`)
 * Support for [annotations](#spring-boot-annotations)
 
 For most new Spring Boot applications, the recommended setup is:
 
 * Spring Boot 4
-* `spring-boot-starter-mongodb`
-* `cloudevent-converter-jackson3` if you configure the converter explicitly
+* `occurrent-mongodb-spring-boot-starter`
+* `occurrent-cloudevent-converter-jackson3` if you configure the converter explicitly
 
 If you are upgrading an existing application that still depends on the Jackson 2 converter API, you can continue to use that compatibility lane while migrating incrementally. The Spring Boot starter will not autoconfigure the Jackson 2 converter for you, so you must register a `CloudEventConverter` bean yourself, for example:
 
