@@ -102,6 +102,7 @@ permalink: /documentation
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
 * * [Query DSL](#query-dsl)
+* * * [DCB Query DSL](#dcb-query-dsl)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
@@ -3369,6 +3370,8 @@ There's a both a Kotlin DSL and Java DSL. First you need to depend on the `subsc
 
 As of version {{site.occurrentversion}} this DSL comes in three flavors that mirror the [subscription annotations](#spring-boot-annotations): `subscriptions(...)` builds a capability-neutral `Subscriptions` that delivers both stream and DCB events, `streamSubscriptions(...)` builds a stream-only `StreamSubscriptions`, and [`DcbSubscriptions`](#subscribing-to-dcb-events) (from the `dcb-dsl` module) subscribes to DCB events by tags and event types. The examples below use the neutral `subscriptions(...)`.
 
+Which one to reach for: `subscriptions(...)` is the default, for a read model or policy that reacts to events by type and does not care which write model produced them. On a store that has both capabilities it is the only flavor that sees stream-written and DCB-appended events together, filtered by type alone. Use `streamSubscriptions(...)` when a subscription must stay scoped to stream events, because it excludes DCB-appended events even on a store that has both, which matters when the consumer relies on classic stream and version semantics. Use [`DcbSubscriptions`](#subscribing-to-dcb-events) when you want DCB events selected by tags, for a short-lived, per-connection subscription you start and cancel yourself (such as a Server-Sent-Events feed), and reach for the [`@DcbSubscription`](#subscribing-to-dcb-events) annotation instead for a durable, framework-managed read model that catches up from history on startup.
+
 If you're using Kotlin you can then define subscriptions like this:
 
 ```kotlin
@@ -3452,6 +3455,8 @@ There are also some Kotlin extensions that you can use to query for a `Sequence`
 ### DCB Query DSL
 
 The Query DSL has a DCB counterpart, `org.occurrent.dsl.dcb.blocking.DcbDomainEventQueries`, that queries by a [`DcbCriteria`](#the-dcb-event-store) (event types and tags) instead of a `Filter`, and returns domain events. Depend on `org.occurrent:occurrent-dcb-dsl-blocking` and wrap a regular `DomainEventQueries`. The [Spring Boot starter](#spring-boot-starter) registers one for you when the DCB capability is enabled, so you normally just inject it.
+
+Which one to reach for: use [`DomainEventQueries`](#query-dsl) for ordinary queries by `Filter` and event type. It is capability-neutral, so on a store that has both capabilities it returns stream-written and DCB-appended events alike, exactly like the underlying [`EventStoreQueries`](#eventstore-queries). Use `DcbDomainEventQueries` when a query needs DCB tags or a `DcbCriteria`, or when you need the read's consistency token and position for a later conditional append. It only adds the DCB queries on top, so the plain ones are still there through `domainEventQueries()`.
 
 {% capture java %}
 DomainEventQueries<CourseEvent> domainEventQueries = ..
