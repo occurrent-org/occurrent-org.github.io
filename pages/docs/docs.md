@@ -920,7 +920,7 @@ applicationService.execute(gameId,
 
 To convert between domain events and cloud events you can use the cloud event converter API that's shipped with Occurrent. This is optional, but components such as the [application service](#application-service) and [subscription dsl](#subscription-dsl) uses a cloud event converter to function.
 If you're only using an [event store](#eventstore) and [subscriptions](#subscriptions) then you don't need a cloud event converter (or you can roll your own).
-All cloud event converters implements the `org.occurrent.application.converter.CloudEventConverter` interface from the `org.occurrent:cloudevent-converter` module (see [custom cloudevent converter](#custom-cloudevent-converter)). 
+All cloud event converters implements the `org.occurrent.application.converter.CloudEventConverter` interface from the `org.occurrent:occurrent-cloudevent-converter-api` module (see [custom cloudevent converter](#custom-cloudevent-converter)). 
 
 ### Generic CloudEvent Converter
 
