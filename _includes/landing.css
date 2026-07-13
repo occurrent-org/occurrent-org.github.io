@@ -269,6 +269,8 @@ nav ul li a:hover {
 .compare-col {
     flex: 1 1 calc(50% - 12px);
     min-width: 280px;
+    display: flex;
+    flex-direction: column;
 }
 
 .compare-col h3 {
@@ -277,9 +279,29 @@ nav ul li a:hover {
     text-transform: none;
 }
 
+/* Stretch the code block to fill the column so both backgrounds line up even when
+   one example has more lines than the other. */
+.compare-col .single-snippet {
+    flex: 1;
+    display: flex;
+}
+
+.compare-col .single-snippet .highlighter-rouge {
+    flex: 1;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.compare-col .single-snippet .highlight {
+    flex: 1;
+}
+
 .compare .single-snippet pre {
     margin: 0;
     border-radius: 5px;
+    height: 100%;
+    box-sizing: border-box;
 }
 
 .compare .single-snippet pre code {
