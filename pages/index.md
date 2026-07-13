@@ -17,6 +17,37 @@ permalink: /
     </div>
 </div>
 
+{% capture streamDecider %}
+// One boundary per stream
+val game = Decider.create(
+    initialState, ::decide, ::evolve
+)
+applicationService.execute(gameId, command, game)
+{% endcapture %}
+{% capture dcbDecider %}
+// A boundary per decision, across entities
+val game = DcbDecider.create(
+    initialState, ::decide, ::evolve,
+    ::boundaryFor, ::tagsFor
+)
+dcbApplicationService.execute(command, game)
+{% endcapture %}
+
+<div class="landing whitepart">
+    <h1>Stream or DCB, the same decider</h1>
+    <p class="center comparecaption">Same <code>decide</code> and <code>evolve</code>. A DCB decider adds the consistency boundary the command reads and the tags for the events it writes, so a rule can span more than one entity without a shared stream.</p>
+    <div class="compare">
+        <div class="compare-col">
+            <h3 class="center">Stream</h3>
+            {% include kotlinSnippet.html kotlin=streamDecider %}
+        </div>
+        <div class="compare-col">
+            <h3 class="center">DCB</h3>
+            {% include kotlinSnippet.html kotlin=dcbDecider %}
+        </div>
+    </div>
+</div>
+
 <div class="landing whitepart">
     <h1>What is Occurrent?</h1>
     <div class="boxes">

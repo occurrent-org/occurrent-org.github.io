@@ -250,3 +250,66 @@ nav ul li a:hover {
     }
 
 }
+
+.comparecaption {
+    max-width: 760px;
+    margin: 0 auto 28px;
+    color: #444;
+}
+
+.compare {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px;
+    max-width: 1000px;
+    margin: 0 auto;
+    text-align: left;
+}
+
+.compare-col {
+    flex: 1 1 calc(50% - 12px);
+    min-width: 280px;
+    display: flex;
+    flex-direction: column;
+}
+
+.compare-col h3 {
+    margin: 0 0 8px;
+    font-weight: 500;
+    text-transform: none;
+}
+
+/* Stretch the code block to fill the column so both backgrounds line up even when
+   one example has more lines than the other. */
+.compare-col .single-snippet {
+    flex: 1;
+    display: flex;
+}
+
+.compare-col .single-snippet .highlighter-rouge {
+    flex: 1;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.compare-col .single-snippet .highlight {
+    flex: 1;
+}
+
+.compare .single-snippet pre {
+    margin: 0;
+    border-radius: 5px;
+    height: 100%;
+    box-sizing: border-box;
+}
+
+.compare .single-snippet pre code {
+    font-size: 13px;
+}
+
+@media (max-width: 700px) {
+    .compare-col {
+        flex-basis: 100%;
+    }
+}
