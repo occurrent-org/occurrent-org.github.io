@@ -1,32 +1,32 @@
 {% capture maven %}
 <dependency>
     <groupId>org.occurrent</groupId>
-    <artifactId>reactor-durable-subscription</artifactId>
+    <artifactId>occurrent-subscription-durable-reactor</artifactId>
     <version>{{site.occurrentversion}}</version>
 </dependency>
 {% endcapture %}
 
 {% capture gradle %}
-compile 'org.occurrent:reactor-durable-subscription:{{site.occurrentversion}}'
+compile 'org.occurrent:occurrent-subscription-durable-reactor:{{site.occurrentversion}}'
 {% endcapture %}
 
 {% capture sbt %}
-libraryDependencies += "org.occurrent" % "reactor-durable-subscription" % "{{site.occurrentversion}}"
+libraryDependencies += "org.occurrent" % "occurrent-subscription-durable-reactor" % "{{site.occurrentversion}}"
 {% endcapture %}
 
 {% capture grape %}
-@Grab(group='org.occurrent', module='reactor-durable-subscription', version='{{site.occurrentversion}}') 
+@Grab(group='org.occurrent', module='occurrent-subscription-durable-reactor', version='{{site.occurrentversion}}') 
 {% endcapture %}
 
 {% capture leiningen %}
-[org.occurrent/reactor-durable-subscription "{{site.occurrentversion}}"]
+[org.occurrent/occurrent-subscription-durable-reactor "{{site.occurrentversion}}"]
 {% endcapture %}
 
 {% capture buildr %}
-'org.occurrent:reactor-durable-subscription:jar:{{site.occurrentversion}}'
+'org.occurrent:occurrent-subscription-durable-reactor:jar:{{site.occurrentversion}}'
 {% endcapture %}
 
 {% capture ivy %}
-<dependency org="org.occurrent" name="reactor-durable-subscription" rev="{{site.occurrentversion}}" />
+<dependency org="org.occurrent" name="occurrent-subscription-durable-reactor" rev="{{site.occurrentversion}}" />
 {% endcapture %}
 {% include macros/mavenSnippet.html maven=maven gradle=gradle sbt=sbt grape=grape leiningen=leiningen buildr=buildr ivy=ivy%}

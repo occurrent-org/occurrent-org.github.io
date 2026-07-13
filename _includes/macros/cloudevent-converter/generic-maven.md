@@ -1,32 +1,32 @@
 {% capture maven %}
 <dependency>
     <groupId>org.occurrent</groupId>
-    <artifactId>cloudevent-converter-generic</artifactId>
+    <artifactId>occurrent-cloudevent-converter-generic</artifactId>
     <version>{{site.occurrentversion}}</version>
 </dependency>
 {% endcapture %}
 
 {% capture gradle %}
-compile 'org.occurrent:cloudevent-converter-generic:{{site.occurrentversion}}'
+compile 'org.occurrent:occurrent-cloudevent-converter-generic:{{site.occurrentversion}}'
 {% endcapture %}
 
 {% capture sbt %}
-libraryDependencies += "org.occurrent" % "cloudevent-converter-generic" % "{{site.occurrentversion}}"
+libraryDependencies += "org.occurrent" % "occurrent-cloudevent-converter-generic" % "{{site.occurrentversion}}"
 {% endcapture %}
 
 {% capture grape %}
-@Grab(group='org.occurrent', module='cloudevent-converter-generic', version='{{site.occurrentversion}}') 
+@Grab(group='org.occurrent', module='occurrent-cloudevent-converter-generic', version='{{site.occurrentversion}}') 
 {% endcapture %}
 
 {% capture leiningen %}
-[org.occurrent/cloudevent-converter-generic "{{site.occurrentversion}}"]
+[org.occurrent/occurrent-cloudevent-converter-generic "{{site.occurrentversion}}"]
 {% endcapture %}
 
 {% capture buildr %}
-'org.occurrent:cloudevent-converter-generic:jar:{{site.occurrentversion}}'
+'org.occurrent:occurrent-cloudevent-converter-generic:jar:{{site.occurrentversion}}'
 {% endcapture %}
 
 {% capture ivy %}
-<dependency org="org.occurrent" name="cloudevent-converter-generic" rev="{{site.occurrentversion}}" />
+<dependency org="org.occurrent" name="occurrent-cloudevent-converter-generic" rev="{{site.occurrentversion}}" />
 {% endcapture %}
 {% include macros/mavenSnippet.html maven=maven gradle=gradle sbt=sbt grape=grape leiningen=leiningen buildr=buildr ivy=ivy%}

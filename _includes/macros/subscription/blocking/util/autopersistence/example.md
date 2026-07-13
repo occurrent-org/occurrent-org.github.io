@@ -1,10 +1,10 @@
 {% capture java %}
 // Create the non-durable blocking subscription instance 
-PositionAwareBlockingSubscription nonDurableSubscriptionModel = ...
+CheckpointAwareSubscriptionModel nonDurableSubscriptionModel = ...
 // Create the storage
-SubscriptionPositionStorage storage = ...
+CheckpointStorage storage = ...
 
-// Now combine the non-durable subscription model and the subscription position storage
+// Now combine the non-durable subscription model and the checkpoint storage
 SubscriptionModel durableSubscriptionModel = new DurableSubscriptionModel(nonDurableSubscriptionModel, storage);
 
 // Start a subscription
@@ -13,12 +13,12 @@ durableSubscriptionModel.subscribe("mySubscriptionId", cloudEvent -> doSomething
 
 {% capture kotlin %}
 // Create the non-durable blocking subscription instance 
-val nonDurableSubscriptionModel : PositionAwareBlockingSubscription = ...
+val nonDurableSubscriptionModel : CheckpointAwareSubscriptionModel = ...
 // Create the storage
-val storage : SubscriptionPositionStorage = ...
+val storage : CheckpointStorage = ...
 
-// Now combine the non-durable subscription model and the subscription position storage
-val durableSubscriptionModel : SubscriptionModel = new DurableSubscriptionModel(nonDurableSubscriptionModel, storage)
+// Now combine the non-durable subscription model and the checkpoint storage
+val durableSubscriptionModel : SubscriptionModel = DurableSubscriptionModel(nonDurableSubscriptionModel, storage)
 
 // Start a subscription
 durableSubscriptionModel.subscribe("mySubscriptionId") { cloudEvent -> doSomethingWithTheCloudEvent(cloudEvent) };
