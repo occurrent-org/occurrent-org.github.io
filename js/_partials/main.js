@@ -65,7 +65,6 @@ if (document.location.pathname.includes("/documentation")) {
         "catch-up-subscription-blocking" : "0.1.1",
         "application-service" : "0.2.0",
         "command-composition" : "0.2.0",
-        "command-conversion" : "0.2.0",
         "subscription-dsl" : "0.5.0",
         "subscription-life-cycle--testing-blocking" : "0.7.0",
         "retry-configuration-blocking" : "0.7.0",
@@ -87,8 +86,13 @@ if (document.location.pathname.includes("/documentation")) {
         // "cdn-webjars": "3.8.0",
     };
     Object.keys(addedTags).forEach(key => {
-        document.getElementById(key).classList.add("added-parent");
-        document.getElementById(key).insertAdjacentHTML("beforeend",
+        // Skip labels whose section no longer exists, so a stale entry can't abort the rest of this script (which wires up the code tabs).
+        const element = document.getElementById(key);
+        if (element === null) {
+            return;
+        }
+        element.classList.add("added-parent");
+        element.insertAdjacentHTML("beforeend",
                 `<span class="added-in">Added in v${addedTags[key]}</span>`
         )
     });
