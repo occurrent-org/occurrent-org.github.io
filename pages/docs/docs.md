@@ -1672,7 +1672,7 @@ You may also want to look into the "todo-list" pattern described in the [automat
 ### Synchronous Policy
 
 In some cases, for example if you have a simple website and you want views to be updated when a command is dispatched by a REST API, it can be useful to update a policy in a synchronous fashion. The application service
-provided by Occurrent allows for this, please see the [application service documentation](#application-service-side-effects) for an example.    
+provided by Occurrent allows for this through a synchronous `SideEffect` that runs as part of executing the command, please see the [application service documentation](#application-service-side-effects) for an example.    
 
 ## Snapshots
 <div class="comment">Using snapshots is an advanced technique and it shouldn't be used unless it's really necessary.</div>
@@ -1897,7 +1897,7 @@ If you don't want to use any of the Occurrent libraries for deadline scheduling,
 
 <div class="notification">Occurrent {{site.occurrentversion}} requires <b>Java 21</b> or later (earlier versions required Java 17).</div>
 
-<div class="comment">If you're using Spring Boot, you might consider using the <a href="#spring-boot-starter">spring-boot-starter</a> project to get started quickly. Then you can return to this section.</div>
+<div class="comment">If you're using Spring Boot, consider a Spring Boot starter, which auto-configures most of the steps below for you. There's a <a href="#spring-boot-starter">blocking starter</a> and a <a href="#reactive-spring-boot-starter">reactive starter</a>. You can then return to this section for the underlying concepts.</div>
 
 Getting started with Occurrent involves these steps:
 <div class="comment">It's recommended to read up on <a href="#cloudevents">CloudEvent's</a> and its <a href="{{cloudevents_spec}}">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
