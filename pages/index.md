@@ -34,7 +34,7 @@ dcbApplicationService.execute(command, game)
 {% endcapture %}
 
 <div class="landing whitepart">
-    <h1>Stream or DCB, the same decider</h1>
+    <h1>Stream or DCB, the same domain model</h1>
     <p class="center comparecaption">Same <code>decide</code> and <code>evolve</code>. A DCB decider adds the consistency boundary the command reads and the tags for the events it writes, so a rule can span more than one entity without a shared stream.</p>
     <div class="compare">
         <div class="compare-col">
