@@ -2900,16 +2900,20 @@ It's possible to integrate [Decider's](#decider) with an [ApplicationService](#a
 
 ### Java<a id="application-service-decider-java"></a>
 
-To use the existing [ApplicationService](#application-service) infrastructure with Deciders from Java, you can do like this:
-
+To use the existing [ApplicationService](#application-service) infrastructure with Deciders from Java, wrap it in a `DeciderApplicationService`, the Java counterpart to the Kotlin `execute(streamId, command, decider)` extension:
 
 ```java
 ApplicationService<Event> applicationService = ...
 Command command = ...
 
-// The decider works with a List<Event>, which is exactly what the ApplicationService now expects,
-// so you can pass the decision function straight to execute.
-var writeResult = applicationService.execute("streamId", events -> decider.decideOnEventsAndReturnEvents(events, defineName));
+var deciderApplicationService = new DeciderApplicationService<>(applicationService);
+var writeResult = deciderApplicationService.execute("streamId", command, decider);
+```
+
+The decider's event type must match the application service's event type. If the decider only handles a subset of the events, for example one feature's events while the application service handles them all, convert it to the service's event type first with `Decider.adapt(...)`. If you would rather not introduce the facade, the decider works with a `List<Event>`, which is exactly what the `ApplicationService` expects, so you can pass the decision function straight to `execute`:
+
+```java
+var writeResult = applicationService.execute("streamId", events -> decider.decideOnEventsAndReturnEvents(events, command));
 ```
 
 
@@ -3221,7 +3225,7 @@ val tagGenerator: TagGenerator<StudentEnrolledInCourse> = AnnotationTagGenerator
 
 A `DcbDecider` couples three things a feature would otherwise have to keep in sync by hand: the plain `Decider` (decide and evolve), a function from command to the `DcbCriteria` boundary that command needs, and a `TagGenerator` for the events it emits. Build one with `DcbDecider.create(...)` (or `DcbDecider.from` around an existing `Decider`), or the Kotlin `dcbDecider(...)` factory, which reads a little more naturally at the call site. In Kotlin you can also turn an existing `Decider` into a `DcbDecider` with the `toDcb { ... }` extension, supplying the `criteria` and `tags` for the boundary.
 
-Once a decider is a `DcbDecider`, it is self-describing: given a command, it knows both what to decide and where to read from. The Kotlin DSL's `execute(command, dcbDecider)` puts that to work directly: it asks the decider for the command's boundary, reads the matching events, decides, tags the new events with the decider's own `TagGenerator`, and appends, all without you naming a `DcbCriteria` at the call site.
+Once a decider is a `DcbDecider`, it is self-describing: given a command, it knows both what to decide and where to read from. Running it is a single call, the Kotlin DSL's `execute(command, dcbDecider)` or, from Java, a `DcbDeciderApplicationService` wrapping the DCB application service. Either one asks the decider for the command's boundary, reads the matching events, decides, tags the new events with the decider's own `TagGenerator`, and appends, all without you naming a `DcbCriteria` at the call site.
 
 {% capture java %}
 DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> enrollmentDecider = DcbDecider.create(
@@ -3232,8 +3236,11 @@ DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> enrollmentDecider = DcbD
         event -> tagsFor(event)
 );
 
-// The decider knows its own read boundary for a given command
-DcbCriteria boundary = enrollmentDecider.criteria().apply(new EnrollStudent(courseId, studentId));
+// DcbDeciderApplicationService resolves the boundary, decides, tags, and appends in one call
+var deciderApplicationService = new DcbDeciderApplicationService<>(applicationService);
+Optional<DcbAppendResult> result = deciderApplicationService.execute(
+        new EnrollStudent(courseId, studentId),
+        enrollmentDecider);
 {% endcapture %}
 {% capture kotlin %}
 val enrollmentDcbDecider: DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> = dcbDecider(
