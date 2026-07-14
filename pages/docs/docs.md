@@ -111,6 +111,7 @@ permalink: /documentation
 * * * [Event Metadata](#event-metadata)
 * * * [Startup Mode](#subscription-startup-mode)
 * [Upgrading](#upgrading)
+* [Examples](#examples)
 * [Blogs](#blogs)
 * [Contact & Support](#contact--support)
 * [Credits](#credits)
@@ -3714,6 +3715,27 @@ For the {{site.occurrentversion}} release, add the `rewrite-maven-plugin`, point
 0.30.0 also renamed the module artifact coordinates (every artifact now has an `occurrent-` prefix). See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.30.0.md) for the full old to new mapping.
 
 If you are upgrading an existing MongoDB deployment, note that stream `position` is on by default for new stores, but the events already in your collection have none. The store detects this at startup and turns position off for itself rather than triggering a surprise index build on your existing data. To backfill `position` onto those old events and use position-based catch-up against them, follow the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) and its [tool](https://github.com/johanhaleby/occurrent/blob/main/eventstore/migration/position-backfill/README.md).
+
+# Examples
+
+The [`example`](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example) folder in the repository has runnable, tested applications that put the concepts on this page together. The table below points to the most instructive ones and highlights which Occurrent features each demonstrates. Every link is pinned to the `{{site.occurrentversion}}` release.
+
+| Example | What it shows | Occurrent features |
+|:--------|:--------------|:-------------------|
+| [Number guessing game](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/number-guessing-game) | A guess-the-secret-number game in plain Java, wired up two ways: the native MongoDB driver and Spring Boot (blocking). | `GenericApplicationService`, native and Spring (blocking) MongoDB event stores, subscription-based read models, side-effects (policies), integration events, `CloudEventConverter` |
+| [Word guessing game](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/word-guessing-game) | A hangman-style word game as a full feature-sliced CQRS app on Spring Boot, in both a classic stream version and a DCB version. | Blocking subscriptions, subscription-driven side-effects (reveal hint, award points, email winner), MongoDB read models with the Query DSL, `CloudEventConverter`, DCB, jqwik property tests |
+| [Rock paper scissors](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/rps) | The same game modelled several ways (pragmatic, single-round and multi-round `Decider`), plus a Spring Boot web app that plays it. | `Decider` DSL, combining and multi-round deciders, Spring Boot starter (`@EnableOccurrent`), CQRS gameplay and views, blocking subscriptions |
+| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/uno) | The Uno card game as a pure event-sourced model, run against the native MongoDB driver and Spring. | Event-sourced model, native and Spring MongoDB event stores, `GenericApplicationService`, command composition, `NativeMongoSubscriptionModel` |
+| [Mastermind](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/mastermind) | The Mastermind board game modelled with the `Decider` pattern, playable against the computer. | `Decider` DSL, in-memory event store, `ApplicationService` |
+| [Course enrollment](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/course-enrollment) | Enrolling a student holds a course-capacity rule and a per-student limit at once, across two entities, using DCB. | DCB, blocking `DcbApplicationService`, `dcbDecider` DSL, Spring Boot starter auto-configuration, conditional append with retry |
+| [Hotel booking](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/hotel-booking) | The reactive twin of course enrollment: no double-booking a room, a per-guest active-booking limit, and a live SSE activity feed. | Reactive DCB, reactive `DcbApplicationService`, DCB subscription DSL (SSE feed), reactive Spring Boot starter, cross-boundary deciders |
+| [Appointment scheduling](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/appointment-scheduling) | A clinic scheduler that books a clinician, patient and time slot under one consistency boundary, in plain Java with no Spring. | DCB on the native MongoDB store, plain Java `Decider`s with a hand-built `DcbCriteria`, `@DcbTag` annotation tags (`AnnotationTagGenerator`), Javalin and j2html web |
+| [Global position catch-up](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/global-position-catchup) | The global `position` assigned to every event, and rebuilding a projection by replaying across streams in write order. | Global position, catch-up projections, `DomainEventQueries.readInPositionOrder`, in-memory event store, `withoutStreamPosition()` opt-out |
+| [Subscription-based projections](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-subscription-based-mongodb-projections) | Building a MongoDB read model by subscribing to the event stream. | Blocking subscriptions, MongoDB read models, `CloudEventConverter` |
+| [Transactional projection (blocking)](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-transactional-projection-mongodb) | Updating a projection in the same MongoDB transaction as the event append. | Blocking Spring MongoDB event store, same-transaction projections |
+| [Transactional projection (reactive)](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-reactor-transactional-projection-mongodb) | The reactive version of the transactional projection. | Reactive Spring MongoDB event store, same-transaction projections on Project Reactor |
+| [Ad-hoc event store queries](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-adhoc-eventstore-mongodb-queries) | Answering a query (most workouts completed) by querying the event store directly, with no separate read model. | `EventStore` queries, ad-hoc querying, Spring MongoDB |
+| [Forward to Spring events](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/forwarder/mongodb-subscription-to-spring-event) | Forwarding CloudEvents from a MongoDB subscription to Spring `ApplicationEvent`s. | Blocking subscriptions, Spring `ApplicationEventPublisher` integration |
 
 # Blogs
 
