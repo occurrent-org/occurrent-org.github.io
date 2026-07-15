@@ -3827,7 +3827,24 @@ streamSubscriptions(subscriptionModel, cloudEventConverter) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`ResumeStartPositions.replayThenResume(...)` (package `org.occurrent.subscription.api.blocking`, with a `replayThenResumeDcb(...)` counterpart returning a `DcbStartAt`) checks `checkpointStorage` for an existing checkpoint. It replays from the given position only when there isn't one yet, then resumes from the stored checkpoint on every later run. `@Projection` and `@DcbSubscription` run this same check internally for `resumeBehavior = DEFAULT`. This helper exposes it as a plain function so non-Spring code gets the same catch-up-then-resume behavior. `DcbProjectionRunner` in this DSL is a separate, live-only tool built for an ephemeral DCB subscription with no catch-up or checkpoint of its own, so a durable DCB read model outside the starter needs the lower-level `DcbCatchupSubscriptionModel` and the `DcbSubscriptions` DSL, with `replayThenResumeDcb(...)` feeding its `DcbStartAt`.
+The DCB side is the same. `DcbProjectionRunner` and the Kotlin `dcbSubscriptions { }` DSL both take a `DcbStartAt`, so given a catch-up-capable DCB model, for example a `DcbCatchupSubscriptionModel`, the same catch-up-then-resume recipe applies, computed with `replayThenResumeDcb(...)`:
+
+{% capture java %}
+DcbStartAt startAt = ResumeStartPositions.replayThenResumeDcb("registered-account-count", checkpointStorage, DcbStartAt.beginning());
+new DcbProjectionRunner<>(dcbCatchupSubscriptionModel, cloudEventConverter)
+        .project("registered-account-count", registeredAccountCount(), repository, startAt);
+{% endcapture %}
+{% capture kotlin %}
+val startAt = ResumeStartPositions.replayThenResumeDcb("registered-account-count", checkpointStorage, DcbStartAt.beginning())
+dcbSubscriptions(dcbCatchupSubscriptionModel, cloudEventConverter) {
+    project("registered-account-count", registeredAccountCount(), repository, startAt)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`ResumeStartPositions.replayThenResume(...)` (package `org.occurrent.subscription.api.blocking`, with the `replayThenResumeDcb(...)` counterpart returning a `DcbStartAt`) checks `checkpointStorage` for an existing checkpoint. It replays from the given position only when there isn't one yet, then resumes from the stored checkpoint on every later run. `@Projection` and `@DcbSubscription` run this same check internally for `resumeBehavior = DEFAULT`. These helpers expose it as plain functions so non-Spring code gets the same catch-up-then-resume behavior.
+
+Whether `DcbProjectionRunner` catches up from history and resumes durably, or only sees live events, depends entirely on the subscription model you hand it. Given a plain live DCB model with no catch-up support it is live-only, the same as pulling a query on demand. Given a catch-up-capable model like `DcbCatchupSubscriptionModel` it catches up and resumes durably across restarts, exactly like the stream `ProjectionRunner`. The `@Projection` annotation gives you the catch-up-capable path automatically by subscribing through the Spring catch-up composite.
 
 ## Reactive Spring Boot Starter
 
