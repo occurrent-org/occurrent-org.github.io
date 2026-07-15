@@ -103,6 +103,11 @@ permalink: /documentation
 * * [Subscription DSL](#subscription-dsl)
 * * [Query DSL](#query-dsl)
 * * * [DCB Query DSL](#dcb-query-dsl)
+* * [Projection DSL](#projection-dsl)
+* * * [Stored Read Model](#maintaining-a-stored-read-model)
+* * * [DCB Projections](#dcb-projections)
+* * * [Reading On Demand](#reading-on-demand)
+* * * [Read-your-writes](#read-your-writes)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
@@ -645,8 +650,8 @@ To get started with subscriptions refer to [Using Subscriptions](#using-subscrip
      
 ## Views
 
-Occurrent doesn't have any special components for creating views/projections. Instead, you simply create a [subscription](#subscriptions) in which you can create and store 
-the view as you find fit. But this doesn't have to be difficult! Here's a trivial example of a view that maintains the number of
+Occurrent has a higher-level [Projection DSL](#projection-dsl) for maintaining views/projections, described further down. You don't have to reach for it, though. At its simplest a view is just a [subscription](#subscriptions) in which you create and store 
+the view as you find fit. And even that doesn't have to be difficult! Here's a trivial example of a view that maintains the number of
 ended games. It does so by inceasing the "numberOfEndedGames" field in an (imaginary) database for each "GameEnded" event that is written to the event store:
 
 {% capture java %}
@@ -3611,6 +3616,99 @@ occurrent:
 
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.mongo.blocking.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentProperties.java)
 to find which configuration properties that are supported.
+
+## Projection DSL
+
+A read model is the read side's counterpart to a decider. A [decider](#decider) folds events into state and decides new events. A projection folds events into state that you read. Occurrent already gives you a [`View`](#views) for the pure fold, but a `View` on its own doesn't know which events feed it, which view instance an event updates, or where its state is stored. The projection DSL couples those together, so a feature describes its read model right next to its fold, the same way [`DcbDecider`](#coupling-a-decider-to-a-boundary) couples a decider with its boundary and tags on the write side.
+
+A `Projection<S, E, ID>` is a `View` plus an `id` function (which view instance an event updates) plus the event types the fold handles. You build one with a type-safe handler builder, registering a fold per event type:
+
+{% capture java %}
+Projection<Integer, CourseEvent, String> enrolledStudents =
+        Projection.<Integer, CourseEvent, String>builder(0)
+                .id(CourseEvent::courseId)
+                .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+val enrolledStudents = projection<Int, CourseEvent, String>(initialState = 0) {
+    id { event -> event.courseId }
+    on<StudentEnrolled> { count, _ -> count + 1 }
+    on<StudentUnenrolled> { count, _ -> count - 1 }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The builder both assembles the `View` and records the event types you registered handlers for, so the subscription that feeds the projection is filtered to exactly those events. There's no separate list of subscribed types to keep in sync with the fold. The fold returns the state unchanged for any event type without a handler, so it's always safe to point a projection at a broader stream than it handles. When you need to select on more than the event type, for example a subject, a source, or a time range, set an explicit `filter(...)` on the builder.
+
+### Maintaining a stored read model
+
+Hand the projection to a subscription runner and it does both halves of the work, starting the subscription and keeping the stored read model up to date as events arrive. Supply a `ViewStateRepository` (or a `MaterializedView`, or a Spring `MongoOperations` for the built-in Mongo view store):
+
+{% capture java %}
+ProjectionRunner.stream(subscriptionModel, cloudEventConverter)
+        .project("enrolled-students", enrolledStudents, repository);
+{% endcapture %}
+{% capture kotlin %}
+streamSubscriptions(subscriptionModel, cloudEventConverter) {
+    project("enrolled-students", enrolledStudents, repository)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, folds the event in, and saves the result. Use `subscriptions { }` (the capability-agnostic model) when the read model should see both stream-written and DCB-appended events, or `streamSubscriptions { }` for stream events only.
+
+### DCB projections
+
+On a DCB store a projection reads inside a consistency boundary rather than by event type alone. A `DcbProjection` adds a `DcbCriteria`, a tag filter, to a `Projection`. This is the read-side answer to a question such as "is this username already claimed?", scoped to the events tagged for that one username:
+
+{% capture kotlin %}
+fun isUsernameClaimed(username: String) =
+    dcbProjection<Boolean, AccountEvent, String>(initialState = false) {
+        tags("username:$username")
+        id { username }
+        on<AccountRegistered> { _, _ -> true }
+        on<AccountClosed>     { _, _ -> false }
+        on<UsernameChanged>   { _, event -> event.newUsername == username }
+    }
+{% endcapture %}
+{% capture java %}
+Projection<Boolean, AccountEvent, String> view =
+        Projection.<Boolean, AccountEvent, String>builder(false)
+                .id(event -> username)
+                .on(AccountRegistered.class, (state, event) -> true)
+                .on(AccountClosed.class,     (state, event) -> false)
+                .on(UsernameChanged.class,   (state, event) -> event.newUsername().equals(username))
+                .build();
+DcbProjection<Boolean, AccountEvent, String> isUsernameClaimed =
+        new DcbProjection<>(view, DcbCriteria.tags(Tag.parse("username:" + username)));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Feed it with a DCB subscription the same way you feed a stream projection: `dcbSubscriptions(dcbSubscriptionModel, cloudEventConverter) { project("...", isUsernameClaimed(username), repository) }`.
+
+### Reading on demand
+
+When you want a strongly consistent answer at the moment you ask, skip the subscription and fold a query straight into the projection. This reads the events in the boundary and returns the folded state, with no stored read model to keep in sync:
+
+{% capture kotlin %}
+val claimed: Boolean = dcbQueries.project(isUsernameClaimed("alice"))
+{% endcapture %}
+{% capture java %}
+boolean claimed = dcbProjectionRunner.project(isUsernameClaimed("alice"));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The same projection definition works both ways. Subscribe to keep a read model eventually consistent, or fold a query on demand for a strongly consistent read. The plain, non-DCB `DomainEventQueries` has the same `project` method.
+
+### Read-your-writes
+
+Register the projection on a synchronous subscription model and build the application service with it, and the read model updates inside the same transaction as the write. The projected state is then visible the moment `execute(...)` returns, with no eventual-consistency lag. This trades a little write latency for read-your-writes consistency, so reach for it when a command needs to see its own effect immediately.
+
+### Reactor
+
+Everything above has a reactor counterpart in `org.occurrent.dsl.projection.reactor` with the same shape. The push callbacks return `Mono<Void>`, the on-demand `project` returns `Mono<S>`, and you supply either a reactive update function for a reactive store or a blocking view store that the runner bridges onto a bounded-elastic scheduler.
 
 ## Reactive Spring Boot Starter
 
