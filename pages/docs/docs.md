@@ -108,6 +108,10 @@ permalink: /documentation
 * * * [DCB Projections](#dcb-projections)
 * * * [Reading On Demand](#reading-on-demand)
 * * * [Read-your-writes](#read-your-writes)
+* * * [The `@Projection` Annotation](#the-projection-annotation)
+* * * * [Store](#projection-annotation-store)
+* * * * [Read-your-writes (Synchronous Mode)](#projection-annotation-synchronous)
+* * * * [Without the Starter](#projection-annotation-without-starter)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
@@ -3709,6 +3713,121 @@ Register the projection on a synchronous subscription model and build the applic
 ### Reactor
 
 Everything above has a reactor counterpart in `org.occurrent.dsl.projection.reactor` with the same shape. The push callbacks return `Mono<Void>`, the on-demand `project` returns `Mono<S>`, and you supply either a reactive update function for a reactive store or a blocking view store that the runner bridges onto a bounded-elastic scheduler.
+
+### The `@Projection` annotation {#the-projection-annotation}
+
+If you're on the [Spring Boot Starter](#spring-boot-starter), you don't have to wire up a `ProjectionRunner` yourself. Annotate a factory method that returns a `Projection` or `DcbProjection` with `org.occurrent.annotation.Projection`, and the framework registers it as a persistent read model for you. It subscribes through the same catch-up, durable-resume, and [competing-consumer](#competing-consumer-subscription-blocking) machinery as [`@Subscription` and `@DcbSubscription`](#spring-boot-annotations), for both a stream `Projection` and a `DcbProjection`:
+
+{% capture java %}
+import org.occurrent.annotation.Projection;
+
+@Configuration
+class ProjectionConfig {
+
+    @Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING)
+    org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledStudents() {
+        return org.occurrent.dsl.projection.Projection.<Integer, CourseEvent, String>builder(0)
+                .id(CourseEvent::courseId)
+                .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                .build();
+    }
+}
+{% endcapture %}
+{% capture kotlin %}
+import org.occurrent.annotation.Projection
+
+@Configuration
+class ProjectionConfig {
+
+    @Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING)
+    fun enrolledStudents() = projection<Int, CourseEvent, String>(initialState = 0) {
+        id { event -> event.courseId }
+        on<StudentEnrolled> { count, _ -> count + 1 }
+        on<StudentUnenrolled> { count, _ -> count - 1 }
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The annotation and the DSL's descriptor class share the name `Projection`, so a Java factory method needs to qualify one of them, as above. Kotlin doesn't have this problem since the DSL's entry point is the lowercase `projection` function.
+
+`@Projection` takes:
+
+| Attribute | Description |
+|:----------|:-------------|
+| `id` | The subscription id (required). |
+| `startAt` | `Projection.StartPosition.BEGINNING`, `NOW`, or `DEFAULT`. Same start-position idea as [`@Subscription`'s `startAt`](#subscription-start-position), but note the constant is named `BEGINNING` here, not `BEGINNING_OF_TIME`. |
+| `startAtPosition` | Start after a specific global or DCB position instead, to rewind a durable read model to a known-good point. Mutually exclusive with a non-default `startAt`. |
+| `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](#subscription-start-position) as `@Subscription`. |
+| `startupMode` | `DEFAULT`, `WAIT_UNTIL_STARTED`, or `BACKGROUND`, the same [startup-mode idea](#subscription-startup-mode) as `@Subscription`. |
+| `capability` | `AGNOSTIC` (both stream and DCB events) or `STREAM` (stream events only). Only read for a `Projection` factory. A `DcbProjection` factory ignores it and always subscribes over its own `DcbCriteria`. |
+| `mode` | `ASYNC` (the default) or `SYNCHRONOUS`, see below. |
+| `store` | The bean name of the `ViewStateRepository`, `MaterializedView`, or Spring Data `CrudRepository` to materialize into. Left empty, the framework resolves a store by convention, typically the configured MongoDB one. |
+
+`startAt`, `startAtPosition`, and `resumeBehavior` are mutually exclusive with `mode = SYNCHRONOUS`. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
+
+On a DCB store, point the factory method at a `DcbProjection` instead and the subscription runs inside that projection's `DcbCriteria` rather than by event type. A factory that takes a parameter, like [`isUsernameClaimedProjection(username)`](#dcb-projections), doesn't fit here, `@Projection` calls the factory once with no arguments. Use a `DcbCriteria` broad enough to cover every instance the read model needs, and let the fold's `id` function pick out which instance each event belongs to:
+
+{% capture kotlin %}
+import org.occurrent.annotation.Projection
+
+@Configuration
+class ProjectionConfig {
+
+    @Projection(id = "registered-account-count")
+    fun registeredAccountCount() = dcbProjection<Int, AccountEvent, String>(initialState = 0) {
+        criteria(DcbCriteria.type(AccountRegistered::class.java))
+        id { "registered-account-count" }
+        on<AccountRegistered> { count, _ -> count + 1 }
+    }
+}
+{% endcapture %}
+{% capture java %}
+import org.occurrent.annotation.Projection;
+
+@Configuration
+class ProjectionConfig {
+
+    @Projection(id = "registered-account-count")
+    DcbProjection<Integer, AccountEvent, String> registeredAccountCount() {
+        org.occurrent.dsl.projection.Projection<Integer, AccountEvent, String> view =
+                org.occurrent.dsl.projection.Projection.<Integer, AccountEvent, String>builder(0)
+                        .id(event -> "registered-account-count")
+                        .on(AccountRegistered.class, (count, event) -> count + 1)
+                        .build();
+        return new DcbProjection<>(view, DcbCriteria.type(AccountRegistered.class));
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+#### Store {#projection-annotation-store}
+
+Materializing the projection is store-agnostic. Point `store` at any bean implementing `ViewStateRepository`, `MaterializedView`, or Spring Data's `CrudRepository`, or leave it empty for the default MongoDB view store. It's the same store abstraction [`ProjectionRunner.project(...)`](#maintaining-a-stored-read-model) already takes as a method argument, just resolved by bean name instead.
+
+#### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
+
+`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
+
+#### Without the starter {#projection-annotation-without-starter}
+
+The starter is optional. `ProjectionRunner.project(...)` already takes a `StartAt` directly, so a plain (non-Spring) caller wiring its own catch-up-capable subscription model, for example a `CatchupSubscriptionModel`, gets the same behavior by computing the position itself:
+
+{% capture java %}
+StartAt startAt = ResumeStartPositions.replayThenResume("enrolled-students", checkpointStorage, StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()));
+ProjectionRunner.stream(subscriptionModel, cloudEventConverter)
+        .project("enrolled-students", enrolledStudents, repository, startAt);
+{% endcapture %}
+{% capture kotlin %}
+val startAt = ResumeStartPositions.replayThenResume("enrolled-students", checkpointStorage, StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()))
+streamSubscriptions(subscriptionModel, cloudEventConverter) {
+    project("enrolled-students", enrolledStudents, repository, startAt)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`ResumeStartPositions.replayThenResume(...)` (package `org.occurrent.subscription.api.blocking`, with a `replayThenResumeDcb(...)` counterpart returning a `DcbStartAt`) checks `checkpointStorage` for an existing checkpoint. It replays from the given position only when there isn't one yet, then resumes from the stored checkpoint on every later run. `@Projection` and `@DcbSubscription` run this same check internally for `resumeBehavior = DEFAULT`. This helper exposes it as a plain function so non-Spring code gets the same catch-up-then-resume behavior. `DcbProjectionRunner` in this DSL is a separate, live-only tool built for an ephemeral DCB subscription with no catch-up or checkpoint of its own, so a durable DCB read model outside the starter needs the lower-level `DcbCatchupSubscriptionModel` and the `DcbSubscriptions` DSL, with `replayThenResumeDcb(...)` feeding its `DcbStartAt`.
 
 ## Reactive Spring Boot Starter
 
