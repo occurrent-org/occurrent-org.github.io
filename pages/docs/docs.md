@@ -642,6 +642,8 @@ Note that it's fine to use reactive `SubscriptionModel`, even though the event s
 If the datastore allows it, you can also run subscriptions in a different process than the processes reading and writing to the event store.   
 
 To get started with subscriptions refer to [Using Subscriptions](#using-subscriptions).
+
+Independently of the blocking-versus-reactive choice above, a subscription is either asynchronous or synchronous. Everything so far is asynchronous: it runs on its own thread and fires after the write commits. A [synchronous subscription](#synchronous-subscriptions) instead runs inline on the writer thread, before `execute` returns, so it can update a projection in the write path and, with a transaction, atomically with the write.
      
 ## Views
 
@@ -1403,6 +1405,8 @@ This is now the preferred API for new code.
 
 The lower-level `SideEffect.executeSideEffect(...)` helper (formerly `PolicySideEffect.executePolicy(...)`) still exists, but it is no longer the recommended primary approach.
 If you are documenting or writing new synchronous side-effect code, prefer `ExecuteOptions.sideEffect(...)`.
+
+A side effect is not the same as a [synchronous subscription](#synchronous-subscriptions). A side effect is a closure you pass at each call site, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does. Reach for a synchronous subscription when the reaction should be declared once and decoupled from the call, or should commit atomically with the write through a `TransactionExecutor`.
 
 ### Java Examples
 
@@ -2826,6 +2830,114 @@ that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionMod
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
 
+## Synchronous Subscriptions
+
+The subscriptions described so far are asynchronous. They run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
+
+Sometimes you want the opposite. A synchronous subscription runs on the writer thread, before `execute` returns, so a projection is updated in the same call that produced the events, and (when a transaction is available) in the same transaction as the write. You declare it once, decoupled from the call site, exactly the way you declare an asynchronous subscription, but the application service invokes it inline on every matching write instead of off a change stream.
+
+This mirrors the split Axon draws between a Subscribing Event Processor, which runs in the publishing thread inside the publish transaction and can roll it back, and a Tracking Event Processor, which runs on its own thread with a token store for replay. The synchronous-versus-asynchronous choice belongs to the subscription, not to the command, so there is no per-`execute` flag.
+
+Reach for a synchronous subscription when the reaction must be visible the moment `execute` returns, or must commit atomically with the write. Keep using an asynchronous [subscription](#subscriptions) for anything that should run cluster-wide, replay from history, or survive a crash. Note also that this is a different tool from a [synchronous side effect](#synchronous-side-effects). A side effect is a per-call closure passed at the call site through `ExecuteOptions.sideEffect(...)`, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does.
+
+### Semantics
+
+* **Single writer, local only.** A synchronous subscription reacts only to events written through the local application-service instance, on that writer's thread. It does not see events written by another instance or through a different path. For cluster-wide reaction, use an asynchronous subscription.
+* **No replay or catch-up.** There is no checkpoint, resume, or catch-up. A synchronous subscription reacts only to the events handed to it here and now.
+* **Enriched events.** The handler receives the just-written events as the store recorded them, carrying `streamVersion` and the global `position`, so `EventMetadata` is fully populated and filters work on every attribute.
+* **No free lunch.** Enabling synchronous subscriptions adds one read per event-producing write, to recover the global `position` for the handler. You pay it only while at least one synchronous subscription is registered. An application that declares none does exactly what it did before, with no extra read.
+* **Reentrancy and latency.** The handler runs on the writer thread, inside the transaction when there is one, so a handler that calls `execute` again re-enters on the same thread, and a slow handler directly increases write latency and lock-hold time. Keep synchronous handlers small, and do not let one issue a command that re-triggers itself.
+
+### The transaction model
+
+By default a synchronous subscription is best-effort. The handler runs before `execute` returns, but the write has already committed, so a handler that throws does not roll it back. The events stay, and `execute` still surfaces the exception. This is the deliberate trade for running in the write path with no transaction.
+
+To make the write and the handlers commit or roll back together, configure a `TransactionExecutor` (`org.occurrent.application.service.TransactionExecutor`, in the `occurrent-application-service-common` module) on the application service. It defaults to `TransactionExecutor.noTransaction()`, a pass-through. Two real executors ship:
+
+* **Spring.** The [Spring Boot Starter](#spring-boot-starter) wires a `SpringTransactionExecutor` (backed by `TransactionTemplate`, or `TransactionalOperator` on the reactive starter) by default, so a `@SynchronousSubscription` handler that writes to the same MongoDB commits atomically with the event write, without a call-site `@Transactional`.
+* **Native, no Spring.** `NativeMongoTransactionExecutor` (module `occurrent-application-service-transaction-mongodb-native`) opens a MongoDB `ClientSession` and transaction that the native event store's write joins, giving a no-Spring application the same atomic guarantee.
+
+A handler's own `@Transactional` composes with this. On the same datastore it joins the write's transaction, so the two are atomic. On a different datastore it opens its own transaction, which commits independently and is never atomic with the event write, because there is no distributed transaction. For a handler's `@Transactional` to take effect at all, the annotation processor invokes the handler through its Spring proxy rather than the raw target.
+
+Best-effort against transactional, side by side:
+
+| | With a `TransactionExecutor` (for example Spring) | `noTransaction()` (best-effort default) |
+|---|---|---|
+| Handler runs | before commit, in the write transaction | after the store already committed |
+| Handler throws | write and handler roll back together | events stay committed, `execute` still throws |
+| Crash mid-way | nothing committed, safe | the reaction can be lost, with no replay |
+| Guarantee | atomic, exactly-once with the write | synchronous, at-most-once, no rollback |
+
+If handler side effects matter, prefer a `TransactionExecutor`. The best-effort default is a real footgun, because an `execute` exception then means the write may already have succeeded.
+
+### Without Spring
+
+Register handlers on a `SynchronousSubscriptionModel` through the ordinary [Subscription DSL](#subscription-dsl), then hand that model to the application-service builder. The blocking model is in `occurrent-subscription-synchronous-blocking`, and its reactive twin in `occurrent-subscription-synchronous-reactor`.
+
+{% capture java %}
+SynchronousSubscriptionModel synchronous = new SynchronousSubscriptionModel();
+
+// Declare the handlers once, through the same Subscriptions DSL used for async subscriptions.
+Subscriptions<DomainEvent> subscriptions = new Subscriptions<>(synchronous, cloudEventConverter);
+subscriptions.subscribe("ongoing-games", GameStarted.class, event -> someDatabase.registerOngoing(event));
+
+// Drive them from the application service, atomically via a ClientSession-backed executor.
+ApplicationService<DomainEvent> applicationService =
+        GenericApplicationService.builder(eventStore, cloudEventConverter)
+                .synchronousSubscriptions(synchronous)
+                .transactionExecutor(new NativeMongoTransactionExecutor(mongoClient)) // optional, defaults to noTransaction()
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+val synchronous = SynchronousSubscriptionModel()
+
+// Declare the handlers once, through the same Subscriptions DSL used for async subscriptions.
+subscriptions(synchronous, cloudEventConverter) {
+    subscribe<GameStarted>("ongoing-games") { event -> someDatabase.registerOngoing(event) }
+}
+
+// Drive them from the application service, atomically via a ClientSession-backed executor.
+val applicationService = GenericApplicationService.builder(eventStore, cloudEventConverter)
+    .synchronousSubscriptions(synchronous)
+    .transactionExecutor(NativeMongoTransactionExecutor(mongoClient)) // optional, defaults to noTransaction()
+    .build()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Leave the `transactionExecutor(...)` call off to run best-effort with no transaction. The same builder and DSL exist on the reactive stack (a `ReactiveTransactionExecutor` and the reactive `SynchronousSubscriptionModel`) and on the DCB application services.
+
+### With Spring Boot
+
+Annotate a handler method with `@SynchronousSubscription` (`org.occurrent.annotation.SynchronousSubscription`). It is the synchronous counterpart of [`@Subscription`](#spring-boot-annotations) and carries only an `id` and optional `eventTypes`, none of the asynchronous-only knobs (`startAt`, `resumeBehavior`, `startupMode`), which have no meaning for at-write-time dispatch.
+
+{% capture java %}
+@Component
+public class OngoingGamesProjection {
+
+    // Runs on the writer thread, before execute() returns. With the starter's default
+    // transaction executor, it commits atomically with the event write.
+    @SynchronousSubscription(id = "ongoing-games")
+    public void on(GameStarted event) {
+        someDatabase.registerOngoing(event);
+    }
+}
+{% endcapture %}
+{% capture kotlin %}
+@Component
+class OngoingGamesProjection(private val someDatabase: Database) {
+
+    // Runs on the writer thread, before execute() returns. With the starter's default
+    // transaction executor, it commits atomically with the event write.
+    @SynchronousSubscription(id = "ongoing-games")
+    fun on(event: GameStarted) {
+        someDatabase.registerOngoing(event)
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Because the starter wires a Spring-backed `TransactionExecutor` by default, the handler above already commits atomically with the event write. Add `@Transactional` to the method to compose your own transaction on top. On the same MongoDB it joins the write's transaction, and on a different datastore it commits independently.
+
 # Decider
 
 As of version 0.17.0, Occurrent has basic support for [Deciders](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider). 
@@ -3417,6 +3529,8 @@ As of version {{site.occurrentversion}} this DSL comes in three flavors that mir
 
 Which one to reach for: `subscriptions(...)` is the default, for a read model or policy that reacts to events by type and does not care which write model produced them. On a store that has both capabilities it is the only flavor that sees stream-written and DCB-appended events together, filtered by type alone. Use `streamSubscriptions(...)` when a subscription must stay scoped to stream events, because it excludes DCB-appended events even on a store that has both, which matters when the consumer relies on classic stream and version semantics. Use [`DcbSubscriptions`](#subscribing-to-dcb-events) when you want DCB events selected by tags, for a short-lived, per-connection subscription you start and cancel yourself (such as a Server-Sent-Events feed), and reach for the [`@DcbSubscription`](#subscribing-to-dcb-events) annotation instead for a durable, framework-managed read model that catches up from history on startup.
 
+The same DSL also builds [synchronous subscriptions](#synchronous-subscriptions). Pass a `SynchronousSubscriptionModel` as the `Subscribable` instead of an asynchronous subscription model, and the handlers you register run inline on the writer thread, before `execute` returns, rather than off a change stream.
+
 If you're using Kotlin you can then define subscriptions like this:
 
 ```kotlin
@@ -3630,6 +3744,8 @@ you can create a subscription to _all_ events like this:
 Note that subscriptions started by the `Subscription` annotation will make use of [competing consumers](#competing-consumer-subscription-blocking) so that if you run multiple instances of the application one of them will receive the event(s).
 
 Since version {{site.occurrentversion}}, `@Subscription` is capability-neutral. On an event store that has both the stream and the DCB capability it delivers both stream-written and DCB-appended events, filtered by event type, with catch-up over the shared global position. Use `@StreamSubscription` when you want stream events only, and [`@DcbSubscription`](#subscribing-to-dcb-events) when you want DCB events only with tag-based filtering. `@StreamSubscription` is configured the same way as `@Subscription` described below, only scoped to stream events.
+
+All of these are asynchronous. For a handler that runs synchronously on the writer thread, before `execute` returns, and can commit atomically with the write, use [`@SynchronousSubscription`](#synchronous-subscriptions) instead. It is documented under [Synchronous Subscriptions](#synchronous-subscriptions).
 
 #### Subscription Start Position
 
