@@ -3716,6 +3716,8 @@ For the {{site.occurrentversion}} release, add the `rewrite-maven-plugin`, point
 
 If you are upgrading an existing MongoDB deployment, note that stream `position` is on by default for new stores, but the events already in your collection have none. The store detects this at startup and turns position off for itself rather than triggering a surprise index build on your existing data. To backfill `position` onto those old events and use position-based catch-up against them, follow the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) and its [tool](https://github.com/johanhaleby/occurrent/blob/main/eventstore/migration/position-backfill/README.md).
 
+0.31.0 also unifies the annotation `ResumeBehavior` and `StartupMode` enums into shared top-level `org.occurrent.annotation.ResumeBehavior` and `org.occurrent.annotation.StartupMode` types, instead of separate nested enums on `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, and `@Projection`. This is a breaking rename for 0.30.0 callers, and the `org.occurrent.UpgradeToOccurrent_0_31` recipe rewrites it for you. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.31.0.md) for the details.
+
 # Examples
 
 The [`example`](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example) folder in the repository has runnable, tested applications that put the concepts on this page together. The table below points to the most instructive ones and highlights which Occurrent features each demonstrates. Every link is pinned to the `{{site.occurrentversion}}` release.
