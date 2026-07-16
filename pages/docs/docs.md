@@ -3807,7 +3807,7 @@ class ProjectionConfig {
 
 #### Store {#projection-annotation-store}
 
-Materializing the projection is store-agnostic. Point `store` at any bean implementing `ViewStateRepository`, `MaterializedView`, or Spring Data's `CrudRepository`, or leave it empty for the default MongoDB view store. It's the same store abstraction [`ProjectionRunner.project(...)`](#maintaining-a-stored-read-model) already takes as a method argument, just resolved by bean name instead.
+Materializing the projection is store-agnostic. `store` selects the bean by type, `MaterializedView`, `ViewStateRepository`, or a `CrudRepository` subinterface on the blocking stack (no `CrudRepository` on reactive), and `storeName` selects by name on its own or alongside `store` to disambiguate. Leave both unset to fall back to the convention resolution described above. It's the same store abstraction [`ProjectionRunner.project(...)`](#maintaining-a-stored-read-model) already takes as a method argument, just resolved through the annotation instead of passed in code.
 
 #### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
 
