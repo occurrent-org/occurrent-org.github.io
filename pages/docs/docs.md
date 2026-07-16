@@ -3688,13 +3688,12 @@ streamSubscriptions(subscriptionModel, cloudEventConverter) {
 
 ### DCB projections
 
-On a DCB store a projection reads inside a consistency boundary rather than by event type alone. A `DcbProjection` adds a `DcbCriteria`, a tag filter, to a `Projection`. This is the read-side answer to a question such as "is this username already claimed?", scoped to the events tagged for that one username:
+On a DCB store a projection reads inside a consistency boundary rather than by event type alone. A `DcbProjection` adds a `DcbCriteria`, a tag filter, to a `Projection`. This is the read-side answer to a question such as "is this username already claimed?", scoped to the events tagged for that one username. There's one flag per username, and the tag boundary already pins the projection to a single username, so it folds into a single slot with no `id` function:
 
 {% capture kotlin %}
 fun isUsernameClaimed(username: String) =
-    dcbProjection<Boolean, AccountEvent, String>(initialState = false) {
+    dcbSingletonProjection<Boolean, AccountEvent>(initialState = false) {
         tags("username:$username")
-        id { username }
         on<AccountRegistered> { _, _ -> true }
         on<AccountClosed>     { _, _ -> false }
         on<UsernameChanged>   { _, event -> event.newUsername == username }
@@ -3703,7 +3702,7 @@ fun isUsernameClaimed(username: String) =
 {% capture java %}
 Projection<Boolean, AccountEvent, String> view =
         Projection.<Boolean, AccountEvent, String>builder(false)
-                .id(event -> username)
+                .singleton()
                 .on(AccountRegistered.class, (state, event) -> true)
                 .on(AccountClosed.class,     (state, event) -> false)
                 .on(UsernameChanged.class,   (state, event) -> event.newUsername().equals(username))
