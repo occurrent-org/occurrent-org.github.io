@@ -104,6 +104,7 @@ permalink: /documentation
 * * [Query DSL](#query-dsl)
 * * * [DCB Query DSL](#dcb-query-dsl)
 * * [Projection DSL](#projection-dsl)
+* * * [Single-instance Projections](#single-instance-projections)
 * * * [Stored Read Model](#maintaining-a-stored-read-model)
 * * * [DCB Projections](#dcb-projections)
 * * * [Reading On Demand](#reading-on-demand)
@@ -3625,7 +3626,7 @@ to find which configuration properties that are supported.
 
 A read model is the read side's counterpart to a decider. A [decider](#decider) folds events into state and decides new events. A projection folds events into state that you read. Occurrent already gives you a [`View`](#views) for the pure fold, but a `View` on its own doesn't know which events feed it, which view instance an event updates, or where its state is stored. The projection DSL couples those together, so a feature describes its read model right next to its fold, the same way [`DcbDecider`](#coupling-a-decider-to-a-boundary) couples a decider with its boundary and tags on the write side.
 
-A `Projection<S, E, ID>` is a `View` plus an `id` function (which view instance an event updates) plus the event types the fold handles. You build one with a type-safe handler builder, registering a fold per event type:
+A `Projection<S, E, ID>` is a `View` plus either an `id` function (which view instance an event updates) or, for a single-instance read model, no `id` at all (see [Single-instance projections](#single-instance-projections) below), plus the event types the fold handles. You build one with a type-safe handler builder, registering a fold per event type:
 
 {% capture java %}
 Projection<Integer, CourseEvent, String> enrolledStudents =
@@ -3645,6 +3646,28 @@ val enrolledStudents = projection<Int, CourseEvent, String>(initialState = 0) {
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 The builder both assembles the `View` and records the event types you registered handlers for, so the subscription that feeds the projection is filtered to exactly those events. There's no separate list of subscribed types to keep in sync with the fold. The fold returns the state unchanged for any event type without a handler, so it's always safe to point a projection at a broader stream than it handles. When you need to select on more than the event type, for example a subject, a source, or a time range, set an explicit `filter(...)` on the builder.
+
+### Single-instance projections
+
+`id` is required only for a keyed, multi-instance read model. A projection that folds into a single slot instead of one per key, for example a total across every course rather than a count per course, has no per-event key to derive, so it has no `id` function to write. Call `.singleton()` on the Java builder, or reach for the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
+
+{% capture java %}
+Projection<Integer, CourseEvent, String> totalEnrolledStudents =
+        Projection.<Integer, CourseEvent, String>builder(0)
+                .singleton()
+                .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+val totalEnrolledStudents = singletonProjection<Int, CourseEvent>(initialState = 0) {
+    on<StudentEnrolled> { count, _ -> count + 1 }
+    on<StudentUnenrolled> { count, _ -> count - 1 }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The framework keys the single stored slot by the projection's own runtime identity, the subscription id passed to `project(...)`, or the `@Projection` id, so on a document store the state's `@Id` must equal that identity, the same constraint as the keyed case. The DCB counterpart, `dcbSingletonProjection`, pairs the same singleton fold with a DCB read boundary. See the `registered-account-count` example under [the `@Projection` annotation](#the-projection-annotation).
 
 ### Maintaining a stored read model
 
@@ -3761,8 +3784,7 @@ import org.occurrent.annotation.Projection
 class CourseDashboardProjection {
 
     @Projection(id = "course-dashboard", startAt = Projection.StartPosition.BEGINNING, store = CourseDashboard::class)
-    fun courseDashboardProjection() = projection<DashboardState, DomainEvent, String>(initialState = DashboardState.EMPTY) {
-        id { event -> event.courseId }
+    fun courseDashboardProjection() = singletonProjection<DashboardState, DomainEvent>(initialState = DashboardState.EMPTY) {
         on<StudentEnrolled> { state, event -> state.withEnrollment(event) }
     }
 }
@@ -3789,7 +3811,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 
 With both `store` and `storeName` unset, the store resolves by convention: the unique `MaterializedView` bean, then `ViewStateRepository`, then `CrudRepository`, then the Mongo default on the blocking stack. The reactive stack has no Mongo default, so an unset pair only resolves there if a unique `MaterializedView` or `ViewStateRepository` bean exists. Naming a `store` type or a `storeName` with no matching bean is an error, not a silent fall-through to convention.
 
-On a DCB store, point the factory method at a `DcbProjection` instead and the subscription runs inside that projection's `DcbCriteria` rather than by event type. A factory that takes a parameter, like [`isUsernameClaimedProjection(username)`](#dcb-projections), doesn't fit here, `@Projection` calls the factory once with no arguments. Use a `DcbCriteria` broad enough to cover every instance the read model needs, and let the fold's `id` function pick out which instance each event belongs to:
+On a DCB store, point the factory method at a `DcbProjection` instead and the subscription runs inside that projection's `DcbCriteria` rather than by event type. A factory that takes a parameter, like [`isUsernameClaimedProjection(username)`](#dcb-projections), doesn't fit here, `@Projection` calls the factory once with no arguments. Use a `DcbCriteria` broad enough to cover every instance the read model needs. Here there's exactly one instance total, a count across every `AccountRegistered` event in the boundary, so the fold is `singleton()` rather than keyed by `id`:
 
 {% capture kotlin %}
 import org.occurrent.annotation.Projection
@@ -3798,9 +3820,8 @@ import org.occurrent.annotation.Projection
 class ProjectionConfig {
 
     @Projection(id = "registered-account-count")
-    fun registeredAccountCount() = dcbProjection<Int, AccountEvent, String>(initialState = 0) {
+    fun registeredAccountCount() = dcbSingletonProjection<Int, AccountEvent>(initialState = 0) {
         criteria(DcbCriteria.type(AccountRegistered::class.java))
-        id { "registered-account-count" }
         on<AccountRegistered> { count, _ -> count + 1 }
     }
 }
@@ -3815,7 +3836,7 @@ class ProjectionConfig {
     DcbProjection<Integer, AccountEvent, String> registeredAccountCount() {
         org.occurrent.dsl.projection.Projection<Integer, AccountEvent, String> view =
                 org.occurrent.dsl.projection.Projection.<Integer, AccountEvent, String>builder(0)
-                        .id(event -> "registered-account-count")
+                        .singleton()
                         .on(AccountRegistered.class, (count, event) -> count + 1)
                         .build();
         return new DcbProjection<>(view, DcbCriteria.type(AccountRegistered.class));
