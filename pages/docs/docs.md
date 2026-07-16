@@ -3752,6 +3752,25 @@ class ProjectionConfig {
 
 The annotation and the DSL's descriptor class share the name `Projection`, so a Java factory method needs to qualify one of them, as above. Kotlin doesn't have this problem since the DSL's entry point is the lowercase `projection` function.
 
+The factory method doesn't have to be a `@Bean` on a `@Configuration` class. The bean post-processor scans every Spring bean's declared methods for `@Projection`, so a plain `@Component` works too, and reads better for a single dedicated projection:
+
+{% capture kotlin %}
+import org.occurrent.annotation.Projection
+
+@Component
+class CourseDashboardProjection {
+
+    @Projection(id = "course-dashboard", startAt = Projection.StartPosition.BEGINNING, store = CourseDashboard::class)
+    fun courseDashboardProjection() = projection<DashboardState, DomainEvent, String>(initialState = DashboardState.EMPTY) {
+        id { event -> event.courseId }
+        on<StudentEnrolled> { state, event -> state.withEnrollment(event) }
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html kotlin=kotlin %}
+
+The `@Configuration` plus `@Bean` form still works, and is handy for grouping several projections in one class. For a single projection, `@Component` is the cleaner shape: with `@Bean`, Spring also registers the returned descriptor as an unused context bean and calls the factory method an extra time, whereas `@Component` invokes it once.
+
 `@Projection` takes:
 
 | Attribute | Description |
