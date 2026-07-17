@@ -3649,7 +3649,9 @@ The builder both assembles the `View` and records the event types you registered
 
 ### Single-instance projections
 
-`id` is required only for a keyed, multi-instance read model. A projection that folds into a single slot instead of one per key, for example a total across every course rather than a count per course, has no per-event key to derive, so it has no `id` function to write. Build it with `singletonBuilder(...)` instead of `builder(...)` in Java, or reach for the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
+Whether a projection needs an `id` comes down to how many views it maintains. A leaderboard folded from every player's events is one view over the whole stream, so it is single-instance and needs no `id`. A per-player profile is one view per player, keyed by player id, so it needs an `id` to pick out which profile each event updates. Rule of thumb: a single view over all events is single-instance and takes no `id`, one view per subject is keyed and takes an `id`.
+
+A single-instance projection folds into one slot rather than one per key, so it has no per-event key to derive and no `id` function to write. Build it with `singletonBuilder(...)` instead of `builder(...)` in Java, or reach for the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
 
 {% capture java %}
 Projection<Integer, CourseEvent, String> totalEnrolledStudents =
