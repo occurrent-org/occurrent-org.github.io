@@ -1758,7 +1758,7 @@ val current = eventStore.readSnapshotState(cloudEventConverter, accountId, view,
 
 ### Snapshots with Spring Boot
 
-On the blocking stack you can declare a maintained snapshot with `@Snapshot`. A factory method returning a `SnapshotView` is registered as a managed subscription that keeps one snapshot per stream up to date, exactly like `@Projection`, including catch-up from history and durable resume. Resolve the store with `store = SomeStore.class` or `storeName`, or leave both unset for a zero-config MongoDB store. `everyNEvents` throttles how often the maintained snapshot is written, and `mode` selects `ASYNC` (catch-up then live) or `SYNCHRONOUS` (updated on the write path for read-your-writes).
+You can declare a maintained snapshot with `@Snapshot` on both the blocking and reactor stacks. A factory method returning a `SnapshotView` is registered as a managed subscription that keeps one snapshot per stream up to date, exactly like `@Projection`, including catch-up from history and durable resume. A factory returning a `DcbSnapshotView` instead maintains one snapshot per DCB boundary. Resolve the store with `store = SomeStore.class` or `storeName`, or leave both unset for a zero-config MongoDB store (`SpringMongoSnapshotStore` on the blocking stack, `ReactiveSpringMongoSnapshotStore` on the reactor stack). `everyNEvents` throttles how often the maintained snapshot is written, and `mode` selects `ASYNC` (catch-up then live) or `SYNCHRONOUS` (updated on the write path for read-your-writes).
 
 {% capture java %}
 @Snapshot(id = "account-state", everyNEvents = 100)
@@ -1780,11 +1780,11 @@ fun accountSnapshot(): SnapshotView<AccountState, AccountEvent> = snapshotView(A
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-<div class="comment">The declarative <code>@Snapshot</code> annotation ships on the blocking stack. On the reactive stack it fails fast and points you at the DSL, and there is no declarative DCB variant yet. Both reactive and DCB snapshots are fully available programmatically through the DSL executors below.</div>
+<div class="comment">The declarative <code>@Snapshot</code> annotation works on both the blocking and reactor stacks, for stream and DCB. The DSL executors below are the programmatic path when you would rather not use the annotation.</div>
 
 ### DCB snapshots
 
-For the [Dynamic Consistency Boundary](#dynamic-consistency-boundary), wrap the DCB application service in a `SnapshotDcbDeciderApplicationService` and run a `DcbDecider`. The snapshot is keyed by the command's `DcbCriteria` and versioned by the global DCB position, so a resumed execute reads only the events after the snapshot while still guarding the append against any later matching event.
+For the [Dynamic Consistency Boundary](#dynamic-consistency-boundary), wrap the DCB application service in a `SnapshotDcbDeciderApplicationService` and run a `DcbDecider`. The snapshot is keyed by a canonical form of the command's `DcbCriteria` (overridable with your own key function) and versioned by the global DCB position, so a resumed execute reads only the events after the snapshot while still guarding the append against any later matching event.
 
 {% capture java %}
 var snapshots = new SnapshotDcbDeciderApplicationService<>(dcbApplicationService);
