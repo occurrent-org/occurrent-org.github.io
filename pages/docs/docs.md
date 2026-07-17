@@ -3649,12 +3649,11 @@ The builder both assembles the `View` and records the event types you registered
 
 ### Single-instance projections
 
-`id` is required only for a keyed, multi-instance read model. A projection that folds into a single slot instead of one per key, for example a total across every course rather than a count per course, has no per-event key to derive, so it has no `id` function to write. Call `.singleton()` on the Java builder, or reach for the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
+`id` is required only for a keyed, multi-instance read model. A projection that folds into a single slot instead of one per key, for example a total across every course rather than a count per course, has no per-event key to derive, so it has no `id` function to write. Build it with `singletonBuilder(...)` instead of `builder(...)` in Java, or reach for the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
 
 {% capture java %}
 Projection<Integer, CourseEvent, String> totalEnrolledStudents =
-        Projection.<Integer, CourseEvent, String>builder(0)
-                .singleton()
+        Projection.<Integer, CourseEvent>singletonBuilder(0)
                 .on(StudentEnrolled.class,   (count, event) -> count + 1)
                 .on(StudentUnenrolled.class, (count, event) -> count - 1)
                 .build();
@@ -3701,8 +3700,7 @@ fun isUsernameClaimed(username: String) =
 {% endcapture %}
 {% capture java %}
 Projection<Boolean, AccountEvent, String> view =
-        Projection.<Boolean, AccountEvent, String>builder(false)
-                .singleton()
+        Projection.<Boolean, AccountEvent>singletonBuilder(false)
                 .on(AccountRegistered.class, (state, event) -> true)
                 .on(AccountClosed.class,     (state, event) -> false)
                 .on(UsernameChanged.class,   (state, event) -> event.newUsername().equals(username))
@@ -3834,8 +3832,7 @@ class ProjectionConfig {
     @Projection(id = "registered-account-count")
     DcbProjection<Integer, AccountEvent, String> registeredAccountCount() {
         org.occurrent.dsl.projection.Projection<Integer, AccountEvent, String> view =
-                org.occurrent.dsl.projection.Projection.<Integer, AccountEvent, String>builder(0)
-                        .singleton()
+                org.occurrent.dsl.projection.Projection.<Integer, AccountEvent>singletonBuilder(0)
                         .on(AccountRegistered.class, (count, event) -> count + 1)
                         .build();
         return new DcbProjection<>(view, DcbCriteria.type(AccountRegistered.class));
