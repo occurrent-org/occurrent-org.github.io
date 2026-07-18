@@ -71,6 +71,7 @@ permalink: /documentation
 * * * * [MongoDB Native Driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * * * * [MongoDB with Spring](#blocking-subscription-using-spring-mongotemplate)
 * * * * [InMemory](#inmemory-subscription)
+* * * * [Push Subscription](#push-subscription-blocking)
 * * * * [Durable Subscriptions](#durable-subscriptions-blocking)
 * * * * [Catch-up Subscription](#catch-up-subscription-blocking)
 * * * * * [Usage](#catch-up-subscription-usage)
@@ -83,6 +84,7 @@ permalink: /documentation
 * * * [Implementations](#reactive-subscription-implementations)
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
 * * * * [Durable Subscriptions](#durable-subscriptions-reactive)
+* * * * [Push Subscription](#push-subscription-reactive)
 * [Decider](#decider)
 * * [Application Service](#using-an-applicationservice-with-deciders)
 * * * [Java](#application-service-decider-java)
@@ -2478,6 +2480,47 @@ Then you can use it like this:
 
 {% include macros/subscription/blocking/inmemory/impl/example.md %}
 
+#### Push Subscription (Blocking)
+
+Use this when events aren't read from a MongoDB change stream at all, but forwarded by the writing application to a message broker such as RabbitMQ or Kafka, and consumed by a separate listener. `org.occurrent.subscription.push.blocking.PushSubscriptionModel` is a register-only `Subscribable`. It has no lifecycle, start position, checkpoint, catch-up, or replay, and it never talks to an event store. You feed it events yourself, and it dispatches each one to whichever registered handlers match it.
+
+First include the dependency:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-subscription-push-blocking</artifactId>
+    <version>{{site.occurrentversion}}</version>
+</dependency>
+```
+
+Because `PushSubscriptionModel` implements the same `Subscribable` interface as every other subscription model, it plugs into the [Subscription DSL](#subscription-dsl), and into `ProjectionRunner` from Occurrent's `projection-dsl` module, unchanged:
+
+```java
+PushSubscriptionModel pushModel = new PushSubscriptionModel();
+
+ProjectionRunner.agnostic(pushModel, cloudEventConverter)
+        .project("order-status", orderStatusProjection(), repository);
+```
+
+On the producer side, forward the stored `CloudEvent` to the broker as CloudEvents JSON, unchanged. On the listener side, reconstruct it from that CloudEvents JSON payload before handing it to the model, for example in a Spring `@RabbitListener`:
+
+```java
+@RabbitListener(queues = "orders")
+public void onMessage(byte[] body) {
+    CloudEvent cloudEvent = EventFormatProvider.getInstance()
+            .resolveFormat(JsonFormat.CONTENT_TYPE)
+            .deserialize(body);
+    pushModel.accept(cloudEvent);
+}
+```
+
+`accept(CloudEvent)` runs every matching handler synchronously, on the calling thread, in registration order. A handler's exception propagates back to the caller, which is what lets the listener decide whether to acknowledge the message or trigger a redelivery. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
+
+Occurrent stays transport-neutral here. No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
+
+A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
+
 #### Durable Subscriptions (Blocking)
 
 Storing the checkpoint is useful if you need to resume a subscription from its last known checkpoint when restarting an application. 
@@ -2825,6 +2868,44 @@ Then we should instantiate a `CheckpointAwareSubscriptionModel`, that subscribes
 that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionModel`: 
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
+
+#### Push Subscription (Reactive)
+
+The reactive twin of the [blocking push subscription](#push-subscription-blocking). Use it when the writing application forwards events to a broker such as RabbitMQ or Kafka instead of a MongoDB change stream, and a reactive listener consumes them. `org.occurrent.subscription.push.reactor.PushSubscriptionModel` is a register-only `Subscribable` with no lifecycle, start position, checkpoint, catch-up, or replay.
+
+First include the dependency:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-subscription-push-reactor</artifactId>
+    <version>{{site.occurrentversion}}</version>
+</dependency>
+```
+
+Register it like any other `Subscribable`, for example with `ReactiveProjectionRunner` from Occurrent's `projection-dsl` module:
+
+```java
+PushSubscriptionModel pushModel = new PushSubscriptionModel();
+
+ReactiveProjectionRunner.agnostic(pushModel, cloudEventConverter)
+        .project("order-status", orderStatusProjection(), repository);
+```
+
+Reconstruct the `CloudEvent` from the CloudEvents JSON payload on the listener side, then hand it to the model:
+
+```java
+Mono<Void> onMessage(byte[] body) {
+    CloudEvent cloudEvent = EventFormatProvider.getInstance()
+            .resolveFormat(JsonFormat.CONTENT_TYPE)
+            .deserialize(body);
+    return pushModel.accept(cloudEvent);
+}
+```
+
+`accept(CloudEvent)` returns a `Mono<Void>` and runs the matching handlers one after another. A handler error propagates through that `Mono`, so the caller decides whether to acknowledge, retry, or dead-letter the message. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
+
+The same limits apply as on the blocking side. A push subscription only ever sees the live tail, and a broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first (see [EventStore Queries](#eventstore-queries) or the [catch-up subscription](#catch-up-subscription-blocking) pattern), then attach the push feed to keep it current.
 
 # Decider
 
@@ -3468,6 +3549,8 @@ it's not something that is provided by Occurrent.
 As of version 0.17.0 you can also get metadata (such as stream version, stream id and all other cloud event extension properties) when consuming an event:
 
 {% include macros/subscription/dsl/subscription_dsl_metadata_example.md %}
+
+`Subscriptions` and `subscriptions(...)` accept any `Subscribable`. That includes a [`PushSubscriptionModel`](#push-subscription-blocking) (or its [reactive counterpart](#push-subscription-reactive)), which feeds events from a broker such as RabbitMQ or Kafka instead of reading a MongoDB change stream.
 
 ## Query DSL
 
