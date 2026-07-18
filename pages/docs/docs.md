@@ -2535,6 +2535,36 @@ Live-resume stays the broker's job. The model persists no live position watermar
 
 Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the bootstrap catch-up for you, on both the blocking and reactor stacks. Push source is rejected together with `mode = Mode.SYNCHRONOUS`, the catch-up start knobs, and a `DcbProjection`.
 
+##### Feeding domain events instead of CloudEvents
+
+If your listener already hands you domain events (for example a broker message converter deserializes them for you), pushing them through the CloudEvent model means `domainEvent` to `CloudEvent` and back, a full serialize and deserialize per event. Feed the projection in domain space instead and the live path does no conversion at all.
+
+`Projections.domainEventFeed(projection, repository)` is the live-only feed. It returns a `Consumer<E>` (blocking) or a `Function<E, Mono<Void>>` (reactor) that folds a domain event straight into the read model:
+
+```java
+Consumer<OrderEvent> feed = Projections.domainEventFeed(orderStatusProjection(), repository);
+
+@RabbitListener(queues = "orders")
+public void onMessage(OrderEvent event) {
+    feed.accept(event);   // no CloudEvent conversion
+}
+```
+
+For a new or rebuilt projection that also needs to catch up, use `BootstrappingProjectionFeed`. Its live path still folds domain events directly, and only the one-time bootstrap reads the event store and decodes each replayed event once. It de-duplicates the replay-to-live overlap by an id you extract from the domain event, so the de-dup does not depend on the CloudEvent id:
+
+```java
+BootstrappingProjectionFeed<OrderEvent> feed = BootstrappingProjectionFeed.create(
+        "order-status", orderStatusProjection(), repository,
+        eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage);
+
+// wire the listener to feed.accept(...), then bootstrap once:
+feed.bootstrap();
+```
+
+Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.DOMAIN_PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter registers the projection on the feed and bootstraps it. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`.
+
+The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent.
+
 #### Durable Subscriptions (Blocking)
 
 Storing the checkpoint is useful if you need to resume a subscription from its last known checkpoint when restarting an application. 
