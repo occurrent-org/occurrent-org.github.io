@@ -2533,6 +2533,8 @@ ProjectionRunner.agnostic(model, cloudEventConverter)
 
 Live-resume stays the broker's job. The model persists no live position watermark, it only records a one-shot marker (in the `checkpointStorage` you pass, or none if you pass `null`) that the bootstrap finished, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so keep the fold idempotent. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can be bootstrap-replayed.
 
+Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the bootstrap catch-up for you, on both the blocking and reactor stacks. Push source is rejected together with `mode = Mode.SYNCHRONOUS`, the catch-up start knobs, and a `DcbProjection`.
+
 #### Durable Subscriptions (Blocking)
 
 Storing the checkpoint is useful if you need to resume a subscription from its last known checkpoint when restarting an application. 
