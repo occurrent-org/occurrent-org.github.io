@@ -2521,6 +2521,18 @@ Occurrent stays transport-neutral here. No broker dependency is added by this mo
 
 A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
 
+`ReplayThenPushSubscriptionModel` automates that bootstrap. Wrap it around the push model and give it the event store as the replay source. On the first subscribe it replays the projection's history in position order, then hands over to the live feed, buffering the feed during the replay and de-duplicating the overlap by event id so nothing is lost or delivered twice across the seam:
+
+```java
+PushSubscriptionModel pushModel = new PushSubscriptionModel();
+ReplayThenPushSubscriptionModel model = new ReplayThenPushSubscriptionModel(eventStore, pushModel, checkpointStorage);
+
+ProjectionRunner.agnostic(model, cloudEventConverter)
+        .project("order-status", orderStatusProjection(), repository);
+```
+
+Live-resume stays the broker's job. The model persists no live position watermark, it only records a one-shot marker (in the `checkpointStorage` you pass, or none if you pass `null`) that the bootstrap finished, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so keep the fold idempotent. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can be bootstrap-replayed.
+
 #### Durable Subscriptions (Blocking)
 
 Storing the checkpoint is useful if you need to resume a subscription from its last known checkpoint when restarting an application. 
@@ -2906,6 +2918,8 @@ Mono<Void> onMessage(byte[] body) {
 `accept(CloudEvent)` returns a `Mono<Void>` and runs the matching handlers one after another. A handler error propagates through that `Mono`, so the caller decides whether to acknowledge, retry, or dead-letter the message. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
 
 The same limits apply as on the blocking side. A push subscription only ever sees the live tail, and a broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first (see [EventStore Queries](#eventstore-queries) or the [catch-up subscription](#catch-up-subscription-blocking) pattern), then attach the push feed to keep it current.
+
+The reactive `ReplayThenPushSubscriptionModel` automates that bootstrap, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records a one-shot bootstrap marker so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so keep the fold idempotent, and rebuild the projection if the consumer is offline longer than the broker retains the backlog.
 
 # Decider
 
