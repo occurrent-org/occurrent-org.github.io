@@ -2561,7 +2561,7 @@ BootstrappingProjectionFeed<OrderEvent> feed = BootstrappingProjectionFeed.creat
 feed.bootstrap();
 ```
 
-Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.DOMAIN_PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter registers the projection on the feed and bootstraps it. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`.
+Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and bootstraps it. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`.
 
 The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent.
 
