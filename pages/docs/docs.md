@@ -3728,6 +3728,17 @@ boolean claimed = dcbProjectionRunner.project(isUsernameClaimed("alice"));
 
 The same projection definition works both ways. Subscribe to keep a read model eventually consistent, or fold a query on demand for a strongly consistent read. The plain, non-DCB `DomainEventQueries` has the same `project` method.
 
+In Java, the on-demand fold is also a static entry point, `Projections.project(projection, queries)`, the counterpart to the Kotlin `project` extension above:
+
+{% capture java %}
+int total = Projections.project(totalEnrolledStudents, domainEventQueries);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java %}
+
+It's only valid for a single-instance (singleton) projection, since folding every instance of a keyed projection into one blended state on demand would be nonsense; use `Projections.project(projection, queries, instanceId)` to scope a keyed projection to one instance instead. `Projections.project(dcbProjection, dcbQueries)` is the DCB counterpart to both; a DCB projection's criteria already scopes the read to one instance, so there's no keyed/singleton distinction to make.
+
+Two guards keep a projection from silently doing the wrong thing. `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, since the durable checkpoint key it derives from `id` must be unique across every registered projection, on both the blocking and reactor feeds. And a `DcbProjection` rejects a wrapped `Projection` that carries its own explicit `filter()`, because that filter would otherwise be silently ignored, a `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter.
+
 ### Read-your-writes
 
 Register the projection on a synchronous subscription model and build the application service with it, and the read model updates inside the same transaction as the write. The projected state is then visible the moment `execute(...)` returns, with no eventual-consistency lag. This trades a little write latency for read-your-writes consistency, so reach for it when a command needs to see its own effect immediately.
