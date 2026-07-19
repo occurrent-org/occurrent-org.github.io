@@ -1645,8 +1645,7 @@ For synchronous side effects, prefer `sideEffect(...)` or `options().sideEffect(
 ## Sagas
 
 A "saga" can be used to represent and coordinate a long-lived business transaction/process (where "long-lived" is kind of arbitrary). This is an advanced subject
-and you should try to avoid sagas if there are other means available to solve the problem (for example use [policies](#policy) if they are sufficient). Occurrent doesn't provide or enforce any specific
-Saga implementation. But since Occurrent is a library you can hook in already existing solutions, for example:   
+and you should try to avoid sagas if there are other means available to solve the problem (for example use [policies](#policy) if they are sufficient, or [DCB](#dcb) when two rules must hold in one append). When you do need one, Occurrent now ships a built-in [Saga DSL](#saga-dsl) that describes the process as data and runs it against a subscription. If the built-in DSL doesn't fit your needs, Occurrent is a library, so you can also hook in an existing solution, for example:   
 
 * [Temporal](https://temporal.io/) - Open source microservices orchestration platform for running mission critical code at any scale.
 * [zio-saga](https://github.com/VladKopanev/zio-saga) - If you're using [Scala](https://scala-lang.org/) and [zio](https://zio.dev/)  (there's also a [cats implementation](https://github.com/VladKopanev/cats-saga)).
