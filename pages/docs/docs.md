@@ -110,6 +110,7 @@ permalink: /documentation
 * * * [Running a Saga](#running-a-saga)
 * * * [The `@Saga` Annotation](#the-saga-annotation)
 * * * [Delivery Contract](#saga-delivery-contract)
+* * * [Side Effects and Compensation](#saga-side-effects)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
@@ -3635,8 +3636,8 @@ val orderFulfillment: Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> =
         step("awaiting-payment") {
             on<PaymentReserved>(then = end) { payment -> issue(ShipOrder(payment.orderId)) }
             on<PaymentFailed>(then = end) { failure -> issue(CancelOrder(failure.orderId, failure.reason)) }
-            timeout(within = Duration.ofMinutes(30), then = end) { received ->
-                issue(CancelOrder(received.initiating(OrderPlaced::class.java).orderId, "payment timeout"))
+            timeout(after = Duration.ofMinutes(30), then = end) { received ->
+                issue(CancelOrder(received.initiating<OrderPlaced>().orderId, "payment timeout"))
             }
         }
     }
@@ -3733,8 +3734,8 @@ val gameLobby = saga<GameEvent, CloseGame> {
     correlate<PlayerJoined> { it.gameId }
     step("awaiting-players") {
         on<PlayerJoined>(then = end) { }
-        timeout(within = Duration.ofMinutes(10), then = end) { received ->
-            issue(CloseGame(received.initiating(GameCreated::class.java).gameId))
+        timeout(after = Duration.ofMinutes(10), then = end) { received ->
+            issue(CloseGame(received.initiating<GameCreated>().gameId))
         }
     }
 }
@@ -3752,7 +3753,7 @@ Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. `received.initiating(GameCreated.class)` gets the start event back to build the command from. A `timeout(within = ...)` fires after a relative duration, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
+A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
 ### Effects Are Data {#saga-effects}
 
@@ -3809,8 +3810,8 @@ class OrderFulfillmentSaga {
         step("awaiting-payment") {
             on<PaymentReserved>(then = end) { payment -> issue(ShipOrder(payment.orderId)) }
             on<PaymentFailed>(then = end) { failure -> issue(CancelOrder(failure.orderId, failure.reason)) }
-            timeout(within = Duration.ofMinutes(30), then = end) { received ->
-                issue(CancelOrder(received.initiating(OrderPlaced::class.java).orderId, "payment timeout"))
+            timeout(after = Duration.ofMinutes(30), then = end) { received ->
+                issue(CancelOrder(received.initiating<OrderPlaced>().orderId, "payment timeout"))
             }
         }
     }
@@ -3863,6 +3864,14 @@ Command dispatch is at-least-once. The runner dispatches a reaction's commands b
 A flow saga remembers the events it has received (joins, guards, and timeouts read them), so those events are persisted. They serialize as CloudEvents through the application's `CloudEventConverter`, which means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name. A domain event can therefore move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A machine-core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
 For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) has both authoring surfaces wired through `SagaRunner` with both dispatcher styles.
+
+### Side Effects and Compensation {#saga-side-effects}
+
+A saga affects the outside world in exactly one way: it issues commands. There is no "call this API" effect, and that is deliberate, because it keeps `react` a pure function you can test with equality assertions. So a third-party call, whether it runs mid-process or as the last thing a completed saga does, is a command like any other. Write a reaction that issues, say, `NotifyWarehouse(orderId)`, and point that command at a dispatcher that makes the call. The terminal reaction, the one whose `Continuation` is `end`, is where a "now that the whole thing is done" effect belongs.
+
+Compensation works the same way. A saga does not roll back, it moves forward, so an "undo" is just another command you issue on the branch or timeout that detected the failure. The order-fulfillment saga above already does this. When payment fails or the timeout fires it issues `CancelOrder`, which is the compensation for the `ReservePayment` it issued earlier. You decide which command undoes which, there is no automatic inverse.
+
+The one thing to watch is idempotency, and it follows directly from the [delivery contract](#saga-delivery-contract). Command dispatch is at-least-once, so a compensating or external command can arrive twice. An `ApplicationService`-backed target handles that for free, because it re-folds the stream and the target's own invariants reject the duplicate. A raw third-party call does not. When a command triggers a non-idempotent external effect such as an email, a payment capture, or a partner request, give it a stable id derived from the saga and the triggering event, and dedupe at that boundary. The deferred document-local outbox described in [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md) would make dispatch exactly-once and remove this caveat, but it is not built yet.
 
 ## Reactive Spring Boot Starter
 
