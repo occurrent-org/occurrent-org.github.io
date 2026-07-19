@@ -103,6 +103,13 @@ permalink: /documentation
 * * [Subscription DSL](#subscription-dsl)
 * * [Query DSL](#query-dsl)
 * * * [DCB Query DSL](#dcb-query-dsl)
+* * [Saga DSL](#saga-dsl)
+* * * [The Machine Core](#saga-machine-core)
+* * * [The Flow DSL](#saga-flow-dsl)
+* * * [Effects Are Data](#saga-effects)
+* * * [Running a Saga](#running-a-saga)
+* * * [The `@Saga` Annotation](#the-saga-annotation)
+* * * [Delivery Contract](#saga-delivery-contract)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
@@ -3611,6 +3618,252 @@ occurrent:
 
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.mongo.blocking.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentProperties.java)
 to find which configuration properties that are supported.
+
+## Saga DSL
+
+A saga (more precisely a process manager) reacts to events, and to their absence over time, by issuing commands. It is the write side's answer to a process that spans more than one stream and unfolds over real time, such as "cancel the order if payment is not reserved within 30 minutes". The `Saga<E, S, C>` descriptor is the dual of a [decider](#decider). A decider turns commands into events, a saga turns events (and its own timeouts) into commands. Like a decider it is pure data and pure functions, so it unit-tests with plain equality assertions on the effects it returns, no infrastructure involved.
+
+Here is the order-fulfillment process. `OrderPlaced` reserves payment and arms a 30-minute timer, `PaymentReserved` ships the order, `PaymentFailed` cancels it, and the timer firing (nobody reserved or failed the payment in time) also cancels it:
+
+{% capture kotlin %}
+val orderFulfillment: Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> =
+    saga {
+        startsOn<OrderPlaced>(correlatedBy = { it.orderId }) { order ->
+            issue(ReservePayment(order.orderId, order.amount))
+        }
+        correlate<PaymentReserved> { it.orderId }
+        correlate<PaymentFailed> { it.orderId }
+        step("awaiting-payment") {
+            on<PaymentReserved>(then = end) { payment -> issue(ShipOrder(payment.orderId)) }
+            on<PaymentFailed>(then = end) { failure -> issue(CancelOrder(failure.orderId, failure.reason)) }
+            timeout(within = Duration.ofMinutes(30), then = end) { received ->
+                issue(CancelOrder(received.initiating(OrderPlaced::class.java).orderId, "payment timeout"))
+            }
+        }
+    }
+{% endcapture %}
+{% capture java %}
+Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> orderFulfillment =
+        FlowSaga.<OrderEvent, OrderCommand>builder()
+                .startsOn(OrderPlaced.class, OrderPlaced::orderId,
+                        order -> List.of(new ReservePayment(order.orderId(), order.amount())))
+                .correlate(PaymentReserved.class, PaymentReserved::orderId)
+                .correlate(PaymentFailed.class, PaymentFailed::orderId)
+                .step("awaiting-payment", step -> step
+                        .on(PaymentReserved.class, Continuation.end(),
+                                payment -> List.of(new ShipOrder(payment.orderId())))
+                        .on(PaymentFailed.class, Continuation.end(),
+                                failure -> List.of(new CancelOrder(failure.orderId(), failure.reason())))
+                        .timeout(Duration.ofMinutes(30), Continuation.end(),
+                                received -> List.of(new CancelOrder(received.initiating(OrderPlaced.class).orderId(), "payment timeout"))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A saga is not a substitute for a [Dynamic Consistency Boundary](#dynamic-consistency-boundary). When two rules must hold atomically in one append, express both as a single `DcbCriteria` and let one decider decide against them together, which is cheaper and stronger. Reach for a saga only when the process is genuinely cross-boundary and time-involving. The "cancel if payment is not reserved within 30 minutes" rule has no single append at which both facts are known, because the payment may simply never arrive and the deciding write has to be triggered by the passage of time rather than by an event. That is the gap a saga fills, and the only one.
+
+There are two ways to author a saga, and both compile to the same `Saga<E, S, C>` descriptor, so the runner only ever runs one kind of thing. The flow DSL above is the sugar for the common case, a linear process moving through a few named steps. Underneath it is the machine core, an explicit per-event-type fold and reaction. Use the flow DSL when your process is a small sequence of steps, drop to the machine core when it is not.
+
+### The Machine Core {#saga-machine-core}
+
+The machine core is `Saga.builder(initialState)` in Java and `saga(initialState) { }` in Kotlin. You register, per event type, an `evolve` that folds the event into state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+
+Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
+
+{% capture kotlin %}
+val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand>(initialState = null) {
+    correlateAll { it.orderId }
+    startsOn<OrderPlaced>()
+    evolve<OrderPlaced> { _, e -> AwaitingPayment(e.orderId) }
+    react<OrderPlaced> { _, e ->
+        issue(ReservePayment(e.orderId, e.amount))
+        startTimeout("payment", Duration.ofMinutes(30))
+    }
+    evolve<PaymentReserved> { _, e -> Completed(e.orderId) }
+    react<PaymentReserved> { _, e ->
+        issue(ShipOrder(e.orderId))
+        cancelTimeout("payment")
+    }
+    evolve<PaymentFailed> { _, e -> Cancelled(e.orderId, e.reason) }
+    react<PaymentFailed> { _, e ->
+        issue(CancelOrder(e.orderId, e.reason))
+        cancelTimeout("payment")
+    }
+    evolveOnTimeout("payment") { _, t -> Cancelled(t.sagaId, "payment timeout") }
+    reactOnTimeout("payment") { _, t -> issue(CancelOrder(t.sagaId, "payment timeout")) }
+    isTerminal { it is Completed || it is Cancelled }
+}
+{% endcapture %}
+{% capture java %}
+Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment =
+        Saga.<OrderEvent, OrderSagaState, OrderCommand>builder(null)
+                .correlateAll(OrderEvent::orderId)
+                .startsOn(OrderPlaced.class)
+                .evolve(OrderPlaced.class, (state, e) -> new AwaitingPayment(e.orderId()))
+                .react(OrderPlaced.class, (state, e) -> List.of(
+                        SagaEffect.issue(new ReservePayment(e.orderId(), e.amount())),
+                        SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
+                .evolve(PaymentReserved.class, (state, e) -> new Completed(e.orderId()))
+                .react(PaymentReserved.class, (state, e) -> List.of(
+                        SagaEffect.issue(new ShipOrder(e.orderId())),
+                        SagaEffect.cancelTimeout("payment")))
+                .evolve(PaymentFailed.class, (state, e) -> new Cancelled(e.orderId(), e.reason()))
+                .react(PaymentFailed.class, (state, e) -> List.of(
+                        SagaEffect.issue(new CancelOrder(e.orderId(), e.reason())),
+                        SagaEffect.cancelTimeout("payment")))
+                .evolveOnTimeout("payment", (state, t) -> new Cancelled(t.sagaId(), "payment timeout"))
+                .reactOnTimeout("payment", (state, t) -> List.of(SagaEffect.issue(new CancelOrder(t.sagaId(), "payment timeout"))))
+                .isTerminal(state -> state instanceof Completed || state instanceof Cancelled)
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`correlateAll` (or a per-type `correlate`) says which instance an event belongs to, returned as a plain `String` id. `startsOn` names the event types that create a new instance. An event that correlates to no existing instance and is not a start event is skipped rather than starting one on the wrong event. `build()` fails loudly if any handled event type has no correlation rule, so "event arrived, no idea which instance" cannot happen at run time. `isTerminal` marks the states that end the process. A terminal instance ignores further input, and the runner cancels its outstanding timers.
+
+The flow DSL cannot express everything, on purpose. It has no dynamic N-of-M joins, no accumulators across steps, and no "this event is valid in every step" matching. A process that needs any of those drops to the machine core, where `evolve` and `react` can express them directly.
+
+### The Flow DSL {#saga-flow-dsl}
+
+The flow DSL describes a process as a linear sequence of named steps. A step is either a set of `on(...)` branches (first match wins) or a single `join(...)`, and it can carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `goTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `goTo` to a step that does not exist is a build error, not a run-time surprise.
+
+The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
+
+{% capture kotlin %}
+val gameLobby = saga<GameEvent, CloseGame> {
+    startsOn<GameCreated>(correlatedBy = { it.gameId })
+    correlate<PlayerJoined> { it.gameId }
+    step("awaiting-players") {
+        on<PlayerJoined>(then = end) { }
+        timeout(within = Duration.ofMinutes(10), then = end) { received ->
+            issue(CloseGame(received.initiating(GameCreated::class.java).gameId))
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
+        FlowSaga.<GameEvent, CloseGame>builder()
+                .startsOn(GameCreated.class, GameCreated::gameId)
+                .correlate(PlayerJoined.class, PlayerJoined::gameId)
+                .step("awaiting-players", step -> step
+                        .on(PlayerJoined.class, Continuation.end(), player -> List.of())
+                        .timeout(Duration.ofMinutes(10), Continuation.end(),
+                                received -> List.of(new CloseGame(received.initiating(GameCreated.class).gameId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. `received.initiating(GameCreated.class)` gets the start event back to build the command from. A `timeout(within = ...)` fires after a relative duration, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
+
+### Effects Are Data {#saga-effects}
+
+A reaction never performs an effect. It returns a list of `SagaEffect` values and the runner interprets them. There are four:
+
+* `issue(command)` hands a command to the dispatcher. It carries no routing information, because a command already carries the id of whatever it targets.
+* `startTimeout(name, Duration)` arms (or re-arms) a named timer to fire after a relative duration.
+* `startTimeoutAt(name, Instant)` arms a timer for an absolute, data-derived instant.
+* `cancelTimeout(name)` cancels a running timer, a no-op if none is running.
+
+Timers use `Duration` and `Instant`, never the [deadline module](#deadlines). Keeping effects as plain data is what makes a reaction pure. A relative `Duration` is resolved against the clock by the runner when it stores the timer, not inside `react`, so the same reaction returns the same effect values every time and you can assert on them with plain equality.
+
+### Running a Saga {#running-a-saga}
+
+Programmatically, `SagaRunner` is the write-side mirror of the read-side [`ProjectionRunner`](#views). It subscribes to the saga's events, folds and persists per-instance state, dispatches the commands each reaction issues, and polls the state store to fire timers. Pick the capability with the factory. `agnostic(...)` delivers both stream-written and DCB-appended events, `stream(...)` only stream-written ones:
+
+{% capture java %}
+SagaStateStore<OrderSagaState> stateStore = SagaStateStore.inMemory();
+CommandDispatcher<OrderCommand> dispatcher = command ->
+        applicationService.execute(command.orderId(), events -> handle(events, command));
+
+SagaSubscription subscription = SagaRunner.agnostic(subscriptionModel, cloudEventConverter)
+        .run("order-fulfillment", orderFulfillment, stateStore, dispatcher);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java %}
+
+The dispatcher is a `CommandDispatcher`, usually just a lambda over an `ApplicationService`. The decider-free path above is first-class, you hand each command to any `ApplicationService`-shaped receiver. When the command target is a decider, `CommandDispatchers.decider(...)` wires it for you:
+
+{% capture java %}
+CommandDispatcher<OrderCommand> dispatcher =
+        CommandDispatchers.decider(deciderApplicationService, orderCommandDecider, OrderCommand::orderId);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java %}
+
+The `SagaStateStore` persists each instance. `SagaStateStore.inMemory()` is for tests and single-node use, and `SpringMongoSagaStateStore` (in the blocking MongoDB starter) is the durable one. Unlike a read-model store it supports a compare-and-set save, because an event and a timer can touch the same instance concurrently, so the runner detects a lost update and retries instead of overwriting. Timers live in the same stored envelope as the state, not in an external scheduler. A timer poller inside the runner periodically reads instances with a due timer and re-enters them through the same pipeline a live event uses. That means no deadline or JobRunr infrastructure to run, at the cost of firing precision bounded by the poll interval, which does not matter at the minutes-to-days timescale sagas work on.
+
+### The `@Saga` Annotation {#the-saga-annotation}
+
+On the [Spring Boot starter](#spring-boot-starter) you do not wire a `SagaRunner` yourself. Annotate a no-arg factory method returning a `Saga` with `org.occurrent.annotation.Saga` and the framework registers it as a managed saga, subscribing through the same catch-up, durable-resume, and [competing-consumer](#competing-consumer-subscription-blocking) machinery as [`@Subscription`](#spring-boot-annotations):
+
+{% capture kotlin %}
+import org.occurrent.annotation.Saga
+
+@Component
+class OrderFulfillmentSaga {
+
+    @Saga(id = "order-fulfillment")
+    fun orderFulfillment() = saga {
+        startsOn<OrderPlaced>(correlatedBy = { it.orderId }) { order ->
+            issue(ReservePayment(order.orderId, order.amount))
+        }
+        correlate<PaymentReserved> { it.orderId }
+        correlate<PaymentFailed> { it.orderId }
+        step("awaiting-payment") {
+            on<PaymentReserved>(then = end) { payment -> issue(ShipOrder(payment.orderId)) }
+            on<PaymentFailed>(then = end) { failure -> issue(CancelOrder(failure.orderId, failure.reason)) }
+            timeout(within = Duration.ofMinutes(30), then = end) { received ->
+                issue(CancelOrder(received.initiating(OrderPlaced::class.java).orderId, "payment timeout"))
+            }
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+import org.occurrent.annotation.Saga;
+
+@Component
+class OrderFulfillmentSaga {
+
+    @Saga(id = "order-fulfillment")
+    org.occurrent.dsl.saga.Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment() {
+        return org.occurrent.dsl.saga.Saga.<OrderEvent, OrderSagaState, OrderCommand>builder(null)
+                .correlateAll(OrderEvent::orderId)
+                .startsOn(OrderPlaced.class)
+                .evolve(OrderPlaced.class, (state, e) -> new AwaitingPayment(e.orderId()))
+                .react(OrderPlaced.class, (state, e) -> List.of(
+                        SagaEffect.issue(new ReservePayment(e.orderId(), e.amount())),
+                        SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
+                // ...the rest of the folds and reactions from the machine-core example above
+                .isTerminal(state -> state instanceof Completed || state instanceof Cancelled)
+                .build();
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The annotation and the DSL descriptor share the name `Saga`, so a Java factory method has to qualify one of them, as above. Kotlin has no such clash, since the DSL entry point is the lowercase `saga` function and the return type can be inferred.
+
+`@Saga` takes:
+
+| Attribute | Description |
+|:----------|:-------------|
+| `id` | The durable subscription and checkpoint key (required). |
+| `startAt` | `StartPosition.BEGINNING`, `NOW`, or `DEFAULT`, the same start-position idea as [`@Subscription`](#subscription-start-position). |
+| `startAtGlobalPosition` | Start after a specific global position instead, to rewind a saga to a known point. Mutually exclusive with a non-default `startAt`. |
+| `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](#subscription-start-position) as `@Subscription`. |
+| `startupMode` | `DEFAULT`, `WAIT_UNTIL_STARTED`, or `BACKGROUND`, the same [startup-mode idea](#subscription-startup-mode) as `@Subscription`. |
+| `capability` | `AGNOSTIC` (both stream and DCB events) or `STREAM` (stream events only). |
+| `store` / `storeName` | Select the `SagaStateStore` bean by type or name. With both unset the store resolves by convention, the unique `SagaStateStore` bean, otherwise a zero-config MongoDB store in a `saga-<id>` collection. |
+| `commandDispatcher` / `commandDispatcherName` | Select the `CommandDispatcher` bean by type or name, otherwise the unique `CommandDispatcher` bean. There is no default dispatcher, since it is usually a lambda over your `ApplicationService`. |
+
+`@Saga` is blocking-only in this first version, the reactive starter does not register it.
+
+### Delivery Contract {#saga-delivery-contract}
+
+Command dispatch is at-least-once. The runner dispatches a reaction's commands before it saves the resulting state, so a crash between the two, or a compare-and-set retry after a concurrent write, can dispatch the same command twice, but never lose one. This is safe when the receiver is idempotent, which an `ApplicationService`-backed dispatcher is by construction. It re-folds the authoritative event stream on every call, so the target's own invariants reject a stale or already-applied command and a duplicate becomes a no-op. Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
+
+A flow saga remembers the events it has received (joins, guards, and timeouts read them), so those events are persisted. They serialize as CloudEvents through the application's `CloudEventConverter`, which means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name. A domain event can therefore move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A machine-core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
+
+For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) has both authoring surfaces wired through `SagaRunner` with both dispatcher styles.
 
 ## Reactive Spring Boot Starter
 
