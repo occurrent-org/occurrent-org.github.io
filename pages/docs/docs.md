@@ -3755,6 +3755,21 @@ Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
+A step is either a set of `on(...)` branches or a single `join(...)`, never both. A join waits until every `Expectation` it lists is met, counted since the step was entered, then runs once and follows its `Continuation`. Here is a step that waits for both players in the lobby above to ready up before it advances:
+
+{% capture kotlin %}
+step("waiting-for-both-players") {
+    join(expect<PlayerReady>(2), then = next) { }
+}
+{% endcapture %}
+{% capture java %}
+.step("waiting-for-both-players", step -> step
+        .join(List.of(Expectation.of(PlayerReady.class, 2)), Continuation.next(), received -> List.of()))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`startsOn` and `correlate` register into the same correlation map, so calling `startsOn` for a type already registered via `correlate` (or the reverse) throws `IllegalStateException` instead of silently overwriting the earlier registration. Register each event type's correlation exactly once, whichever of the two you use.
+
 ### Effects Are Data {#saga-effects}
 
 A reaction never performs an effect. It returns a list of `SagaEffect` values and the runner interprets them. There are four:
@@ -3766,10 +3781,41 @@ A reaction never performs an effect. It returns a list of `SagaEffect` values an
 
 Timers use `Duration` and `Instant`, never the [deadline module](#deadlines). Keeping effects as plain data is what makes a reaction pure. A relative `Duration` is resolved against the clock by the runner when it stores the timer, not inside `react`, so the same reaction returns the same effect values every time and you can assert on them with plain equality.
 
+Here are all three effects in play: reserving payment issues a command and arms the payment timer, reserving it successfully issues another command and disarms that same timer:
+
+{% capture kotlin %}
+react<OrderPlaced> { _, e ->
+    issue(ReservePayment(e.orderId, e.amount))
+    startTimeout("payment", Duration.ofMinutes(30))
+}
+react<PaymentReserved> { _, e ->
+    issue(ShipOrder(e.orderId))
+    cancelTimeout("payment")
+}
+{% endcapture %}
+{% capture java %}
+.react(OrderPlaced.class, (state, e) -> List.of(
+        SagaEffect.issue(new ReservePayment(e.orderId(), e.amount())),
+        SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
+.react(PaymentReserved.class, (state, e) -> List.of(
+        SagaEffect.issue(new ShipOrder(e.orderId())),
+        SagaEffect.cancelTimeout("payment")))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
 ### Running a Saga {#running-a-saga}
 
-Programmatically, `SagaRunner` is the write-side mirror of the read-side [`ProjectionRunner`](#views). It subscribes to the saga's events, folds and persists per-instance state, dispatches the commands each reaction issues, and polls the state store to fire timers. Pick the capability with the factory. `agnostic(...)` delivers both stream-written and DCB-appended events, `stream(...)` only stream-written ones:
+Programmatically, `SagaRunner` is the write-side mirror of the read-side [`ProjectionRunner`](#views). It subscribes to the saga's events, folds and persists per-instance state, dispatches the commands each reaction issues, and polls the state store to fire timers. Pick the capability with the factory. `agnostic(...)` delivers both stream-written and DCB-appended events, `stream(...)` only stream-written ones. There is no reactive `SagaRunner`, sagas run on the blocking stack only:
 
+{% capture kotlin %}
+val stateStore: SagaStateStore<OrderSagaState> = SagaStateStore.inMemory()
+val dispatcher = CommandDispatcher<OrderCommand> { command ->
+    applicationService.execute(command.orderId) { events -> handle(events, command) }
+}
+
+val subscription = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, cloudEventConverter)
+    .run("order-fulfillment", orderFulfillment, stateStore, dispatcher)
+{% endcapture %}
 {% capture java %}
 SagaStateStore<OrderSagaState> stateStore = SagaStateStore.inMemory();
 CommandDispatcher<OrderCommand> dispatcher = command ->
@@ -3778,17 +3824,22 @@ CommandDispatcher<OrderCommand> dispatcher = command ->
 SagaSubscription subscription = SagaRunner.agnostic(subscriptionModel, cloudEventConverter)
         .run("order-fulfillment", orderFulfillment, stateStore, dispatcher);
 {% endcapture %}
-{% include macros/docsSnippet.html java=java %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 The dispatcher is a `CommandDispatcher`, usually just a lambda over an `ApplicationService`. The decider-free path above is first-class, you hand each command to any `ApplicationService`-shaped receiver. When the command target is a decider, `CommandDispatchers.decider(...)` wires it for you:
 
+{% capture kotlin %}
+val dispatcher = CommandDispatchers.decider(deciderApplicationService, orderCommandDecider) { it.orderId }
+{% endcapture %}
 {% capture java %}
 CommandDispatcher<OrderCommand> dispatcher =
         CommandDispatchers.decider(deciderApplicationService, orderCommandDecider, OrderCommand::orderId);
 {% endcapture %}
-{% include macros/docsSnippet.html java=java %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 The `SagaStateStore` persists each instance. `SagaStateStore.inMemory()` is for tests and single-node use, and `SpringMongoSagaStateStore` (in the blocking MongoDB starter) is the durable one. Unlike a read-model store it supports a compare-and-set save, because an event and a timer can touch the same instance concurrently, so the runner detects a lost update and retries instead of overwriting. Timers live in the same stored envelope as the state, not in an external scheduler. A timer poller inside the runner periodically reads instances with a due timer and re-enters them through the same pipeline a live event uses. That means no deadline or JobRunr infrastructure to run, at the cost of firing precision bounded by the poll interval, which does not matter at the minutes-to-days timescale sagas work on.
+
+Building a `SpringMongoSagaStateStore` by hand for a flow saga needs its four-argument constructor, with the application's `CloudEventConverter` passed alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using the three-argument constructor, throws `IllegalArgumentException` rather than silently losing that package independence. A machine-core saga's state carries no such requirement, since it serializes with the application's own `MongoConverter`.
 
 ### The `@Saga` Annotation {#the-saga-annotation}
 
@@ -3859,9 +3910,24 @@ The annotation and the DSL descriptor share the name `Saga`, so a Java factory m
 
 ### Delivery Contract {#saga-delivery-contract}
 
-Command dispatch is at-least-once. The runner dispatches a reaction's commands before it saves the resulting state, so a crash between the two, or a compare-and-set retry after a concurrent write, can dispatch the same command twice, but never lose one. This is safe when the receiver is idempotent, which an `ApplicationService`-backed dispatcher is by construction. It re-folds the authoritative event stream on every call, so the target's own invariants reject a stale or already-applied command and a duplicate becomes a no-op. Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
+Command dispatch is at-least-once. The runner dispatches a reaction's commands before it saves the resulting state, so a crash between the two, or a compare-and-set retry after a concurrent write, can dispatch the same command twice, but never lose one. This is safe when the receiver is idempotent, which an `ApplicationService`-backed dispatcher is by construction. It re-folds the authoritative event stream on every call, so the target's own invariants reject a stale or already-applied command and a duplicate becomes a no-op:
 
-A flow saga remembers the events it has received (joins, guards, and timeouts read them), so those events are persisted. They serialize as CloudEvents through the application's `CloudEventConverter`, which means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name. A domain event can therefore move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A machine-core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
+{% capture kotlin %}
+val dispatcher = CommandDispatchers.decider(deciderApplicationService, orderCommandDecider) { it.orderId }
+// A duplicate ReservePayment re-folds the stream and is rejected by the decider's own invariants, so it is a no-op.
+{% endcapture %}
+{% capture java %}
+CommandDispatcher<OrderCommand> dispatcher =
+        CommandDispatchers.decider(deciderApplicationService, orderCommandDecider, OrderCommand::orderId);
+// A duplicate ReservePayment re-folds the stream and is rejected by the decider's own invariants, so it is a no-op.
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
+
+A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step; the event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it (head-of-line blocking) until it succeeds or the subscription is intervened on. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`, so a receiver has to tolerate more than plain at-least-once multiplicity.
+
+A flow saga does not remember its whole history. The received log a join, guard, or timeout reaction reads through `ReceivedEvents` is bounded to a configurable window: the current step's own events plus a carry-over of `historyWindow` earlier events, `FlowSaga.Builder.historyWindow(int events)` in Java, defaulting to 100 (the Kotlin flow builder does not yet expose the knob and always uses the default). The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted. Raise the window for a guard or join that needs to count back further than the default 100 events, or lower it to trim what a long-running instance persists. `FlowState`'s bookkeeping fields (`stepEntryIndex`, `previousStep`, `lastAction`, `matchedBranchIndex`, `windowStart`) are internal to the executor and are not a wire-format compatibility guarantee, unlike the retained domain events themselves, which serialize as CloudEvents through the application's `CloudEventConverter`. That means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A machine-core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
 For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) has both authoring surfaces wired through `SagaRunner` with both dispatcher styles.
 
@@ -3869,7 +3935,23 @@ For the full design rationale, including the residual cross-node race a compare-
 
 A saga affects the outside world in exactly one way: it issues commands. There is no "call this API" effect, and that is deliberate, because it keeps `react` a pure function you can test with equality assertions. So a third-party call, whether it runs mid-process or as the last thing a completed saga does, is a command like any other. Write a reaction that issues, say, `NotifyWarehouse(orderId)`, and point that command at a dispatcher that makes the call. The terminal reaction, the one whose `Continuation` is `end`, is where a "now that the whole thing is done" effect belongs.
 
-Compensation works the same way. A saga does not roll back, it moves forward, so an "undo" is just another command you issue on the branch or timeout that detected the failure. The order-fulfillment saga above already does this. When payment fails or the timeout fires it issues `CancelOrder`, which is the compensation for the `ReservePayment` it issued earlier. You decide which command undoes which, there is no automatic inverse.
+Compensation works the same way. A saga does not roll back, it moves forward, so an "undo" is just another command you issue on the branch or timeout that detected the failure. The order-fulfillment saga above already does this. When payment fails or the timeout fires it issues `CancelOrder`, which is the compensation for the `ReservePayment` it issued earlier. You decide which command undoes which, there is no automatic inverse:
+
+{% capture kotlin %}
+on<PaymentFailed>(then = end) { failure -> issue(CancelOrder(failure.orderId, failure.reason)) }
+timeout(after = Duration.ofMinutes(30), then = end) { received ->
+    issue(CancelOrder(received.initiating<OrderPlaced>().orderId, "payment timeout"))
+}
+{% endcapture %}
+{% capture java %}
+.on(PaymentFailed.class, Continuation.end(),
+        failure -> List.of(new CancelOrder(failure.orderId(), failure.reason())))
+.timeout(Duration.ofMinutes(30), Continuation.end(),
+        received -> List.of(new CancelOrder(received.initiating(OrderPlaced.class).orderId(), "payment timeout")))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Both branches issue the same forward-moving `CancelOrder` compensation for the `ReservePayment` issued when the step started, whichever failure mode gets there first.
 
 The one thing to watch is idempotency, and it follows directly from the [delivery contract](#saga-delivery-contract). Command dispatch is at-least-once, so a compensating or external command can arrive twice. An `ApplicationService`-backed target handles that for free, because it re-folds the stream and the target's own invariants reject the duplicate. A raw third-party call does not. When a command triggers a non-idempotent external effect such as an email, a payment capture, or a partner request, give it a stable id derived from the saga and the triggering event, and dedupe at that boundary. The deferred document-local outbox described in [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md) would make dispatch exactly-once and remove this caveat, but it is not built yet.
 
