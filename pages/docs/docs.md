@@ -110,6 +110,7 @@ permalink: /documentation
 * * * [Running a Saga](#running-a-saga)
 * * * [The `@Saga` Annotation](#the-saga-annotation)
 * * * [Delivery Contract](#saga-delivery-contract)
+* * * [Running Across Multiple Instances](#saga-multi-instance)
 * * * [Side Effects and Compensation](#saga-side-effects)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
@@ -3930,6 +3931,40 @@ A live event and a firing timer do not fail the same way when a `SagaConcurrency
 A flow saga does not remember its whole history. The received log a join, guard, or timeout reaction reads through `ReceivedEvents` is bounded to a configurable window: the current step's own events plus a carry-over of `historyWindow` earlier events, `FlowSaga.Builder.historyWindow(int events)` in Java, defaulting to 100 (the Kotlin flow builder does not yet expose the knob and always uses the default). The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted. Raise the window for a guard or join that needs to count back further than the default 100 events, or lower it to trim what a long-running instance persists. `FlowState`'s bookkeeping fields (`stepEntryIndex`, `previousStep`, `lastAction`, `matchedBranchIndex`, `windowStart`) are internal to the executor and are not a wire-format compatibility guarantee, unlike the retained domain events themselves, which serialize as CloudEvents through the application's `CloudEventConverter`. That means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A machine-core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
 For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) has both authoring surfaces wired through `SagaRunner` with both dispatcher styles.
+
+### Running Across Multiple Instances {#saga-multi-instance}
+
+Run several instances of your application and a saga has two things happening per instance: it receives events, and it polls the state store for due timers. The event side is already single-active when the subscription model is a [competing-consumer](#competing-consumer-subscription-blocking) one (the [Spring Boot starter](#spring-boot-starter) uses one by default), so for a given saga only one instance receives events at a time. The timer poller is separate. Left uncoordinated, every instance runs its own poller and queries the store for due timers on its own interval, so the timer-query load grows with the instance count even though only one instance needs to fire a due timer. Firing stays correct either way, since a lost compare-and-set is retried and the dispatch is idempotent, but the extra queries are wasted work.
+
+Give `SagaRunner.run` a `CompetingConsumerStrategy`, the same strategy the competing-consumer subscription uses, and the poller is gated too: it takes a lease and only polls while it holds it, so exactly one instance queries the store. The lease is keyed apart from the event subscription's own lease, and released when the `SagaSubscription` is closed, so another instance takes over within about one lease period. A standby instance checks whether it holds the lease in memory, so it costs no query at all:
+
+{% capture kotlin %}
+val strategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase)
+
+val subscription = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, cloudEventConverter)
+    .run("order-fulfillment", orderFulfillment, stateStore, dispatcher, null, SagaRunnerConfig.defaults(), strategy)
+{% endcapture %}
+{% capture java %}
+CompetingConsumerStrategy strategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase);
+
+SagaSubscription subscription = SagaRunner.agnostic(subscriptionModel, cloudEventConverter)
+        .run("order-fulfillment", orderFulfillment, stateStore, dispatcher, null, SagaRunnerConfig.defaults(), strategy);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+On the [Spring Boot starter](#spring-boot-starter) this is on by default. A `@Saga` runner reuses the same `SpringMongoLeaseCompetingConsumerStrategy` the subscription model already builds, so nothing extra to wire. Both the poll interval and the gating are configurable under `occurrent.saga`:
+
+```yaml
+occurrent:
+  saga:
+    timer-poll-interval: 1s
+    competing-consumer:
+      enabled: true   # set to false to let every instance poll (the uncoordinated behavior)
+```
+
+Turn `competing-consumer.enabled` off, or run without a strategy, and the poller runs on every instance exactly as it did before. Single-node and in-memory setups need none of this.
+
+Gating removes the redundant queries. It does not change the residual cross-node race noted in the [delivery contract](#saga-delivery-contract) (an event on one instance interleaving with a timeout fired on another), which stays handled by compare-and-set and an idempotent receiver. See [ADR 0064](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0064-lease-gate-the-saga-timer-poller.md) for the full rationale.
 
 ### Side Effects and Compensation {#saga-side-effects}
 
