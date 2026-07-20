@@ -3957,7 +3957,7 @@ On the [Spring Boot starter](#spring-boot-starter) this is on by default. A `@Sa
 ```yaml
 occurrent:
   saga:
-    timer-poll-interval: 1s
+    timer-poll-interval: 15s   # the default, lower it only if you rely on short timeouts firing promptly
     competing-consumer:
       enabled: true   # set to false to let every instance poll (the uncoordinated behavior)
 ```
