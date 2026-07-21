@@ -103,6 +103,17 @@ permalink: /documentation
 * * [Subscription DSL](#subscription-dsl)
 * * [Query DSL](#query-dsl)
 * * * [DCB Query DSL](#dcb-query-dsl)
+* * [Projection DSL](#projection-dsl)
+* * * [Single-instance Projections](#single-instance-projections)
+* * * [Stored Read Model](#maintaining-a-stored-read-model)
+* * * [Event Metadata](#projection-event-metadata)
+* * * [DCB Projections](#dcb-projections)
+* * * [Reading On Demand](#reading-on-demand)
+* * * [Read-your-writes](#read-your-writes)
+* * * [The `@Projection` Annotation](#the-projection-annotation)
+* * * * [Store](#projection-annotation-store)
+* * * * [Read-your-writes (Synchronous Mode)](#projection-annotation-synchronous)
+* * * * [Without the Starter](#projection-annotation-without-starter)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
@@ -645,8 +656,8 @@ To get started with subscriptions refer to [Using Subscriptions](#using-subscrip
      
 ## Views
 
-Occurrent doesn't have any special components for creating views/projections. Instead, you simply create a [subscription](#subscriptions) in which you can create and store 
-the view as you find fit. But this doesn't have to be difficult! Here's a trivial example of a view that maintains the number of
+Occurrent has a higher-level [Projection DSL](#projection-dsl) for maintaining views/projections, described further down. You don't have to reach for it, though. At its simplest a view is just a [subscription](#subscriptions) in which you create and store 
+the view as you find fit. And even that doesn't have to be difficult! Here's a trivial example of a view that maintains the number of
 ended games. It does so by inceasing the "numberOfEndedGames" field in an (imaginary) database for each "GameEnded" event that is written to the event store:
 
 {% capture java %}
@@ -3611,6 +3622,307 @@ occurrent:
 
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.mongo.blocking.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentProperties.java)
 to find which configuration properties that are supported.
+
+## Projection DSL
+
+A read model is the read side's counterpart to a decider. A [decider](#decider) folds events into state and decides new events. A projection folds events into state that you read. Occurrent already gives you a [`View`](#views) for the pure fold, but a `View` on its own doesn't know which events feed it, which view instance an event updates, or where its state is stored. The projection DSL couples those together, so a feature describes its read model right next to its fold, the same way [`DcbDecider`](#coupling-a-decider-to-a-boundary) couples a decider with its boundary and tags on the write side.
+
+A `Projection<S, E, ID>` is a `View` plus either an `id` function (which view instance an event updates) or, for a single-instance read model, no `id` at all (see [Single-instance projections](#single-instance-projections) below), plus the event types the fold handles. You build one with a type-safe handler builder, registering a fold per event type:
+
+{% capture java %}
+Projection<Integer, CourseEvent, String> enrolledStudents =
+        Projection.<Integer, CourseEvent, String>builder(0)
+                .id(CourseEvent::courseId)
+                .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+val enrolledStudents = projection<Int, CourseEvent, String>(initialState = 0) {
+    id { event -> event.courseId }
+    on<StudentEnrolled> { count, _ -> count + 1 }
+    on<StudentUnenrolled> { count, _ -> count - 1 }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The builder both assembles the `View` and records the event types you registered handlers for, so the subscription that feeds the projection is filtered to exactly those events. There's no separate list of subscribed types to keep in sync with the fold. The fold returns the state unchanged for any event type without a handler, so it's always safe to point a projection at a broader stream than it handles. When you need to select on more than the event type, for example a subject, a source, or a time range, set an explicit `filter(...)` on the builder.
+
+### Single-instance projections
+
+Whether a projection needs an `id` comes down to how many views it maintains. A leaderboard folded from every player's events is one view over the whole stream, so it is single-instance and needs no `id`. A per-player profile is one view per player, keyed by player id, so it needs an `id` to pick out which profile each event updates. Rule of thumb: a single view over all events is single-instance and takes no `id`, one view per subject is keyed and takes an `id`.
+
+A single-instance projection folds into one slot rather than one per key, so it has no per-event key to derive and no `id` function to write. Build it with `singletonBuilder(...)` instead of `builder(...)` in Java, or reach for the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
+
+{% capture java %}
+Projection<Integer, CourseEvent, String> totalEnrolledStudents =
+        Projection.<Integer, CourseEvent>singletonBuilder(0)
+                .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+val totalEnrolledStudents = singletonProjection<Int, CourseEvent>(initialState = 0) {
+    on<StudentEnrolled> { count, _ -> count + 1 }
+    on<StudentUnenrolled> { count, _ -> count - 1 }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The framework keys the single stored slot by the projection's own runtime identity, the subscription id passed to `project(...)`, or the `@Projection` id, so on a document store the state's `@Id` must equal that identity, the same constraint as the keyed case. The DCB counterpart, `dcbSingletonProjection`, pairs the same singleton fold with a DCB read boundary. See the `registered-account-count` example under [the `@Projection` annotation](#the-projection-annotation).
+
+### Maintaining a stored read model
+
+Hand the projection to a subscription runner and it does both halves of the work, starting the subscription and keeping the stored read model up to date as events arrive. Supply a `ViewStateRepository` (or a `MaterializedView`, or a Spring `MongoOperations` for the built-in Mongo view store):
+
+{% capture java %}
+ProjectionRunner.stream(subscriptionModel, cloudEventConverter)
+        .project("enrolled-students", enrolledStudents, repository);
+{% endcapture %}
+{% capture kotlin %}
+streamSubscriptions(subscriptionModel, cloudEventConverter) {
+    project("enrolled-students", enrolledStudents, repository)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, folds the event in, and saves the result. Use `subscriptions { }` (the capability-agnostic model) when the read model should see both stream-written and DCB-appended events, or `streamSubscriptions { }` for stream events only.
+
+### Event metadata {#projection-event-metadata}
+
+A fold and the `id` function can also see the event's metadata, its stream id and version, the global position, and any CloudEvent extension, through additional overloads. This is the same [`EventMetadata`](#event-metadata) a plain subscription already hands a subscriber, so a projection reads exactly what a subscriber would see. Use it to key a view instance by something other than its payload, for example the stream id:
+
+{% capture java %}
+Projection<Integer, CourseEvent, String> enrolledStudentsByStream =
+        Projection.<Integer, CourseEvent, String>builder(0)
+                .id((metadata, event) -> metadata.getStreamId())
+                .on(StudentEnrolled.class,   (count, metadata, event) -> count + 1)
+                .on(StudentUnenrolled.class, (count, metadata, event) -> count - 1)
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+val enrolledStudentsByStream = projection<Int, CourseEvent, String>(initialState = 0) {
+    id { metadata, _ -> metadata.streamId }
+    on<StudentEnrolled>   { count, _, _ -> count + 1 }
+    on<StudentUnenrolled> { count, _, _ -> count - 1 }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Every event-only `on(...)` and `id(...)` keeps working unchanged, plain code never has to opt in to metadata. A `DcbProjection` gets the same fold and `id` overloads, and `DcbProjectionRunner` builds the metadata from the delivered event the same way the stream runner does, so a DCB fold can also read the position, or wrap the metadata with `DcbEventMetadata.from(metadata)` for the event's tags.
+
+The metadata-less [on-demand](#reading-on-demand) path has no originating CloudEvent, so it folds with `EventMetadata.empty()`: reading the stream id or version throws, and `getPosition()` (`.position` in Kotlin) is `null`. A projection keyed by metadata can therefore only be maintained through a subscription runner, not read on demand.
+
+### DCB projections
+
+On a DCB store a projection reads inside a consistency boundary rather than by event type alone. A `DcbProjection` adds a `DcbCriteria`, a tag filter, to a `Projection`. This is the read-side answer to a question such as "is this username already claimed?", scoped to the events tagged for that one username. There's one flag per username, and the tag boundary already pins the projection to a single username, so it folds into a single slot with no `id` function:
+
+{% capture kotlin %}
+fun isUsernameClaimed(username: String) =
+    dcbSingletonProjection<Boolean, AccountEvent>(initialState = false) {
+        tags("username:$username")
+        on<AccountRegistered> { _, _ -> true }
+        on<AccountClosed>     { _, _ -> false }
+        on<UsernameChanged>   { _, event -> event.newUsername == username }
+    }
+{% endcapture %}
+{% capture java %}
+Projection<Boolean, AccountEvent, String> view =
+        Projection.<Boolean, AccountEvent>singletonBuilder(false)
+                .on(AccountRegistered.class, (state, event) -> true)
+                .on(AccountClosed.class,     (state, event) -> false)
+                .on(UsernameChanged.class,   (state, event) -> event.newUsername().equals(username))
+                .build();
+DcbProjection<Boolean, AccountEvent, String> isUsernameClaimed =
+        new DcbProjection<>(view, DcbCriteria.tags(Tag.parse("username:" + username)));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Feed it with a DCB subscription the same way you feed a stream projection: `dcbSubscriptions(dcbSubscriptionModel, cloudEventConverter) { project("...", isUsernameClaimed(username), repository) }`.
+
+### Reading on demand
+
+When you want a strongly consistent answer at the moment you ask, skip the subscription and fold a query straight into the projection. This reads the events in the boundary and returns the folded state, with no stored read model to keep in sync:
+
+{% capture kotlin %}
+val claimed: Boolean = dcbQueries.project(isUsernameClaimed("alice"))
+{% endcapture %}
+{% capture java %}
+boolean claimed = dcbProjectionRunner.project(isUsernameClaimed("alice"));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The same projection definition works both ways. Subscribe to keep a read model eventually consistent, or fold a query on demand for a strongly consistent read. The plain, non-DCB `DomainEventQueries` has the same `project` method.
+
+In Java, the on-demand fold is also a static entry point, `Projections.project(projection, queries)`, the counterpart to the Kotlin `project` extension above:
+
+{% capture java %}
+int total = Projections.project(totalEnrolledStudents, domainEventQueries);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java %}
+
+It's only valid for a single-instance (singleton) projection, since folding every instance of a keyed projection into one blended state on demand would be nonsense; use `Projections.project(projection, queries, instanceId)` to scope a keyed projection to one instance instead. `Projections.project(dcbProjection, dcbQueries)` is the DCB counterpart to both; a DCB projection's criteria already scopes the read to one instance, so there's no keyed/singleton distinction to make.
+
+Two guards keep a projection from silently doing the wrong thing. `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, since the durable checkpoint key it derives from `id` must be unique across every registered projection, on both the blocking and reactor feeds. And a `DcbProjection` rejects a wrapped `Projection` that carries its own explicit `filter()`, because that filter would otherwise be silently ignored, a `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter.
+
+### Read-your-writes
+
+Register the projection on a synchronous subscription model and build the application service with it, and the read model updates inside the same transaction as the write. The projected state is then visible the moment `execute(...)` returns, with no eventual-consistency lag. This trades a little write latency for read-your-writes consistency, so reach for it when a command needs to see its own effect immediately.
+
+### Reactor
+
+Everything above has a reactor counterpart in `org.occurrent.dsl.projection.reactor` with the same shape. The push callbacks return `Mono<Void>`, the on-demand `project` returns `Mono<S>`, and you supply either a reactive update function for a reactive store or a blocking view store that the runner bridges onto a bounded-elastic scheduler.
+
+### The `@Projection` annotation {#the-projection-annotation}
+
+If you're on the [Spring Boot Starter](#spring-boot-starter), you don't have to wire up a `ProjectionRunner` yourself. Annotate a factory method that returns a `Projection` or `DcbProjection` with `org.occurrent.annotation.Projection`, and the framework registers it as a persistent read model for you. It subscribes through the same catch-up, durable-resume, and [competing-consumer](#competing-consumer-subscription-blocking) machinery as [`@Subscription` and `@DcbSubscription`](#spring-boot-annotations), for both a stream `Projection` and a `DcbProjection`:
+
+{% capture java %}
+import org.occurrent.annotation.Projection;
+
+@Configuration
+class ProjectionConfig {
+
+    @Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING)
+    org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledStudents() {
+        return org.occurrent.dsl.projection.Projection.<Integer, CourseEvent, String>builder(0)
+                .id(CourseEvent::courseId)
+                .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                .build();
+    }
+}
+{% endcapture %}
+{% capture kotlin %}
+import org.occurrent.annotation.Projection
+
+@Configuration
+class ProjectionConfig {
+
+    @Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING)
+    fun enrolledStudents() = projection<Int, CourseEvent, String>(initialState = 0) {
+        id { event -> event.courseId }
+        on<StudentEnrolled> { count, _ -> count + 1 }
+        on<StudentUnenrolled> { count, _ -> count - 1 }
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The annotation and the DSL's descriptor class share the name `Projection`, so a Java factory method needs to qualify one of them, as above. Kotlin doesn't have this problem since the DSL's entry point is the lowercase `projection` function.
+
+The factory method doesn't have to be a `@Bean` on a `@Configuration` class. The bean post-processor scans every Spring bean's declared methods for `@Projection`, so a plain `@Component` works too, and reads better for a single dedicated projection:
+
+{% capture kotlin %}
+import org.occurrent.annotation.Projection
+
+@Component
+class CourseDashboardProjection {
+
+    @Projection(id = "course-dashboard", startAt = Projection.StartPosition.BEGINNING, store = CourseDashboard::class)
+    fun courseDashboardProjection() = singletonProjection<DashboardState, DomainEvent>(initialState = DashboardState.EMPTY) {
+        on<StudentEnrolled> { state, event -> state.withEnrollment(event) }
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html kotlin=kotlin %}
+
+The `@Configuration` plus `@Bean` form still works, and is handy for grouping several projections in one class. For a single projection, `@Component` is the cleaner shape: with `@Bean`, Spring also registers the returned descriptor as an unused context bean and calls the factory method an extra time, whereas `@Component` invokes it once.
+
+`@Projection` takes:
+
+| Attribute | Description |
+|:----------|:-------------|
+| `id` | The subscription id (required). |
+| `startAt` | `Projection.StartPosition.BEGINNING`, `NOW`, or `DEFAULT`. Same start-position idea as [`@Subscription`'s `startAt`](#subscription-start-position), but note the constant is named `BEGINNING` here, not `BEGINNING_OF_TIME`. |
+| `startAtPosition` | Start after a specific global or DCB position instead, to rewind a durable read model to a known-good point. Mutually exclusive with a non-default `startAt`. |
+| `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](#subscription-start-position) as `@Subscription`. |
+| `startupMode` | `DEFAULT`, `WAIT_UNTIL_STARTED`, or `BACKGROUND`, the same [startup-mode idea](#subscription-startup-mode) as `@Subscription`. |
+| `capability` | `AGNOSTIC` (both stream and DCB events) or `STREAM` (stream events only). Only read for a `Projection` factory. A `DcbProjection` factory ignores it and always subscribes over its own `DcbCriteria`. |
+| `mode` | `ASYNC` (the default) or `SYNCHRONOUS`, see below. |
+| `store` | Select the store bean by type, for example `CourseDashboard.class` (`CourseDashboard::class` in Kotlin). `Void.class`, the default, leaves the type unset. |
+| `storeName` | Select the store bean by name, on its own or together with `store` to disambiguate when several beans share that type. Empty, the default, leaves the name unset. |
+
+`startAt`, `startAtPosition`, and `resumeBehavior` are mutually exclusive with `mode = SYNCHRONOUS`. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
+
+With both `store` and `storeName` unset, the store resolves by convention: the unique `MaterializedView` bean, then `ViewStateRepository`, then `CrudRepository`, then the Mongo default on the blocking stack. The reactive stack has no Mongo default, so an unset pair only resolves there if a unique `MaterializedView` or `ViewStateRepository` bean exists. Naming a `store` type or a `storeName` with no matching bean is an error, not a silent fall-through to convention.
+
+On a DCB store, point the factory method at a `DcbProjection` instead and the subscription runs inside that projection's `DcbCriteria` rather than by event type. A factory that takes a parameter, like [`isUsernameClaimedProjection(username)`](#dcb-projections), doesn't fit here, `@Projection` calls the factory once with no arguments. Use a `DcbCriteria` broad enough to cover every instance the read model needs. Here there's exactly one instance total, a count across every `AccountRegistered` event in the boundary, so the fold is `singleton()` rather than keyed by `id`:
+
+{% capture kotlin %}
+import org.occurrent.annotation.Projection
+
+@Configuration
+class ProjectionConfig {
+
+    @Projection(id = "registered-account-count")
+    fun registeredAccountCount() = dcbSingletonProjection<Int, AccountEvent>(initialState = 0) {
+        criteria(DcbCriteria.type(AccountRegistered::class.java))
+        on<AccountRegistered> { count, _ -> count + 1 }
+    }
+}
+{% endcapture %}
+{% capture java %}
+import org.occurrent.annotation.Projection;
+
+@Configuration
+class ProjectionConfig {
+
+    @Projection(id = "registered-account-count")
+    DcbProjection<Integer, AccountEvent, String> registeredAccountCount() {
+        org.occurrent.dsl.projection.Projection<Integer, AccountEvent, String> view =
+                org.occurrent.dsl.projection.Projection.<Integer, AccountEvent>singletonBuilder(0)
+                        .on(AccountRegistered.class, (count, event) -> count + 1)
+                        .build();
+        return new DcbProjection<>(view, DcbCriteria.type(AccountRegistered.class));
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+#### Store {#projection-annotation-store}
+
+Materializing the projection is store-agnostic. `store` selects the bean by type, `MaterializedView`, `ViewStateRepository`, or a `CrudRepository` subinterface on the blocking stack (no `CrudRepository` on reactive), and `storeName` selects by name on its own or alongside `store` to disambiguate. Leave both unset to fall back to the convention resolution described above. It's the same store abstraction [`ProjectionRunner.project(...)`](#maintaining-a-stored-read-model) already takes as a method argument, just resolved through the annotation instead of passed in code.
+
+#### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
+
+`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
+
+#### Without the starter {#projection-annotation-without-starter}
+
+The starter is optional. `ProjectionRunner.project(...)` already takes a `StartAt` directly, so a plain (non-Spring) caller wiring its own catch-up-capable subscription model, for example a `CatchupSubscriptionModel`, gets the same behavior by computing the position itself:
+
+{% capture java %}
+StartAt startAt = ResumeStartPositions.replayThenResume("enrolled-students", checkpointStorage, StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()));
+ProjectionRunner.stream(subscriptionModel, cloudEventConverter)
+        .project("enrolled-students", enrolledStudents, repository, startAt);
+{% endcapture %}
+{% capture kotlin %}
+val startAt = ResumeStartPositions.replayThenResume("enrolled-students", checkpointStorage, StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()))
+streamSubscriptions(subscriptionModel, cloudEventConverter) {
+    project("enrolled-students", enrolledStudents, repository, startAt)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The DCB side is the same. `DcbProjectionRunner` and the Kotlin `dcbSubscriptions { }` DSL both take a `DcbStartAt`, so given a catch-up-capable DCB model, for example a `DcbCatchupSubscriptionModel`, the same catch-up-then-resume recipe applies, computed with `replayThenResumeDcb(...)`:
+
+{% capture java %}
+DcbStartAt startAt = ResumeStartPositions.replayThenResumeDcb("registered-account-count", checkpointStorage, DcbStartAt.beginning());
+new DcbProjectionRunner<>(dcbCatchupSubscriptionModel, cloudEventConverter)
+        .project("registered-account-count", registeredAccountCount(), repository, startAt);
+{% endcapture %}
+{% capture kotlin %}
+val startAt = ResumeStartPositions.replayThenResumeDcb("registered-account-count", checkpointStorage, DcbStartAt.beginning())
+dcbSubscriptions(dcbCatchupSubscriptionModel, cloudEventConverter) {
+    project("registered-account-count", registeredAccountCount(), repository, startAt)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`ResumeStartPositions.replayThenResume(...)` (package `org.occurrent.subscription.api.blocking`, with the `replayThenResumeDcb(...)` counterpart returning a `DcbStartAt`) checks `checkpointStorage` for an existing checkpoint. It replays from the given position only when there isn't one yet, then resumes from the stored checkpoint on every later run. `@Projection` and `@DcbSubscription` run this same check internally for `resumeBehavior = DEFAULT`. These helpers expose it as plain functions so non-Spring code gets the same catch-up-then-resume behavior.
+
+Whether `DcbProjectionRunner` catches up from history and resumes durably, or only sees live events, depends entirely on the subscription model you hand it. Given a plain live DCB model with no catch-up support it is live-only, the same as pulling a query on demand. Given a catch-up-capable model like `DcbCatchupSubscriptionModel` it catches up and resumes durably across restarts, exactly like the stream `ProjectionRunner`. The `@Projection` annotation gives you the catch-up-capable path automatically by subscribing through the Spring catch-up composite.
 
 ## Reactive Spring Boot Starter
 
