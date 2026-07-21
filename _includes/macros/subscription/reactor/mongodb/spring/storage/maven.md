@@ -1,32 +1,32 @@
 {% capture maven %}
 <dependency>
     <groupId>org.occurrent</groupId>
-    <artifactId>occurrent-subscription-mongodb-spring-reactor-position-storage</artifactId>
+    <artifactId>occurrent-subscription-mongodb-spring-reactor-checkpoint-storage</artifactId>
     <version>{{site.occurrentversion}}</version>
 </dependency>
 {% endcapture %}
 
 {% capture gradle %}
-compile 'org.occurrent:occurrent-subscription-mongodb-spring-reactor-position-storage:{{site.occurrentversion}}'
+compile 'org.occurrent:occurrent-subscription-mongodb-spring-reactor-checkpoint-storage:{{site.occurrentversion}}'
 {% endcapture %}
 
 {% capture sbt %}
-libraryDependencies += "org.occurrent" % "occurrent-subscription-mongodb-spring-reactor-position-storage" % "{{site.occurrentversion}}"
+libraryDependencies += "org.occurrent" % "occurrent-subscription-mongodb-spring-reactor-checkpoint-storage" % "{{site.occurrentversion}}"
 {% endcapture %}
 
 {% capture grape %}
-@Grab(group='org.occurrent', module='occurrent-subscription-mongodb-spring-reactor-position-storage', version='{{site.occurrentversion}}') 
+@Grab(group='org.occurrent', module='occurrent-subscription-mongodb-spring-reactor-checkpoint-storage', version='{{site.occurrentversion}}') 
 {% endcapture %}
 
 {% capture leiningen %}
-[org.occurrent/occurrent-subscription-mongodb-spring-reactor-position-storage "{{site.occurrentversion}}"]
+[org.occurrent/occurrent-subscription-mongodb-spring-reactor-checkpoint-storage "{{site.occurrentversion}}"]
 {% endcapture %}
 
 {% capture buildr %}
-'org.occurrent:occurrent-subscription-mongodb-spring-reactor-position-storage:jar:{{site.occurrentversion}}'
+'org.occurrent:occurrent-subscription-mongodb-spring-reactor-checkpoint-storage:jar:{{site.occurrentversion}}'
 {% endcapture %}
 
 {% capture ivy %}
-<dependency org="org.occurrent" name="occurrent-subscription-mongodb-spring-reactor-position-storage" rev="{{site.occurrentversion}}" />
+<dependency org="org.occurrent" name="occurrent-subscription-mongodb-spring-reactor-checkpoint-storage" rev="{{site.occurrentversion}}" />
 {% endcapture %}
 {% include macros/mavenSnippet.html maven=maven gradle=gradle sbt=sbt grape=grape leiningen=leiningen buildr=buildr ivy=ivy%}
