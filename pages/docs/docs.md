@@ -106,6 +106,7 @@ permalink: /documentation
 * * [Saga DSL](#saga-dsl)
 * * * [The Machine Core](#saga-machine-core)
 * * * [The Flow DSL](#saga-flow-dsl)
+* * * [Event Metadata](#saga-event-metadata)
 * * * [Effects Are Data](#saga-effects)
 * * * [Running a Saga](#running-a-saga)
 * * * [The `@Saga` Annotation](#the-saga-annotation)
@@ -3770,6 +3771,46 @@ step("waiting-for-both-players") {
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 `startsOn` and `correlate` register into the same correlation map, so calling `startsOn` for a type already registered via `correlate` (or the reverse) throws `IllegalStateException` instead of silently overwriting the earlier registration. Register each event type's correlation exactly once, whichever of the two you use.
+
+### Event Metadata {#saga-event-metadata}
+
+`evolve`, `react`, and `onStart` can also see the delivering event's metadata, its stream id and version, the global position, and any CloudEvent extension, through metadata-carrying overloads. This is the same [`EventMetadata`](#event-metadata) a plain subscription already hands a subscriber. A flow step's `on(...)` branch gets the same for its triggering event:
+
+{% capture kotlin %}
+react<PaymentReserved> { _, metadata, e ->
+    val position = metadata.position
+    val streamId = metadata.streamId
+    // Do stuff
+    issue(ShipOrder(e.orderId))
+    cancelTimeout("payment")
+}
+{% endcapture %}
+{% capture java %}
+.react(PaymentReserved.class, (state, metadata, e) -> {
+    Long position = metadata.getPosition();
+    String streamId = metadata.getStreamId();
+    // Do stuff
+    return List.of(
+            SagaEffect.issue(new ShipOrder(e.orderId())),
+            SagaEffect.cancelTimeout("payment"));
+})
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A flow branch takes the metadata first, the same order the subscription DSL uses:
+
+{% capture kotlin %}
+on<PaymentReserved>(then = end) { metadata, payment ->
+    issue(ShipOrder(payment.orderId))
+}
+{% endcapture %}
+{% capture java %}
+.on(PaymentReserved.class, Continuation.end(),
+        (metadata, payment) -> List.of(new ShipOrder(payment.orderId())))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Every event-only `evolve`, `react`, `onStart`, and flow `on(...)` keeps working unchanged, plain code never has to opt in to metadata. A saga does not persist metadata itself, only the events it folds into its own state, so if a reaction needs to remember something from the metadata beyond the current step, keep that slice in the saga's own state rather than relying on it being there later.
 
 ### Effects Are Data {#saga-effects}
 
