@@ -3305,7 +3305,7 @@ fun onEvent(event: CourseEvent) {
 
 ### Reading DCB Metadata
 
-A DCB subscription handler can read the event's metadata the same way a stream subscription can. Declare an `org.occurrent.dsl.subscription.EventMetadata` parameter for the generic parts (stream id, version, `position`, and any CloudEvent extension), or an `org.occurrent.dsl.dcb.DcbEventMetadata` parameter for a DCB-focused view that also exposes the event's tags and its position as an `OptionalLong`. `DcbEventMetadata` wraps an `EventMetadata`, so `eventMetadata()` always gets you back to the generic view. In Kotlin there is also a `dcbTags` extension property on `EventMetadata`, for handlers that take the generic type.
+A DCB subscription handler can read the event's metadata the same way a stream subscription can. Declare an `org.occurrent.cloudevents.EventMetadata` parameter for the generic parts (stream id, version, `position`, and any CloudEvent extension), or an `org.occurrent.dsl.dcb.DcbEventMetadata` parameter for a DCB-focused view that also exposes the event's tags and its position as an `OptionalLong`. `DcbEventMetadata` wraps an `EventMetadata`, so `eventMetadata()` always gets you back to the generic view. In Kotlin there is also a `dcbTags` extension property on `EventMetadata`, for handlers that take the generic type.
 
 {% capture java %}
 @DcbSubscription(id = "courseDashboard")
@@ -3682,7 +3682,7 @@ For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` 
 
 #### Event Metadata
 
-Sometimes it can be useful to get the metadata associated with the received event. For this reason, you can add a parameter of type `org.occurrent.dsl.subscription.EventMetadata` to a method annotated with `@Subscription` or `@StreamSubscription`.
+Sometimes it can be useful to get the metadata associated with the received event. For this reason, you can add a parameter of type `org.occurrent.cloudevents.EventMetadata` to a method annotated with `@Subscription` or `@StreamSubscription`.
 It contains all extension properties added to the [CloudEvent](#cloudevent-metadata), with typed accessors for the common ones: `streamId`, `streamVersion`, and `position` (the global sequence number, or `null` for a stream-written event on a store that does not record a position). Note that for an event delivered through the capability-neutral `@Subscription` or the DCB path, `streamId` is the internal generated partition id rather than a domain stream id, but it is always present. For example:
 
 {% include macros/annotation/metadata-example.md %}
@@ -3716,7 +3716,7 @@ For the {{site.occurrentversion}} release, add the `rewrite-maven-plugin`, point
 
 If you are upgrading an existing MongoDB deployment, note that stream `position` is on by default for new stores, but the events already in your collection have none. The store detects this at startup and turns position off for itself rather than triggering a surprise index build on your existing data. To backfill `position` onto those old events and use position-based catch-up against them, follow the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) and its [tool](https://github.com/johanhaleby/occurrent/blob/main/eventstore/migration/position-backfill/README.md).
 
-0.31.0 also unifies the annotation `ResumeBehavior` and `StartupMode` enums into shared top-level `org.occurrent.annotation.ResumeBehavior` and `org.occurrent.annotation.StartupMode` types, instead of separate nested enums on `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, and `@Projection`. This is a breaking rename for 0.30.0 callers, and the `org.occurrent.UpgradeToOccurrent_0_31` recipe rewrites it for you. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.31.0.md) for the details.
+0.31.0 also unifies the annotation `ResumeBehavior` and `StartupMode` enums into shared top-level `org.occurrent.annotation.ResumeBehavior` and `org.occurrent.annotation.StartupMode` types, instead of separate nested enums on `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, and `@Projection`. This is a breaking rename for 0.30.0 callers, and the `org.occurrent.UpgradeToOccurrent_0_31` recipe rewrites it for you. The same 0.31.0 release also moves `EventMetadata` from `org.occurrent.dsl.subscription` to `org.occurrent.cloudevents`, and the same recipe updates those imports as well. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.31.0.md) for the details.
 
 # Examples
 
