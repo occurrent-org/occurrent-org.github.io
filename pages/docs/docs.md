@@ -106,6 +106,7 @@ permalink: /documentation
 * * [Projection DSL](#projection-dsl)
 * * * [Single-instance Projections](#single-instance-projections)
 * * * [Stored Read Model](#maintaining-a-stored-read-model)
+* * * [Event Metadata](#projection-event-metadata)
 * * * [DCB Projections](#dcb-projections)
 * * * [Reading On Demand](#reading-on-demand)
 * * * [Read-your-writes](#read-your-writes)
@@ -3686,6 +3687,31 @@ streamSubscriptions(subscriptionModel, cloudEventConverter) {
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 `project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, folds the event in, and saves the result. Use `subscriptions { }` (the capability-agnostic model) when the read model should see both stream-written and DCB-appended events, or `streamSubscriptions { }` for stream events only.
+
+### Event metadata {#projection-event-metadata}
+
+A fold and the `id` function can also see the event's metadata, its stream id and version, the global position, and any CloudEvent extension, through additional overloads. This is the same [`EventMetadata`](#event-metadata) a plain subscription already hands a subscriber, so a projection reads exactly what a subscriber would see. Use it to key a view instance by something other than its payload, for example the stream id:
+
+{% capture java %}
+Projection<Integer, CourseEvent, String> enrolledStudentsByStream =
+        Projection.<Integer, CourseEvent, String>builder(0)
+                .id((metadata, event) -> metadata.getStreamId())
+                .on(StudentEnrolled.class,   (count, metadata, event) -> count + 1)
+                .on(StudentUnenrolled.class, (count, metadata, event) -> count - 1)
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+val enrolledStudentsByStream = projection<Int, CourseEvent, String>(initialState = 0) {
+    id { metadata, _ -> metadata.streamId }
+    on<StudentEnrolled>   { count, _, _ -> count + 1 }
+    on<StudentUnenrolled> { count, _, _ -> count - 1 }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Every event-only `on(...)` and `id(...)` keeps working unchanged, plain code never has to opt in to metadata. A `DcbProjection` gets the same fold and `id` overloads, and `DcbProjectionRunner` builds the metadata from the delivered event the same way the stream runner does, so a DCB fold can also read the position, or wrap the metadata with `DcbEventMetadata.from(metadata)` for the event's tags.
+
+The metadata-less [on-demand](#reading-on-demand) path has no originating CloudEvent, so it folds with `EventMetadata.empty()`: reading the stream id or version throws, and `getPosition()` (`.position` in Kotlin) is `null`. A projection keyed by metadata can therefore only be maintained through a subscription runner, not read on demand.
 
 ### DCB projections
 
