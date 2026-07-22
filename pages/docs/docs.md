@@ -3726,7 +3726,7 @@ The flow DSL cannot express everything, on purpose. It has no dynamic N-of-M joi
 
 ### The Flow DSL {#saga-flow-dsl}
 
-The flow DSL describes a process as a linear sequence of named steps. A step is either a set of `on(...)` branches (first match wins) or a single `join(...)`, and it can carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `goTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `goTo` to a step that does not exist is a build error, not a run-time surprise.
+The flow DSL describes a process as a linear sequence of named steps. A step is either a set of `on(...)` branches (first match wins) or a single `join(...)`, and it can carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
 
 The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
 
@@ -3767,6 +3767,33 @@ step("waiting-for-both-players") {
 {% capture java %}
 .step("waiting-for-both-players", step -> step
         .join(List.of(Expectation.of(PlayerReady.class, 2)), Continuation.next(), received -> List.of()))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A `transitionTo` names any step, including the current one, which is how a flow expresses a loop. An auction stays open as long as bids keep arriving: each `BidPlaced` transitions the `bidding` step back to itself, and an absolute timeout closes it once its end time passes. Re-entering the step re-arms its timeout, but because the deadline is derived from the initiating event it stays pinned to the auction's end time rather than sliding forward on every bid:
+
+{% capture kotlin %}
+val auction = saga<AuctionEvent, CloseAuction> {
+    startsOn<AuctionStarted>(correlatedBy = { it.auctionId })
+    correlate<BidPlaced> { it.auctionId }
+    step("bidding") {
+        on<BidPlaced>(then = transitionTo("bidding")) { }
+        timeout(at = { received -> received.initiating<AuctionStarted>().endsAt }, then = end) { received ->
+            issue(CloseAuction(received.initiating<AuctionStarted>().auctionId))
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
+        FlowSaga.<AuctionEvent, CloseAuction>builder()
+                .startsOn(AuctionStarted.class, AuctionStarted::auctionId)
+                .correlate(BidPlaced.class, BidPlaced::auctionId)
+                .step("bidding", step -> step
+                        .on(BidPlaced.class, Continuation.transitionTo("bidding"), bid -> List.of())
+                        .timeout(received -> received.initiating(AuctionStarted.class).endsAt(), Continuation.end(),
+                                received -> List.of(new CloseAuction(received.initiating(AuctionStarted.class).auctionId()))))
+                .build();
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
