@@ -104,7 +104,7 @@ permalink: /documentation
 * * [Query DSL](#query-dsl)
 * * * [DCB Query DSL](#dcb-query-dsl)
 * * [Saga DSL](#saga-dsl)
-* * * [The Machine Core](#saga-machine-core)
+* * * [The Core DSL](#saga-core-dsl)
 * * * [The Flow DSL](#saga-flow-dsl)
 * * * [Event Metadata](#saga-event-metadata)
 * * * [Effects Are Data](#saga-effects)
@@ -3630,11 +3630,10 @@ Here is the order-fulfillment process. `OrderPlaced` reserves payment and arms a
 {% capture kotlin %}
 val orderFulfillment: Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> =
     saga {
-        startsOn<OrderPlaced>(correlatedBy = { it.orderId }) { order ->
+        correlateAll { it.orderId }
+        startsOn<OrderPlaced> { order ->
             issue(ReservePayment(order.orderId, order.amount))
         }
-        correlate<PaymentReserved> { it.orderId }
-        correlate<PaymentFailed> { it.orderId }
         step("awaiting-payment") {
             on<PaymentReserved>(then = end) { payment -> issue(ShipOrder(payment.orderId)) }
             on<PaymentFailed>(then = end) { failure -> issue(CancelOrder(failure.orderId, failure.reason)) }
@@ -3647,10 +3646,9 @@ val orderFulfillment: Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> =
 {% capture java %}
 Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> orderFulfillment =
         FlowSaga.<OrderEvent, OrderCommand>builder()
-                .startsOn(OrderPlaced.class, OrderPlaced::orderId,
+                .correlateAll(OrderEvent::orderId)
+                .startsOn(OrderPlaced.class, null,
                         order -> List.of(new ReservePayment(order.orderId(), order.amount())))
-                .correlate(PaymentReserved.class, PaymentReserved::orderId)
-                .correlate(PaymentFailed.class, PaymentFailed::orderId)
                 .step("awaiting-payment", step -> step
                         .on(PaymentReserved.class, Continuation.end(),
                                 payment -> List.of(new ShipOrder(payment.orderId())))
@@ -3664,11 +3662,11 @@ Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> orderFulfillment =
 
 A saga is not a substitute for a [Dynamic Consistency Boundary](#dynamic-consistency-boundary). When two rules must hold atomically in one append, express both as a single `DcbCriteria` and let one decider decide against them together, which is cheaper and stronger. Reach for a saga only when the process is genuinely cross-boundary and time-involving. The "cancel if payment is not reserved within 30 minutes" rule has no single append at which both facts are known, because the payment may simply never arrive and the deciding write has to be triggered by the passage of time rather than by an event. That is the gap a saga fills, and the only one.
 
-There are two ways to author a saga, and both compile to the same `Saga<E, S, C>` descriptor, so the runner only ever runs one kind of thing. The flow DSL above is the sugar for the common case, a linear process moving through a few named steps. Underneath it is the machine core, an explicit per-event-type fold and reaction. Use the flow DSL when your process is a small sequence of steps, drop to the machine core when it is not.
+There are two ways to author a saga, and both compile to the same `Saga<E, S, C>` descriptor, so the runner only ever runs one kind of thing. The flow DSL above is the sugar for the common case, a linear process moving through a few named steps. Underneath it is the core DSL, an explicit per-event-type fold and reaction. Use the flow DSL when your process is a small sequence of steps, drop to the core DSL when it is not.
 
-### The Machine Core {#saga-machine-core}
+### The Core DSL {#saga-core-dsl}
 
-The machine core is `Saga.builder(initialState)` in Java and `saga(initialState) { }` in Kotlin. You register, per event type, an `evolve` that folds the event into state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+The core DSL is `Saga.builder(initialState)` in Java and `saga(initialState) { }` in Kotlin. You register, per event type, an `evolve` that folds the event into state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
 
 Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
 
@@ -3722,7 +3720,7 @@ Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment =
 
 `correlateAll` (or a per-type `correlate`) says which instance an event belongs to, returned as a plain `String` id. `startsOn` names the event types that create a new instance. An event that correlates to no existing instance and is not a start event is skipped rather than starting one on the wrong event. `build()` fails loudly if any handled event type has no correlation rule, so "event arrived, no idea which instance" cannot happen at run time. `isTerminal` marks the states that end the process. A terminal instance ignores further input, and the runner cancels its outstanding timers.
 
-The flow DSL cannot express everything, on purpose. It has no dynamic N-of-M joins, no accumulators across steps, and no "this event is valid in every step" matching. A process that needs any of those drops to the machine core, where `evolve` and `react` can express them directly.
+The flow DSL cannot express everything, on purpose. It has no dynamic N-of-M joins, no accumulators across steps, and no "this event is valid in every step" matching. A process that needs any of those drops to the core DSL, where `evolve` and `react` can express them directly.
 
 ### The Flow DSL {#saga-flow-dsl}
 
@@ -3908,7 +3906,7 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 The `SagaStateStore` persists each instance. `SagaStateStore.inMemory()` is for tests and single-node use, and `SpringMongoSagaStateStore` (in the blocking MongoDB starter) is the durable one. Unlike a read-model store it supports a compare-and-set save, because an event and a timer can touch the same instance concurrently, so the runner detects a lost update and retries instead of overwriting. Timers live in the same stored envelope as the state, not in an external scheduler. A timer poller inside the runner periodically reads instances with a due timer and re-enters them through the same pipeline a live event uses. That means no deadline or JobRunr infrastructure to run, at the cost of firing precision bounded by the poll interval, which does not matter at the minutes-to-days timescale sagas work on.
 
-Building a `SpringMongoSagaStateStore` by hand for a flow saga needs its four-argument constructor, with the application's `CloudEventConverter` passed alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using the three-argument constructor, throws `IllegalArgumentException` rather than silently losing that package independence. A machine-core saga's state carries no such requirement, since it serializes with the application's own `MongoConverter`.
+Building a `SpringMongoSagaStateStore` by hand for a flow saga needs its four-argument constructor, with the application's `CloudEventConverter` passed alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using the three-argument constructor, throws `IllegalArgumentException` rather than silently losing that package independence. A core saga's state carries no such requirement, since it serializes with the application's own `MongoConverter`.
 
 ### The `@Saga` Annotation {#the-saga-annotation}
 
@@ -3922,11 +3920,10 @@ class OrderFulfillmentSaga {
 
     @Saga(id = "order-fulfillment")
     fun orderFulfillment() = saga {
-        startsOn<OrderPlaced>(correlatedBy = { it.orderId }) { order ->
+        correlateAll { it.orderId }
+        startsOn<OrderPlaced> { order ->
             issue(ReservePayment(order.orderId, order.amount))
         }
-        correlate<PaymentReserved> { it.orderId }
-        correlate<PaymentFailed> { it.orderId }
         step("awaiting-payment") {
             on<PaymentReserved>(then = end) { payment -> issue(ShipOrder(payment.orderId)) }
             on<PaymentFailed>(then = end) { failure -> issue(CancelOrder(failure.orderId, failure.reason)) }
@@ -3952,7 +3949,7 @@ class OrderFulfillmentSaga {
                 .react(OrderPlaced.class, (state, e) -> List.of(
                         SagaEffect.issue(new ReservePayment(e.orderId(), e.amount())),
                         SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
-                // ...the rest of the folds and reactions from the machine-core example above
+                // ...the rest of the folds and reactions from the core example above
                 .isTerminal(state -> state instanceof Completed || state instanceof Cancelled)
                 .build();
     }
@@ -3996,7 +3993,7 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step; the event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it (head-of-line blocking) until it succeeds or the subscription is intervened on. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`, so a receiver has to tolerate more than plain at-least-once multiplicity.
 
-A flow saga does not remember its whole history. The received log a join, guard, or timeout reaction reads through `ReceivedEvents` is bounded to a configurable window: the current step's own events plus a carry-over of `historyWindow` earlier events, `FlowSaga.Builder.historyWindow(int events)` in Java, defaulting to 100 (the Kotlin flow builder does not yet expose the knob and always uses the default). The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted. Raise the window for a guard or join that needs to count back further than the default 100 events, or lower it to trim what a long-running instance persists. `FlowState`'s bookkeeping fields (`stepEntryIndex`, `previousStep`, `lastAction`, `matchedBranchIndex`, `windowStart`) are internal to the executor and are not a wire-format compatibility guarantee, unlike the retained domain events themselves, which serialize as CloudEvents through the application's `CloudEventConverter`. That means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A machine-core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
+A flow saga does not remember its whole history. The received log a join, guard, or timeout reaction reads through `ReceivedEvents` is bounded to a configurable window: the current step's own events plus a carry-over of `historyWindow` earlier events, `FlowSaga.Builder.historyWindow(int events)` in Java, defaulting to 100 (the Kotlin flow builder does not yet expose the knob and always uses the default). The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted. Raise the window for a guard or join that needs to count back further than the default 100 events, or lower it to trim what a long-running instance persists. `FlowState`'s bookkeeping fields (`stepEntryIndex`, `previousStep`, `lastAction`, `matchedBranchIndex`, `windowStart`) are internal to the executor and are not a wire-format compatibility guarantee, unlike the retained domain events themselves, which serialize as CloudEvents through the application's `CloudEventConverter`. That means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
 For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) has both authoring surfaces wired through `SagaRunner` with both dispatcher styles.
 
