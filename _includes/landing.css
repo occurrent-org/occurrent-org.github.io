@@ -279,32 +279,32 @@ nav ul li a:hover {
     text-transform: none;
 }
 
-/* Stretch the code block to fill the column so both backgrounds line up even when
-   one example has more lines than the other. */
-.compare-col .single-snippet {
+/* Each cell is a docsSnippet with Java/Kotlin tabs. Stretch the active tab's code block to
+   fill the column so the two cards stay equal height regardless of line count. */
+.compare-col .multitab-code {
     flex: 1;
-    display: flex;
-}
-
-.compare-col .single-snippet .highlighter-rouge {
-    flex: 1;
-    margin: 0;
     display: flex;
     flex-direction: column;
+    margin-top: 0;
 }
 
-.compare-col .single-snippet .highlight {
+.compare-col .multitab-code > div[data-tab] {
     flex: 1;
+    min-height: 0;
 }
 
-.compare .single-snippet pre {
+.compare-col .multitab-code .highlighter-rouge,
+.compare-col .multitab-code .highlight {
+    height: 100%;
     margin: 0;
-    border-radius: 5px;
+}
+
+.compare .multitab-code pre {
     height: 100%;
     box-sizing: border-box;
 }
 
-.compare .single-snippet pre code {
+.compare .multitab-code pre code {
     font-size: 13px;
 }
 

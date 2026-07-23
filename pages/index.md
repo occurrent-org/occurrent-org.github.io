@@ -17,20 +17,35 @@ permalink: /
     </div>
 </div>
 
-{% capture streamDecider %}
+{% capture streamKotlin %}
 // One boundary per stream
 val game = Decider.create(
     initialState, ::decide, ::evolve
 )
 applicationService.execute(gameId, command, game)
 {% endcapture %}
-{% capture dcbDecider %}
-// A boundary per decision, across entities
+{% capture streamJava %}
+// One boundary per stream
+var game = Decider.create(
+    initialState, this::decide, this::evolve
+);
+deciderApplicationService.execute(gameId, command, game);
+{% endcapture %}
+{% capture dcbKotlin %}
+// A boundary you define per decision, across entities
 val game = DcbDecider.create(
     initialState, ::decide, ::evolve,
     ::boundaryFor, ::tagsFor
 )
 dcbApplicationService.execute(command, game)
+{% endcapture %}
+{% capture dcbJava %}
+// A boundary you define per decision, across entities
+var game = DcbDecider.create(
+    initialState, this::decide, this::evolve,
+    this::boundaryFor, this::tagsFor
+);
+dcbDeciderApplicationService.execute(command, game);
 {% endcapture %}
 
 <div class="landing whitepart">
@@ -39,11 +54,11 @@ dcbApplicationService.execute(command, game)
     <div class="compare">
         <div class="compare-col">
             <h3 class="center">Stream</h3>
-            {% include kotlinSnippet.html kotlin=streamDecider %}
+            {% include macros/docsSnippet.html java=streamJava kotlin=streamKotlin %}
         </div>
         <div class="compare-col">
             <h3 class="center">DCB</h3>
-            {% include kotlinSnippet.html kotlin=dcbDecider %}
+            {% include macros/docsSnippet.html java=dcbJava kotlin=dcbKotlin %}
         </div>
     </div>
 </div>
