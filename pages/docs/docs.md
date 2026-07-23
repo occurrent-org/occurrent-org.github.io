@@ -3158,11 +3158,20 @@ DcbCriteria boundary = c.anyOf(
 // DcbSubscriptions and DcbDomainEventQueries hand you a converter-bound builder via criteria()
 val c = dcbDomainEventQueries.criteria()
 
-val enrollment = c.typeOf<StudentEnrolledInCourse>().tags(course, student)
+val enrollment = c.type<StudentEnrolledInCourse>().tags(course, student)
 val boundary = c.anyOf(
-    c.typeOf<CourseDefined>().tags(course),
-    c.typeOf<StudentRegistered>().tags(student)
+    c.type<CourseDefined>().tags(course),
+    c.type<StudentRegistered>().tags(student)
 )
+
+// Multiple types in one alternative (any-of), reified or via KClass
+val enrollmentOrUnenrollment = c.types<StudentEnrolledInCourse, StudentUnenrolledFromCourse>()
+val enrollmentOrUnenrollmentByClass = c.types(StudentEnrolledInCourse::class, StudentUnenrolledFromCourse::class)
+
+// Seed the builder with a shared boundary, then add query-specific types.
+// This refines the boundary's tags with these types, it does not OR across alternatives.
+val studentBoundary: DcbCriterion = DcbCriteria.tags(student)
+val studentEnrollmentEvents = dcbDomainEventQueries.criteria(studentBoundary).types<StudentEnrolledInCourse, StudentUnenrolledFromCourse>()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
