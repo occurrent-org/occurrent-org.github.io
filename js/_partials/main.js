@@ -78,6 +78,8 @@ if (document.location.pathname.includes("/documentation")) {
         "spring-boot-annotations" : "0.18.0"
         // Uncomment and set the release version once snapshots ship:
         // "snapshots": "0.31.0",
+        // Uncomment and set the release version once synchronous subscriptions ship:
+        // "synchronous-subscriptions": "0.31.0",
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
