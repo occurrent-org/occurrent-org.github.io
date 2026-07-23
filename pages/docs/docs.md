@@ -22,6 +22,9 @@ permalink: /documentation
 * * * [Stream Filtering](#eventstore-stream-filtering)
 * * [Subscriptions](#subscriptions)
 * * [Views](#views)
+* * * [The View DSL](#view-dsl)
+* * * [Storing a view](#materialized-view)
+* * * [Materializing with Spring](#materialized-view-spring)
 * * [Commands](#commands)
 * * * [Philosophy](#command-philosophy)
 * * * [In Occurrent](#commands-in-occurrent)
@@ -670,6 +673,97 @@ subscriptionModel.subscribe("my-view", filter(type("GameEnded"))) {
 Where `filter` is imported `from org.occurrent.subscription.StreamSubscriptionFilter` and `type` is imported from `org.occurrent.condition.Condition`.
 
 While this is a trivial example it shouldn't be difficult to create a view that is backed by a JPA entity in a relational database based on a subscription.
+
+When the fold gets more involved, or you want to unit-test it in isolation and reuse it across an asynchronous subscription, a synchronous write, and an on-demand query, reach for Occurrent's View DSL (`org.occurrent:occurrent-view-dsl`). It is the read-side counterpart of a [decider](#decider): a decider folds events and decides new ones, a `View` folds events into state you read. It is blocking-only, and it is the primitive the higher-level [Projection DSL](#projection-dsl) builds on.
+
+### The View DSL {#view-dsl}
+
+A `View<S, E>` is a pure fold, an initial state and an `evolve` that folds one event into state. It has no I/O, no storage, and no subscription, so it unit-tests with plain equality assertions, the same way a decider or a saga does. Here is a view that folds a person's name events into their current name:
+
+{% capture java %}
+record NameState(String userId, String name) {}
+
+View<NameState, DomainEvent> view = View.create(null, (state, event) -> switch (event) {
+    case NameDefined e    -> new NameState(e.userId(), e.name());
+    case NameWasChanged e -> new NameState(state.userId(), e.name());
+    default               -> state;
+});
+
+// Folding a list of events gives the current state, which is all a unit test needs
+NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
+{% endcapture %}
+{% capture kotlin %}
+data class NameState(val userId: String, val name: String)
+
+val view: View<NameState?, DomainEvent> = view(initialState = null) { state, event ->
+    when (event) {
+        is NameDefined    -> NameState(event.userId(), event.name)
+        is NameWasChanged -> state!!.copy(name = event.name)
+    }
+}
+
+// Folding a list of events gives the current state
+val current: NameState? = view.evolveAll(nameDefined, nameWasChanged)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A view can also fold with the delivering event's metadata, its stream id and version, global position, and CloudEvent extensions, through the metadata-carrying `evolve(state, metadata, event)` (`View.create(initialState, (state, metadata, event) -> ...)` in Java, `view(initialState) { state, metadata, event -> ... }` in Kotlin). The event-only form folds with empty metadata. That lets a view key on the stream id or fold on the global position without carrying either in the event payload. Metadata folding was added in 0.31.0.
+
+### Storing a view {#materialized-view}
+
+A `View` on its own does not know where its state lives or which instance an event updates. A `MaterializedView<E>` binds a `View` to a `ViewStateRepository` and a function that derives the view-instance id from the event, so a single `update(event)` loads the current state, folds the event in, and saves it back. `ViewStateRepository<S, ID>` is storage-neutral, just `findById` and `save`, so you can back it with any store by passing a pair of functions:
+
+{% capture java %}
+// A storage-neutral repository, here over a plain map. Back it with JPA, Mongo, or anything else in production.
+Map<String, NameState> store = new ConcurrentHashMap<>();
+ViewStateRepository<NameState, String> repository = ViewStateRepository.create(store::get, store::put);
+
+// Key each instance by user id and keep it current one event at a time
+MaterializedView<DomainEvent> names = MaterializedView.create(DomainEvent::userId, view, repository);
+
+names.update(nameDefined);
+names.update(nameWasChanged);
+{% endcapture %}
+{% capture kotlin %}
+// A storage-neutral repository, here over a plain map. Back it with JPA, Mongo, or anything else in production.
+val store = ConcurrentHashMap<String, NameState>()
+val repository = viewStateRepository<NameState, String>(find = store::get, save = store::put)
+
+// Key each instance by user id and keep it current one event at a time
+val names: MaterializedView<DomainEvent> = MaterializedView.create({ it.userId() }, view, repository)
+
+names.update(nameDefined)
+names.update(nameWasChanged)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+To key on something only the delivery carries rather than the event body, derive the id from metadata with the `(metadata, event)` form, for example `MaterializedView.create((metadata, event) -> metadata.getStreamId(), view, repository)`.
+
+### Materializing with Spring {#materialized-view-spring}
+
+On the Spring MongoDB stack, `View.materialized(...)` hands you a Mongo-backed `MaterializedView` in one call, over the same `MongoOperations` the rest of Occurrent uses. It stores each instance as a document keyed by the id you derive, retries an optimistic-locking clash with a backoff, and ignores a duplicate-key race by default. Point the blocking [subscription DSL](#subscription-dsl)'s `updateView` at it and the view catches up and then follows the live stream like any other subscription:
+
+```kotlin
+val view: View<NameState?, DomainEvent> = view(initialState = null) { state, event ->
+    when (event) {
+        is NameDefined    -> NameState(event.userId(), event.name)
+        is NameWasChanged -> state!!.copy(name = event.name)
+    }
+}
+
+// Mongo-backed, keyed by user id
+val names: MaterializedView<DomainEvent> = view.materialized(mongoOperations) { it.userId() }
+
+// Keep it up to date from a subscription named "names"
+subscriptions.updateView("names", names)
+
+// Read a stored instance back
+val current: NameState? = view.currentState(mongoOperations, userId)
+```
+
+<div class="comment">The Spring materialization helpers are Kotlin extensions, and the View DSL is blocking-only. From Java, build a <code>ViewStateRepository</code> over <code>MongoOperations</code> yourself and use <code>MaterializedView.create(...)</code> as shown above.</div>
+
+So there are three levels for a read model, and you should pick the lowest one that does the job. A plain [subscription](#subscriptions) that writes to your store, as at the top of this section, when the fold is trivial. The View DSL, when you want a pure, testable fold with store-agnostic materialization. The [Projection DSL](#projection-dsl), when you want the fold, the event types it handles, the view-instance id, and the delivery mode declared together in one place.
 
 ## Commands
 
