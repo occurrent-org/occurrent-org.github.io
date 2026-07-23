@@ -4003,19 +4003,21 @@ For the full design rationale, including the residual cross-node race a compare-
 
 Run several instances of your application and a saga has two things happening per instance: it receives events, and it polls the state store for due timers. The event side is already single-active when the subscription model is a [competing-consumer](#competing-consumer-subscription-blocking) one (the [Spring Boot starter](#spring-boot-starter) uses one by default), so for a given saga only one instance receives events at a time. The timer poller is separate. Left uncoordinated, every instance runs its own poller and queries the store for due timers on its own interval, so the timer-query load grows with the instance count even though only one instance needs to fire a due timer. Firing stays correct either way, since a lost compare-and-set is retried and the dispatch is idempotent, but the extra queries are wasted work.
 
-Give `SagaRunner.run` a `CompetingConsumerStrategy`, the same strategy the competing-consumer subscription uses, and the poller is gated too: it takes a lease and only polls while it holds it, so exactly one instance queries the store. The lease is keyed apart from the event subscription's own lease, and released when the `SagaSubscription` is closed, so another instance takes over within about one lease period. A standby instance checks whether it holds the lease in memory, so it costs no query at all:
+Give the `SagaRunner` a `CompetingConsumerStrategy` with `competingConsumerStrategy(...)`, the same strategy the competing-consumer subscription uses, and the poller is gated too: it takes a lease and only polls while it holds it, so exactly one instance queries the store. The lease is keyed apart from the event subscription's own lease, and released when the `SagaSubscription` is closed, so another instance takes over within about one lease period. A standby instance checks whether it holds the lease in memory, so it costs no query at all:
 
 {% capture kotlin %}
 val strategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase)
 
 val subscription = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, cloudEventConverter)
-    .run("order-fulfillment", orderFulfillment, stateStore, dispatcher, null, SagaRunnerConfig.defaults(), strategy)
+    .competingConsumerStrategy(strategy)
+    .run("order-fulfillment", orderFulfillment, stateStore, dispatcher)
 {% endcapture %}
 {% capture java %}
 CompetingConsumerStrategy strategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase);
 
-SagaSubscription subscription = SagaRunner.agnostic(subscriptionModel, cloudEventConverter)
-        .run("order-fulfillment", orderFulfillment, stateStore, dispatcher, null, SagaRunnerConfig.defaults(), strategy);
+SagaSubscription subscription = SagaRunner.<OrderEvent, OrderCommand>agnostic(subscriptionModel, cloudEventConverter)
+        .competingConsumerStrategy(strategy)
+        .run("order-fulfillment", orderFulfillment, stateStore, dispatcher);
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
