@@ -4749,6 +4749,10 @@ It contains all extension properties added to the [CloudEvent](#cloudevent-metad
 
 {% include macros/annotation/metadata-example.md %}
 
+When you only need the stream id or stream version, annotate a handler parameter with `@StreamId` or `@StreamVersion` instead of taking the whole `EventMetadata`. `@StreamId` binds a `String`, `@StreamVersion` a `long` or `Long`, and they may appear in any order alongside the event and an optional `EventMetadata` parameter. This works on `@Subscription`, `@StreamSubscription`, and `@SynchronousSubscription` (the same internal-partition-id caveat above applies on the capability-neutral `@Subscription`). On `@DcbSubscription` these annotations are rejected at startup, since a DCB handler's stream id and version are internal partition values rather than domain ones.
+
+{% include macros/annotation/stream-id-version-example.md %}
+
 #### Subscription Startup Mode
 
 You can configure whether the subscription should start before the application is ready to receive requests. For example, it might be very important that a certain subscription is started before the first web request comes in:
