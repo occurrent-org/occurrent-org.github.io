@@ -39,6 +39,8 @@ permalink: /documentation
 * * * [Side-Effects](#application-service-side-effects)
 * * * [Transactional Side-Effects](#application-service-transactional-side-effects)
 * * * [Kotlin](#application-service-kotlin-extensions)
+* * [Command Dispatch](#command-dispatch)
+* * * [Deriving the Stream Id From Annotations](#deriving-the-stream-id-from-annotations)
 * * [Sagas](#sagas)
 * * [Policy](#policy)
 * * * [Asynchronous](#asynchronous-policy)
@@ -1634,6 +1636,46 @@ applicationService.execute(
 ```
 
 For synchronous side effects, prefer `sideEffect(...)` or `options().sideEffect(...)` rather than the older policy-style helpers.
+
+## Command Dispatch
+
+A saga or a policy needs to issue commands without knowing how those commands get turned into events. `CommandDispatcher<C>` is the interface for that, with one method, `void dispatch(C command)`. Delivery is at-least-once, so whatever `dispatch` calls into must be safe to run twice on the same command. Running it twice should never append the same events a second time.
+
+{% include macros/command-dispatch/core/maven.md %}
+
+`ApplicationService` is the write engine underneath. It takes a stream id and a decider, reads the stream, decides what to append, and appends it. A `CommandDispatcher` is what the saga calls instead of the `ApplicationService` directly. It resolves which stream the command targets, then hands the command to the `ApplicationService` (or an equivalent write path) that does the actual read, decide, and append. The saga only knows the command, not the stream id or the decider behind it.
+
+To resolve the target stream, a `CommandDispatcher` implementation needs a `StreamIdResolver<C>`, another single-method interface, `String streamId(C command)`. Write one by hand when the stream id has to be computed from the command, or derive it automatically with `@TargetStreamId`.
+
+### Deriving the Stream Id From Annotations
+
+Put `@TargetStreamId` on the field, record component, or getter that already holds the command's target stream id, and `AnnotationStreamIdResolver` reads it with reflection, so you don't have to write a `StreamIdResolver` by hand.
+
+{% capture java %}
+public record EnrollStudent(@TargetStreamId String courseId, String studentId) {
+}
+
+StreamIdResolver<EnrollStudent> streamIdResolver = new AnnotationStreamIdResolver<>();
+// streamIdResolver.streamId(command) returns command.courseId()
+{% endcapture %}
+{% capture kotlin %}
+data class EnrollStudent(
+    @get:TargetStreamId val courseId: String,
+    val studentId: String
+)
+
+val streamIdResolver: StreamIdResolver<EnrollStudent> = AnnotationStreamIdResolver()
+// streamIdResolver.streamId(command) returns command.courseId
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Only one field, record component, or getter per command class can carry `@TargetStreamId`. `AnnotationStreamIdResolver` also accepts a different annotation of your own, for a command that already carries one you'd rather reuse.
+
+{% include macros/command-dispatch/annotation/maven.md %}
+
+This is the single-stream match to [deriving DCB tags from annotations](#deriving-tags-from-annotations). `@DcbTag` marks the fields that become the tags for a DCB boundary spanning several streams. `@TargetStreamId` marks the one field that already is the id of a single stream.
+
+The Spring Boot starter registers a default `StreamIdResolver` bean backed by `AnnotationStreamIdResolver`, scanning your commands for `@TargetStreamId`. Define your own `StreamIdResolver` bean when a command's stream id needs computing rather than reading off one field, and the starter uses that bean instead.
 
 ## Sagas
 
