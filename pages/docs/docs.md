@@ -56,6 +56,7 @@ permalink: /documentation
 * * * [JobRunr](#jobrunr-deadline-scheduler)
 * * * [InMemory](#in-memory-deadline-scheduler)
 * * * [Other](#other-ways-of-expressing-deadlines)
+* [Standalone Spring Library Modules](#standalone-spring-library-modules)
 * [Getting Started](#getting-started)
 * [Choosing An EventStore](#choosing-an-eventstore)
 * * [MongoDB](#mongodb)
@@ -2044,6 +2045,32 @@ If you don't want to use any of the Occurrent libraries for deadline scheduling,
 * [db-scheduler](https://github.com/kagkarlsson/db-scheduler) - Task-scheduler for Java that was inspired by the need for a clustered `java.util.concurrent.ScheduledExecutorService` simpler than Quartz.
 * [Spring Scheduling](https://spring.io/guides/gs/scheduling-tasks/) - Worth looking into if you're already using Spring.
   
+
+# Standalone Spring Library Modules
+
+The [Spring Boot Starter](#spring-boot-starter) auto-wires a saga state store, a snapshot store, and a Spring transaction executor for you. If you're on Spring but not on the Occurrent starter (for example, you wire beans by hand or only need one of these pieces), each is also published as a standalone library artifact with no starter dependency:
+
+* A Spring Data MongoDB `SagaStateStore` implementation, used by [Sagas](#sagas):
+
+{% include macros/saga/mongodb-spring/maven.md %}
+
+* A Spring Data MongoDB blocking `SnapshotStore` implementation, used by [Snapshots](#snapshots):
+
+{% include macros/snapshot/mongodb-spring-blocking/maven.md %}
+
+* A Spring Data MongoDB reactive `SnapshotStore` implementation, the reactive counterpart of the one above:
+
+{% include macros/snapshot/mongodb-spring-reactor/maven.md %}
+
+* A generic Spring `TransactionExecutor` (depends only on `spring-tx`, not MongoDB-specific), used for [transactional side-effects](#application-service-transactional-side-effects):
+
+{% include macros/application-service/transaction-spring/maven.md %}
+
+* A generic reactive Spring `ReactiveTransactionExecutor`, the reactive counterpart of the one above:
+
+{% include macros/application-service/transaction-spring-reactor/maven.md %}
+
+Construct each one directly and pass it wherever the corresponding interface is expected. The starter still gives you these beans for free if you're using it, this is only for manual wiring.
 
 # Getting started
 
