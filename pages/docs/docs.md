@@ -66,7 +66,7 @@ permalink: /documentation
 * * [Blocking](#blocking-subscriptions)
 * * * [Filters](#blocking-subscription-filters)
 * * * [Start Position](#blocking-subscription-start-position)
-* * * [Checkpoint Storage](#blocking-subscription-position-storage)
+* * * [Checkpoint Storage](#blocking-subscription-checkpoint-storage)
 * * * [Implementations](#blocking-subscription-implementations)
 * * * * [MongoDB Native Driver](#blocking-subscription-using-the-native-java-mongodb-driver)
 * * * * [MongoDB with Spring](#blocking-subscription-using-spring-mongotemplate)
@@ -79,7 +79,7 @@ permalink: /documentation
 * * [Reactive](#reactive-subscriptions)
 * * * [Filters](#reactive-subscription-filters)
 * * * [Start Position](#reactive-subscription-start-position)
-* * * [Checkpoint Storage](#reactive-subscription-position-storage)
+* * * [Checkpoint Storage](#reactive-subscription-checkpoint-storage)
 * * * [Implementations](#reactive-subscription-implementations)
 * * * * [MongoDB with Spring](#reactive-subscription-using-spring-reactivemongotemplate)
 * * * * [Durable Subscriptions](#durable-subscriptions-reactive)
@@ -1907,7 +1907,7 @@ Getting started with Occurrent involves these steps:
 1. Once a datastore has been decided, it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
 1. If you need [subscriptions](#using-subscriptions) (i.e. the ability to subscribe to changes from an EventStore) then you need to pick a library that implements this for the datastore that you've chosen. 
    Again, there may be several implementations to choose from.
-1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [checkpoint storage](#blocking-subscription-position-storage) library. 
+1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [checkpoint storage](#blocking-subscription-checkpoint-storage) library. 
    These libraries provide means to automatically (or selectively) store the checkpoint for a subscriber to a datastore. Note that the datastore that stores this checkpoint
    can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store checkpoints in Redis.
 1. You're now good to go, but you may also want to look into more higher-level components if you don't have the need to role your own. We recommend looking into:
@@ -2239,7 +2239,7 @@ for each individual subscriber ("mySubscriptionId" in the example above). If the
 `io.cloudevents.CloudEvent` called `org.occurrent.subscription.CheckpointAwareCloudEvent` which adds an additional method, `Checkpoint getCheckpoint()`, that you can use to get  
 the current checkpoint. You can check if a cloud event contains a checkpoint by calling `CheckpointAwareCloudEvent.hasCheckpoint(cloudEvent)`
 and then get the checkpoint by using `CheckpointAwareCloudEvent.getCheckpointOrThrowIAE(cloudEvent)`. Note that `CheckpointAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
-you're subscribing from a `CheckpointAwareSubscriptionModel`, you are responsible for [keeping track of the checkpoint](#blocking-subscription-position-storage), so 
+you're subscribing from a `CheckpointAwareSubscriptionModel`, you are responsible for [keeping track of the checkpoint](#blocking-subscription-checkpoint-storage), so 
 that it's possible to resume this subscription from the last known checkpoint on application restart. This interface also provides means to get the so called "current global checkpoint", 
 by calling the `globalCheckpoint` method which can be useful when starting a new subscription. 
 
@@ -2247,7 +2247,7 @@ For example, consider the case when subscription "A" starts
 subscribing at the current time (T1). Event E1 is written to the `EventStore` and propagated to subscription "A". But imagine there's a bug in "A" that prevents it
 from performing its action. Later, the bug is fixed and the application is restarted at the "current time" (T2). But since T2 is after T1, E1 will not sent to "A" again since
 it happened before T2. Thus this event is missed! Whether or not this is actually a problem depends on your use case. But to avoid it you should not start the subscription
-at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](#blocking-subscription-position-storage)
+at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](#blocking-subscription-checkpoint-storage)
 _before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.               
 
 ### Blocking Subscription Filters
@@ -2295,11 +2295,11 @@ A subscription can can be started at different locations in the event store. You
 calling the `subscribe` function), or `StartAt.checkpoint(<checkpoint>)`, where `<checkpoint>` is a datastore-specific 
 implementation of the `org.occurrent.subscription.Checkpoint` interface which provides the start position as a `String`. You may want to store the 
 `String` returned by a `Checkpoint` in a database so that it's possible to resume a subscription from the last processed checkpoint on application restart.
-You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](#blocking-subscription-position-storage)
+You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](#blocking-subscription-checkpoint-storage)
 available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
 
    
-### Blocking Subscription Checkpoint Storage {#blocking-subscription-position-storage}
+### Blocking Subscription Checkpoint Storage {#blocking-subscription-checkpoint-storage}
 
 It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the checkpoint
 provided by a [blocking subscription](#blocking-subscriptions) any way you like, Occurrent provides an interface
@@ -2347,18 +2347,18 @@ These are the _non-durable_ [blocking subscription implementations](#blocking-su
 * [In-Memory subscription](#inmemory-subscription)
 
 By "non-durable" we mean implementations that doesn't store the checkpoint in a durable storage automatically.  
-It might be that the datastore does this automatically _or_ that [checkpoint storage](#blocking-subscription-position-storage) is not required
+It might be that the datastore does this automatically _or_ that [checkpoint storage](#blocking-subscription-checkpoint-storage) is not required
 for your use case. If the datastore _doesn't_ support storing the checkpoint automatically, a subscription will typically implement the
 `org.occurrent.subscription.api.blocking.CheckpointAwareSubscriptionModel` interface (since these types of subscriptions needs to be aware of the checkpoint).
 
    
 Typically, if you want the stream to continue where it left off on application restart you want to store away the checkpoint. You can do this anyway you like,
 but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.blocking.CheckpointAwareSubscriptionModel`. 
-These subscriptions can be combined with a [checkpoint storage](#blocking-subscription-position-storage) implementation to store the checkpoint in a durable 
+These subscriptions can be combined with a [checkpoint storage](#blocking-subscription-checkpoint-storage) implementation to store the checkpoint in a durable 
 datastore. 
 
 Occurrent provides a [utility](#durable-subscriptions-blocking) that combines a `CheckpointAwareSubscriptionModel` and 
-a `CheckpointStorage` (see [here](#blocking-subscription-position-storage)) to automatically store the checkpoint   
+a `CheckpointStorage` (see [here](#blocking-subscription-checkpoint-storage)) to automatically store the checkpoint   
 _after each processed event_. You can tweak how often the checkpoint should be persisted in the configuration.
 
 #### Blocking Subscription using the "Native" Java MongoDB Driver
@@ -2380,7 +2380,7 @@ There are a few things to note here that needs explaining. First we have the `Ti
 Last we have the [RetryStrategy](#retry-configuration-blocking) which defines what should happen if there's e.g. a connection issue during the life-time of a subscription or if subscription fails to process a cloud event
 (i.e. the `action` throws an exception). 
 
-Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [checkpoint persistence](#blocking-subscription-position-storage) for this subscription implementation. 
+Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [checkpoint persistence](#blocking-subscription-checkpoint-storage) for this subscription implementation. 
 
 #### Blocking Subscription using Spring MongoTemplate
 
@@ -2452,7 +2452,7 @@ public class WriteToRepository {
      
 Don't forget to add `@EnableRetry` in to your Spring Boot application as well.
 
-Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [checkpoint persistence](#blocking-subscription-position-storage) for this subscription implementation.
+Note that you can provide a [filter](#blocking-subscription-filters), [start position](#blocking-subscription-start-position) and [checkpoint persistence](#blocking-subscription-checkpoint-storage) for this subscription implementation.
 
 ##### Restart Subscription when Oplog Lost 
 
@@ -2482,13 +2482,13 @@ Then you can use it like this:
 
 Storing the checkpoint is useful if you need to resume a subscription from its last known checkpoint when restarting an application. 
 Occurrent provides a utility that implements `SubscriptionModel` and combines a `CheckpointAwareSubscriptionModel` and a `CheckpointStorage` implementation 
-(see [here](#blocking-subscription-position-storage)) to automatically store the checkpoint, by default,   
+(see [here](#blocking-subscription-checkpoint-storage)) to automatically store the checkpoint, by default,   
 after each processed event. If you don't want the checkpoint to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
 to `DurableSubscriptionModelConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
 the checkpoint to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new DurableSubscriptionModelConfig(3)` that 
 creates an instance of `EveryN` that stores the checkpoint for every third event. 
 
-If you want full control, it's recommended to pick a [checkpoint storage](#blocking-subscription-position-storage) implementation, 
+If you want full control, it's recommended to pick a [checkpoint storage](#blocking-subscription-checkpoint-storage) implementation, 
 and store the checkpoint yourself using its API.
 
 To use it, first we need to add the dependency:
@@ -2504,7 +2504,7 @@ that stores the checkpoint, and combine them to a `DurableSubscriptionModel`:
 
 When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events
 as they arrive. A catch-up subscription allows for exactly this! It combines the [EventStoreQueries](#eventstore-queries) API with a 
-[subscription](#blocking-subscriptions) and an optional [checkpoint storage](#blocking-subscription-position-storage). It starts off by streaming
+[subscription](#blocking-subscriptions) and an optional [checkpoint storage](#blocking-subscription-checkpoint-storage). It starts off by streaming
 historic events from the event store and then automatically switch to continuous streaming mode once the historic events have caught up.
 
 To get start you need to add the following dependency:
@@ -2678,14 +2678,14 @@ for each individual subscriber ("mySubscriptionId" in the example above). If the
 the current checkpoint. You can check if a cloud event contains a checkpoint by calling `CheckpointAwareCloudEvent.hasCheckpoint(cloudEvent)`
 and then get the checkpoint by using `CheckpointAwareCloudEvent.getCheckpointOrThrowIAE(cloudEvent)`. 
 Note that `CheckpointAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that
-you're subscribing from a `CheckpointAwareSubscriptionModel`, you are responsible for [keeping track of the checkpoint](#reactive-subscription-position-storage), so 
+you're subscribing from a `CheckpointAwareSubscriptionModel`, you are responsible for [keeping track of the checkpoint](#reactive-subscription-checkpoint-storage), so 
 that it's possible to resume this subscription from the last known checkpoint on application restart. This interface also provides means to get the so called "current global checkpoint", 
 by calling the `globalCheckpoint` method which can be useful when starting a new subscription. 
 
 For example, consider the case when subscription "A" starts subscribing at the current time (T1). Event E1 is written to the `EventStore` and propagated to subscription "A". But imagine there's a bug in "A" that prevents it
 from performing its action. Later, the bug is fixed and the application is restarted at the "current time" (T2). But since T2 is after T1, E1 will not sent to "A" again since
 it happened before T2. Thus this event is missed! Whether or not this is actually a problem depends on your use case. But to avoid it you should not start the subscription
-at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](#reactive-subscription-position-storage)
+at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](#reactive-subscription-checkpoint-storage)
 _before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.               
 
 
@@ -2730,11 +2730,11 @@ A subscription can can be started at different locations in the event store. You
 calling the `subscribe` function), or `StartAt.checkpoint(<checkpoint>)`, where `<checkpoint>` is a datastore-specific 
 implementation of the `org.occurrent.subscription.Checkpoint` interface which provides the start position as a `String`. You may want to store the 
 `String` returned by a `Checkpoint` in a database so that it's possible to resume a subscription from the last processed checkpoint on application restart.
-You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](#reactive-subscription-position-storage)
+You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](#reactive-subscription-checkpoint-storage)
 available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
 
    
-### Reactive Subscription Checkpoint Storage {#reactive-subscription-position-storage}
+### Reactive Subscription Checkpoint Storage {#reactive-subscription-checkpoint-storage}
 
 It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the checkpoint
 provided by a [reactive subscription](#reactive-subscriptions) any way you like, Occurrent provides an interface
@@ -2770,20 +2770,20 @@ These are the _non-durable_ [reactive subscription implementations](#reactive-su
 {% include macros/subscription/common/mongodb/oplog_warning.md %}
 
 By "non-durable" we mean implementations that doesn't store the checkpoint in a durable storage automatically.  
-It might be that the datastore does this automatically _or_ that [checkpoint storage](#reactive-subscription-position-storage) is not required
+It might be that the datastore does this automatically _or_ that [checkpoint storage](#reactive-subscription-checkpoint-storage) is not required
 for your use case. If the datastore _doesn't_ support storing the checkpoint automatically, a subscription will typically implement the
 `org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface (since these types of subscriptions needs to be aware of the checkpoint).
 However, you can do this anyway you like.
    
 Typically, if you want the stream to continue where it left off on application restart you want to store away the checkpoint. You can do this anyway you like,
 but for most cases you probably want to look into implementations of `org.occurrent.subscription.api.reactor.CheckpointStorage`. 
-These subscriptions can be combined with a [checkpoint storage](#reactive-subscription-position-storage) implementation to store the checkpoint in a durable 
+These subscriptions can be combined with a [checkpoint storage](#reactive-subscription-checkpoint-storage) implementation to store the checkpoint in a durable 
 datastore. 
 
 Occurrent provides a [utility](#durable-subscriptions-reactive) that combines a `CheckpointAwareSubscriptionModel` and 
-a `ReactorCheckpointStorage` (see [here](#reactive-subscription-position-storage)) to automatically store the checkpoint   
+a `ReactorCheckpointStorage` (see [here](#reactive-subscription-checkpoint-storage)) to automatically store the checkpoint   
 _after each processed event_. If you don't want the checkpoint to be persisted after _every_ event, it's recommended to pick a 
-[checkpoint storage](#reactive-subscription-position-storage) implementation, and store the checkpoint yourself when you find fit.
+[checkpoint storage](#reactive-subscription-checkpoint-storage) implementation, and store the checkpoint yourself when you find fit.
 
 #### Reactive Subscription using Spring ReactiveMongoTemplate
 
@@ -2805,13 +2805,13 @@ used by the `EventStore` implementation. Secondly, we have the `TimeRepresentati
 
 It should also be noted that Spring takes care of re-attaching to MongoDB if there's a connection issue or other transient errors. This can be configured when creating the `ReactiveMongoTemplate` instance. 
 
-Note that you can provide a [filter](#reactive-subscription-filters), [start position](#reactive-subscription-start-position) and [checkpoint persistence](#reactive-subscription-position-storage) for this subscription implementation.
+Note that you can provide a [filter](#reactive-subscription-filters), [start position](#reactive-subscription-start-position) and [checkpoint persistence](#reactive-subscription-checkpoint-storage) for this subscription implementation.
 
 #### Durable Subscriptions (Reactive)
  
 Storing the checkpoint is useful if you need to resume a subscription from its last known checkpoint when restarting an application.
 Occurrent provides a utility that combines a `CheckpointAwareSubscriptionModel` and a `ReactorCheckpointStorage` implementation 
-(see [here](#reactive-subscription-position-storage)) to automatically store the checkpoint, by default,   
+(see [here](#reactive-subscription-checkpoint-storage)) to automatically store the checkpoint, by default,   
 after each processed event. If you don't want the checkpoint to be persisted after _every_ event, you can control how often this should happen by supplying a predicate 
 to `ReactorDurableSubscriptionModelConfig`. There's a pre-defined predicate, `org.occurrent.subscription.util.predicate.EveryN`, that allow   
 the checkpoint to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new ReactorDurableSubscriptionModelConfig(3)` that 
@@ -3346,7 +3346,7 @@ Occurrent contains a retry module that you can depend on using:
 {% include macros/retry/blocking/maven.md %}
 <div class="comment">Typically you don't need to depend on this module explicitly since many of Occurrent's components already uses this library under the hood and is thus depended on transitively.</div>
 
-Occurrent components that support retry ([subscription model](#blocking-subscriptions) and [checkpoint storage](#blocking-subscription-position-storage) implementations)
+Occurrent components that support retry ([subscription model](#blocking-subscriptions) and [checkpoint storage](#blocking-subscription-checkpoint-storage) implementations)
 typically accepts an instance of `org.occurrent.retry.RetryStrategy` to their constructors. This allows you to configure how they should do retry. You can configure max attempts, 
 a retry predicate, error listener, before/after retry listener, as well as the backoff strategy. Here's an example:
   
