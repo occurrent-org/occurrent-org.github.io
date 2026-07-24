@@ -1808,7 +1808,42 @@ dcbApplicationService.execute(Deposit(100), accountDcbDecider, store, SnapshotOp
 
 "Closing the books" is a domain concept in areas such as accounting, where a period is closed and its closing balance becomes the opening balance of the next period. It is the domain-driven counterpart to a technical every-N snapshot, and Occurrent models it with the tools you have already seen rather than a separate mechanism.
 
-Give the decider a terminal state for the closed period (its `isTerminal` returns true once the books are closed), and snapshot it with `SnapshotPolicies.whenTerminal(decider)`. Model the closing balance as a real domain event, so the closing state lives in the event log and the snapshot stays a discardable optimization. Carry the balance forward by starting the next period as a new stream whose first event sets the opening balance. When a closed period's events are genuinely no longer needed, you can archive them with the event store's [delete operations](#eventstore-operations). If the archived stream had a snapshot, delete it in the same operation (`SnapshotStore.delete(key)`); Occurrent's own version guard now catches a leftover snapshot left ahead of the truncated stream, but do not rely on it as the primary defense. The runnable [`closing-the-books`](https://github.com/johanhaleby/occurrent/tree/master/example/snapshot/closing-the-books) example shows the whole flow.
+Give the decider a terminal state for the closed period. Its `isTerminal` returns true once the books are closed, and from then on the decider refuses any further command. That terminal state is the snapshot trigger, so pair it with `SnapshotPolicies.whenTerminal(decider)`.
+
+The period is the stream, not the account. A closed period is a stream that has reached its end, so you never keep appending to a stream you have already marked terminal. You close `account-42:2026-Q1` and open `account-42:2026-Q2` as a fresh stream. Carry the balance across by modelling it as a real domain event, so the closing state lives in the event log and the snapshot stays a discardable optimization.
+
+{% capture java %}
+SnapshotOptions<AccountState, AccountEvent> onClose =
+        SnapshotOptions.of(1, SnapshotPolicies.whenTerminal(accountDecider));
+var accounts = new SnapshotDeciderApplicationService<>(applicationService, store, onClose);
+
+// Q1 is its own stream. Closing it makes the decider terminal, which triggers the snapshot.
+accounts.execute("account-42:2026-Q1", new Deposit(100), accountDecider);
+accounts.execute("account-42:2026-Q1", new Withdraw(30), accountDecider);
+accounts.execute("account-42:2026-Q1", new CloseBooks("2026-Q1"), accountDecider);
+long closingBalance = store.findLatest("account-42:2026-Q1").orElseThrow().state().balance(); // 70
+
+// Q2 is a new stream. The opening balance is a real event, so it survives archiving Q1.
+accounts.execute("account-42:2026-Q2", new SetOpeningBalance(closingBalance), accountDecider);
+eventStore.deleteEventStream("account-42:2026-Q1");
+{% endcapture %}
+{% capture kotlin %}
+val onClose = SnapshotOptions.of(1, SnapshotPolicies.whenTerminal(accountDecider))
+val accounts = SnapshotDeciderApplicationService(applicationService, store, onClose)
+
+// Q1 is its own stream. Closing it makes the decider terminal, which triggers the snapshot.
+accounts.execute("account-42:2026-Q1", Deposit(100), accountDecider)
+accounts.execute("account-42:2026-Q1", Withdraw(30), accountDecider)
+accounts.execute("account-42:2026-Q1", CloseBooks("2026-Q1"), accountDecider)
+val closingBalance = store.findLatest("account-42:2026-Q1").orElseThrow().state().balance // 70
+
+// Q2 is a new stream. The opening balance is a real event, so it survives archiving Q1.
+accounts.execute("account-42:2026-Q2", SetOpeningBalance(closingBalance), accountDecider)
+eventStore.deleteEventStream("account-42:2026-Q1")
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Once a closed period's events are genuinely no longer needed, archive them with the event store's [delete operations](#eventstore-operations). If the archived stream had a snapshot, delete it in the same call with `SnapshotStore.delete(key)`. Occurrent's version guard catches a snapshot left ahead of a truncated stream, but do not rely on it as the primary defense. The runnable [`closing-the-books`](https://github.com/johanhaleby/occurrent/tree/master/example/snapshot/closing-the-books) example runs this end to end.
 
 ## Deadlines
 
