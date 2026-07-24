@@ -1901,7 +1901,7 @@ Snapshot persistence is best-effort. The snapshot is saved after the write has c
 
 ### Snapshots without a decider
 
-If you only need the folded state and no command handling, describe the fold with a `SnapshotView` and read it on demand. The reader loads the snapshot, folds the tail, and returns the current state, refreshing the snapshot as the policy dictates.
+If you only need the folded state and no command handling, describe the fold with a `SnapshotView` and build a `SnapshotViews` facade over the event store, the converter, and a `SnapshotStore`. Calling `readState(id, view)` loads the latest snapshot, folds the events written since, and returns the current state. It is a plain read that never writes. To persist a fresh snapshot for a deciders-free view on demand, call `snapshots.refresh(accountId, view)`, which folds to the current head and saves a snapshot (there is no automatic write on the read path).
 
 {% capture java %}
 SnapshotView<AccountState, AccountEvent> view = SnapshotView.<AccountState, AccountEvent>builder(AccountState.EMPTY)
@@ -1910,7 +1910,8 @@ SnapshotView<AccountState, AccountEvent> view = SnapshotView.<AccountState, Acco
         .on(MoneyWithdrawn.class, (state, e) -> state.subtract(e.amount()))
         .build();
 
-AccountState current = SnapshotViews.readState(eventStore, cloudEventConverter, accountId, view, store, SnapshotPolicy.everyNEvents(100));
+SnapshotViews<AccountState, AccountEvent> snapshots = SnapshotViews.create(eventStore, cloudEventConverter, store);
+AccountState current = snapshots.readState(accountId, view);
 {% endcapture %}
 {% capture kotlin %}
 val view = snapshotView<AccountState, AccountEvent>(AccountState.EMPTY) {
@@ -1919,7 +1920,8 @@ val view = snapshotView<AccountState, AccountEvent>(AccountState.EMPTY) {
     on<MoneyWithdrawn> { state, e -> state.subtract(e.amount) }
 }
 
-val current = eventStore.readSnapshotState(cloudEventConverter, accountId, view, store, SnapshotPolicy.everyNEvents(100))
+val snapshots = SnapshotViews.create(eventStore, cloudEventConverter, store)
+val current = snapshots.readState(accountId, view)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
