@@ -2539,14 +2539,14 @@ Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH
 
 If your listener already hands you domain events (for example a broker message converter deserializes them for you), pushing them through the CloudEvent model means `domainEvent` to `CloudEvent` and back, a full serialize and deserialize per event. Feed the projection in domain space instead and the live path does no conversion at all.
 
-`Projections.domainEventFeed(projection, repository)` is the live-only feed. It returns a `Consumer<E>` (blocking) or a `Function<E, Mono<Void>>` (reactor) that folds a domain event straight into the read model:
+`Projections.domainEventFeed(projection, repository)` is the live-only feed. On the blocking stack it returns a `MaterializedView<E>`, call `update(event)` or `update(metadata, event)`. On the reactor stack it returns a `BiFunction<EventMetadata, E, Mono<Void>>`. Either way it folds a domain event straight into the read model:
 
 ```java
-Consumer<OrderEvent> feed = Projections.domainEventFeed(orderStatusProjection(), repository);
+MaterializedView<OrderEvent> feed = Projections.domainEventFeed(orderStatusProjection(), repository);
 
 @RabbitListener(queues = "orders")
 public void onMessage(OrderEvent event) {
-    feed.accept(event);   // no CloudEvent conversion
+    feed.update(event);   // no CloudEvent conversion
 }
 ```
 
@@ -2562,6 +2562,8 @@ feed.catchUp();
 ```
 
 Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and runs its catch-up. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`.
+
+A replayed event always has a real `CloudEvent` behind it, so the catch-up always folds with real metadata. A live event does not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
 The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent.
 
