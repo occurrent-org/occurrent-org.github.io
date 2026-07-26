@@ -123,6 +123,7 @@ permalink: /documentation
 * * * [DCB Projections](#dcb-projections)
 * * * [Reading On Demand](#reading-on-demand)
 * * * [Read-your-writes](#read-your-writes)
+* * * [Reactor](#reactor)
 * * * [The `@Projection` Annotation](#the-projection-annotation)
 * * * * [Store](#projection-annotation-store)
 * * * * [Read-your-writes (Synchronous Mode)](#projection-annotation-synchronous)
@@ -1782,7 +1783,7 @@ The Spring Boot starter registers a default `StreamIdResolver` bean backed by `A
 <div class="comment">As of version 0.31.0, Occurrent has its own <a href="#saga-dsl">Saga DSL</a> for writing event-driven process managers in code, with timers, correlation, and Spring wiring. Reach for it before the external libraries below.</div>
 
 A "saga" can be used to represent and coordinate a long-lived business transaction/process (where "long-lived" is kind of arbitrary). This is an advanced subject
-and you should try to avoid sagas if there are other means available to solve the problem (for example use [policies](#policy) if they are sufficient, or [DCB](#dcb) when two rules must hold in one append). If the built-in DSL doesn't fit your needs, Occurrent is a library, so you can also hook in an existing solution, for example:   
+and you should try to avoid sagas if there are other means available to solve the problem (for example use [policies](#policy) if they are sufficient, or [DCB](#dynamic-consistency-boundary) when two rules must hold in one append). If the built-in DSL doesn't fit your needs, Occurrent is a library, so you can also hook in an existing solution, for example:   
 
 * [Temporal](https://temporal.io/) - Open source microservices orchestration platform for running mission critical code at any scale.
 * [zio-saga](https://github.com/VladKopanev/zio-saga) - If you're using [Scala](https://scala-lang.org/) and [zio](https://zio.dev/)  (there's also a [cats implementation](https://github.com/VladKopanev/cats-saga)).
@@ -4433,10 +4434,9 @@ The same projection definition works both ways. Subscribe to keep a read model e
 
 In Java, the on-demand fold is also a static entry point, `Projections.project(projection, queries)`, the counterpart to the Kotlin `project` extension above:
 
-{% capture java %}
+```java
 int total = Projections.project(totalEnrolledStudents, domainEventQueries);
-{% endcapture %}
-{% include macros/docsSnippet.html java=java %}
+```
 
 It's only valid for a single-instance (singleton) projection, since folding every instance of a keyed projection into one blended state on demand would be nonsense; use `Projections.project(projection, queries, instanceId)` to scope a keyed projection to one instance instead. `Projections.project(dcbProjection, dcbQueries)` is the DCB counterpart to both; a DCB projection's criteria already scopes the read to one instance, so there's no keyed/singleton distinction to make.
 
