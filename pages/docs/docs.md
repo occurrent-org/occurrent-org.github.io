@@ -111,6 +111,7 @@ permalink: /documentation
 * * [Reactive DCB](#reactive-dcb)
 * * [Notes](#notes)
 * [Retry](#retry-configuration-blocking)
+* * [Retry and Transactions](#retry-and-transactions)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
 * * [Query DSL](#query-dsl)
@@ -1412,6 +1413,8 @@ It will, again by default, only retry 5 times before giving up, rethrowing the o
 by calling `new GenericApplicationService(eventStore, cloudEventConverter, retryStrategy)`. 
 Use `new GenericApplicationService(eventStore, cloudEventConverter, RetryStrategy.none())` to disable retry. This is also useful if you 
 want to use another retry library.
+
+That retry runs wherever `execute` runs, so if you wrap the call in your own `@Transactional` it retries inside your transaction, where it cannot succeed. See [Retry and Transactions](#retry-and-transactions).
 
 ### Using the Application Service
 
@@ -3429,6 +3432,8 @@ To make the write and the handlers commit or roll back together, configure a `Tr
 
 A handler's own `@Transactional` composes with this. On the same datastore it joins the write's transaction, so the two are atomic. On a different datastore it opens its own transaction, which commits independently and is never atomic with the event write, because there is no distributed transaction. For a handler's `@Transactional` to take effect at all, the annotation processor invokes the handler through its Spring proxy rather than the raw target.
 
+The executor also owns the transaction it opens, which makes it the place a write conflict gets retried. See [Retry and Transactions](#retry-and-transactions).
+
 Best-effort against transactional, side by side:
 
 | | With a `TransactionExecutor` (for example Spring) | `noTransaction()` (best-effort default) |
@@ -3899,7 +3904,7 @@ Two things about these options are easy to get wrong, so they are worth stating 
 
 ## The DCB Application Service
 
-Running that cycle by hand for every command gets repetitive, and it is easy to forget the retry. `DcbApplicationService` does the read, decide, tag, and append for you, retrying automatically on a `DcbAppendConditionNotFulfilledException` (five attempts by default, with exponential backoff). `execute(criteria, fn)` reads the events matching `criteria`, hands them to your function, converts and tags whatever new domain events it returns, and appends them under the same boundary. The service needs a way to derive DCB tags for the events it appends, supplied once as a `TagGenerator` when constructing `GenericDcbApplicationService`, or per call through `DcbExecuteOptions.tagGenerator(...)`.
+Running that cycle by hand for every command gets repetitive, and it is easy to forget the retry. `DcbApplicationService` does the read, decide, tag, and append for you, retrying automatically on a `DcbAppendConditionNotFulfilledException` (five attempts by default, with exponential backoff). `execute(criteria, fn)` reads the events matching `criteria`, hands them to your function, converts and tags whatever new domain events it returns, and appends them under the same boundary. The service needs a way to derive DCB tags for the events it appends, supplied once as a `TagGenerator` when constructing `GenericDcbApplicationService`, or per call through `DcbExecuteOptions.tagGenerator(...)`. That built-in retry sits inside whatever transaction is open around `execute`, so if you open one yourself, retry at your own boundary instead. See [Retry and Transactions](#retry-and-transactions).
 
 The Java signature returns `Optional<DcbAppendResult>`, empty when your function decided there was nothing to do. The Kotlin extension `executeOrNull` returns a nullable `DcbAppendResult` instead, so a no-op command reads as `null` rather than an `Optional`.
 
@@ -4141,6 +4146,33 @@ retryStrategy.execute(info -> {
     ...     
 });
 ```
+
+## Retry and Transactions
+
+A retry only works where it also owns the transaction, because only the code that began a transaction can begin a fresh one. A retry running inside somebody else's transaction spends its attempts on a transaction MongoDB already aborted at the first conflict, and every later attempt fails immediately on its first read. As of version {{site.occurrentversion}} Occurrent applies that rule across the whole write path.
+
+The two Spring MongoDB event stores check for an active transaction before they retry. When they find one they run the write once and let the conflict reach whoever owns the transaction. That covers the DCB append conflict, the any-version write condition, and the global position counter's first write. The native driver store has always behaved this way when it finds an ambient `ClientSession`.
+
+The retry the store gives up is taken over by the layer that does own the transaction. `SpringTransactionExecutor` and `SpringReactiveTransactionExecutor` retry a conflict around the transaction they open, and skip the retry when they are themselves joining a caller's transaction. That is what keeps a [synchronous subscription](#synchronous-subscriptions) setup retrying, since there Occurrent opens the transaction itself so the event write and the handlers commit together.
+
+When neither the store nor an executor owns the transaction, nothing in Occurrent retries and the conflict reaches you right away. That is the intended outcome, and it means you have to retry at your own transaction boundary, outside the transaction rather than inside it. Catching the conflict and carrying on inside the same transaction does not work: a participating write that throws marks the surrounding transaction rollback-only, so a further attempt runs in a transaction whose inner commit is a no-op, and the outer commit then fails with `UnexpectedRollbackException` instead of giving you the partial success you expected. The same goes for the `RetryStrategy` you hand to `GenericApplicationService` or `GenericDcbApplicationService`, because it sits inside your transaction too.
+
+With Spring Retry you get the right shape for free, since retry advice sits outside transaction advice and each attempt therefore runs a fresh transaction:
+
+```kotlin
+@Retryable(include = [DcbAppendConditionNotFulfilledException::class, DataIntegrityViolationException::class], maxAttempts = 5, backoff = Backoff(delay = 100, multiplier = 2.0, maxDelay = 1000))
+operator fun invoke(gameId: GameId, timeOfGuess: Timestamp, playerId: PlayerId, word: Word) {
+    applicationService.execute(GameDcbQueries.gameplay(gameId)) { events ->
+        guessWord(events, timeOfGuess, playerId, word)
+    }
+}
+```
+
+`DataIntegrityViolationException` belongs in that list even though a write conflict is not an integrity violation. MongoDB labels the conflict `TransientTransactionError`, but Spring translates it to `DataIntegrityViolationException`, which is not one of Spring's transient types, so a retry predicate built on `TransientDataAccessException` alone misses the most common conflict there is. Both DCB versions of the [word guessing game](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/word-guessing-game) retry this way.
+
+One consequence worth knowing when you read a failure. [ADR 21](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0021-dcb-write-path-query-scoped-concurrency.md) describes the global position counter as being updated outside the append transaction, which holds only while the store owns that transaction. When the store joins your transaction the counter update joins it as well, so one shared document becomes a conflict point for every concurrent append in that transaction, even for appends to boundaries that have nothing to do with each other. A nested append often loses on the counter before it ever reaches the append itself.
+
+The full reasoning is in [ADR 70](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-retry-only-where-the-transaction-is-owned.md).
 
 # DSL's
 
