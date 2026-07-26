@@ -75,7 +75,8 @@ if (document.location.pathname.includes("/documentation")) {
         "query-dsl" : "0.14.0",
         "spring-boot-starter" : "0.14.0",
         "deadlines" : "0.15.0",
-        "spring-boot-annotations" : "0.18.0"
+        "spring-boot-annotations" : "0.18.0",
+        "change-stream-tuning" : "0.31.0"
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",

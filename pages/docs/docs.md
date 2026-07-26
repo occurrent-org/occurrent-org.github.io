@@ -2468,6 +2468,34 @@ var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, SpringSu
 
 An alternative approach to restarting automatically is to use a [catch-up subscription](#catch-up-subscription-blocking) and restart the subscription from an earlier date.
 
+#### Tuning the MongoDB change stream {#change-stream-tuning}
+
+Both blocking MongoDB subscription models let you tune the change stream they read from. Both options are opt-in. Leave them unset and you get the driver and server defaults, which is what every subscription did before these existed, so upgrading changes nothing on its own.
+
+`batchSize` sets how many change-stream documents the server returns per batch. A larger batch means fewer round trips to the server, which helps throughput on a high-volume subscription such as an outbox, and costs more memory per batch. Values in the low hundreds work well for high throughput, but the right number depends on your event size and load.
+
+`maxAwaitTime` bounds how long the server holds an idle cursor before returning a batch, possibly an empty one. A shorter wait delivers events sooner and costs more `getMore` round trips while the stream is quiet. A longer wait keeps an idle cursor waiting and reduces that chatter. Somewhere between 200 ms and 1000 ms suits most workloads.
+
+```java
+var config = NativeMongoSubscriptionModelConfig.withConfig()
+        .batchSize(500)
+        .maxAwaitTime(Duration.ofMillis(500));
+
+var subscriptionModel = new NativeMongoSubscriptionModel(database, "events", TimeRepresentation.DATE, executor, config);
+```
+
+**The two models do not offer the same options, and that is a Spring Data limitation rather than a choice.** `NativeMongoSubscriptionModel` has both, because it drives the sync driver's `ChangeStreamIterable` directly. `SpringMongoSubscriptionModel` has `maxAwaitTime` only:
+
+```java
+var config = SpringMongoSubscriptionModelConfig
+        .withConfig("events", TimeRepresentation.RFC_3339_STRING)
+        .maxAwaitTime(Duration.ofMillis(500));
+```
+
+It reads the change stream through Spring's `MessageListenerContainer`, whose `ChangeStreamRequestOptions` carries a `maxAwaitTime` but no batch size, and Spring's `ChangeStreamTask` never applies one. So there is no supported way to set a batch size on that path. Reach for `NativeMongoSubscriptionModel` when you need it.
+
+`ReactorMongoSubscriptionModel` offers neither yet. Spring Data's `ReactiveMongoTemplate.changeStream` and its `ChangeStreamOptions` carry neither option, so exposing them means driving the raw reactive driver, which is left as a follow-up.
+
 #### InMemory Subscription
 
 If you're using the [InMemory EventStore](#in-memory-eventstore) you can use the "InMemorySubscriptionModel" to subscribe to new events. For add the dependency:
