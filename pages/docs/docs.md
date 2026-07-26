@@ -3164,6 +3164,42 @@ try {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+### Reading part of a boundary {#dcb-read-options}
+
+`read`, `exists` and `count` each take an optional `DcbReadOptions` that narrows what the store looks at. It carries three things: a position window, a `limit` on how many matching events come back, and a `direction` picking which end of the match that limit keeps.
+
+The position window is what a catch-up or a resumed subscription uses. `DcbReadOptions.afterPosition(p)` reads only what was appended after DCB sequence position `p`, `upToPosition(p)` stops at `p` inclusive, and `between(after, upTo)` does both. Without options you get `fromBeginning()`, everything up to the store's DCB head at read time.
+
+`limit` and `direction` are the interesting pair. `FORWARD` keeps the oldest matching events, `BACKWARD` the newest, so `DcbReadOptions.backwardsLimited(1)` reads the single newest event in a boundary in one round trip instead of folding the whole thing. That is how a gapless sequence finds its last entry.
+
+{% capture java %}
+DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("invoice-sequence", "2026"));
+
+// The newest matching event, without reading the rest
+DcbEventStream last = eventStore.read(boundary, DcbReadOptions.backwardsLimited(1));
+
+// The same thing spelled out, plus a position window
+DcbReadOptions options = DcbReadOptions.afterPosition(1000).backwards().limit(10);
+DcbEventStream recent = eventStore.read(boundary, options);
+{% endcapture %}
+{% capture kotlin %}
+val boundary = DcbCriteria.tagsAnyOf(Tag.of("invoice-sequence", "2026"))
+
+// The newest matching event, without reading the rest
+val last = eventStore.read(boundary, DcbReadOptions.backwardsLimited(1))
+
+// The same thing spelled out, plus a position window
+val options = DcbReadOptions.afterPosition(1000).backwards().limit(10)
+val recent = eventStore.read(boundary, options)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Two things about these options are easy to get wrong, so they are worth stating plainly.
+
+**Direction never changes the order you get back.** A `DcbEventStream` always lists events ascending by DCB position. `BACKWARD` only decides which end of the match survives the `limit`. Read 10 events backwards and you get the 10 newest, still oldest-first.
+
+**Neither the limit nor the direction affects the consistency token.** The token reflects every event matching the criteria at read time, not the handful you asked for. So a limited read is still safe to append against: `backwardsLimited(1)` followed by a `failIfEventsMatch(boundary, token)` append still fails if anything else landed in that boundary, including events the read never returned.
+
 ## The DCB Application Service
 
 Running that cycle by hand for every command gets repetitive, and it is easy to forget the retry. `DcbApplicationService` does the read, decide, tag, and append for you, retrying automatically on a `DcbAppendConditionNotFulfilledException` (five attempts by default, with exponential backoff). `execute(criteria, fn)` reads the events matching `criteria`, hands them to your function, converts and tags whatever new domain events it returns, and appends them under the same boundary. The service needs a way to derive DCB tags for the events it appends, supplied once as a `TagGenerator` when constructing `GenericDcbApplicationService`, or per call through `DcbExecuteOptions.tagGenerator(...)`.
