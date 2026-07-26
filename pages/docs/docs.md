@@ -135,6 +135,7 @@ permalink: /documentation
 * * * [Delivery Contract](#saga-delivery-contract)
 * * * [Running Across Multiple Instances](#saga-multi-instance)
 * * * [Side Effects and Compensation](#saga-side-effects)
+* * * [Observing Saga Instances](#observing-saga-instances)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
@@ -4936,6 +4937,76 @@ timeout(after = Duration.ofMinutes(30), then = end) { received ->
 Both branches issue the same forward-moving `CancelOrder` compensation for the `ReservePayment` issued when the step started, whichever failure mode gets there first.
 
 The one thing to watch is idempotency, and it follows directly from the [delivery contract](#saga-delivery-contract). Command dispatch is at-least-once, so a compensating or external command can arrive twice. An `ApplicationService`-backed target handles that for free, because it re-folds the stream and the target's own invariants reject the duplicate. A raw third-party call does not. When a command triggers a non-idempotent external effect such as an email, a payment capture, or a partner request, give it a stable id derived from the saga and the triggering event, and dedupe at that boundary. The deferred document-local outbox described in [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md) would make dispatch exactly-once and remove this caveat, but it is not built yet.
+
+### Observing Saga Instances {#observing-saga-instances}
+
+A saga runs for as long as its process does, so sooner or later you need to ask operational questions about one. Is this instance still running, which step is it waiting in, and which instances have stopped moving? `SagaInstance` answers those and nothing else:
+
+{% capture kotlin %}
+val instances = subscription.instances()
+
+instances.find(orderId).ifPresent { instance ->
+    println("${instance.sagaId()} is ${instance.status()} in step ${instance.currentStep()}")
+}
+
+// active instances that have not moved for an hour, stalest first
+val stalled = instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(Duration.ofHours(1)), 50)
+{% endcapture %}
+{% capture java %}
+SagaInstances instances = subscription.instances();
+
+instances.find(orderId).ifPresent(instance ->
+        System.out.println(instance.sagaId() + " is " + instance.status() + " in step " + instance.currentStep()));
+
+// active instances that have not moved for an hour, stalest first
+List<SagaInstance> stalled = instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(Duration.ofHours(1)), 50);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A `SagaInstance` carries the id, the `SagaStatus` (`ACTIVE` or `COMPLETED`), the created, updated, and completed timestamps, when the next pending timer is due, and which step a flow saga is waiting in. `currentStep()` is `null` for a core saga, which names its states in your own state type rather than in a step the executor knows about.
+
+It leaves out the saga's own state and the executor's delivery bookkeeping on purpose. A read model shaped for querying belongs in the [Projection DSL](#views), and folding over a saga's private state from outside ties your code to how that process happens to be written.
+
+There is no way to write through this. Nothing here starts, advances, completes, or deletes an instance, because the executor owns those transitions and a compare-and-set save from outside would race the subscription and the timer poller. Retention tooling that really has to remove an instance calls `SagaStateStore.delete(...)`.
+
+`findByStatus` returns the instances in a status whose `updatedAt` falls strictly before the instant you pass, least recently updated first, at most `limit` of them. Pass `Instant.now()` to list everything in a status, or `Instant.now().minus(threshold)` to find the ones that have gone quiet. Stalest-first is what a stuck-instance check wants, because the worst offenders arrive first rather than last. `limit` bounds the result, it does not page it: timestamps persist at millisecond precision, so instances saved in the same millisecond tie, and a timestamp cursor would drop most of a tie group.
+
+Enumeration is an optional store capability. A store implements `SagaStateStoreQueries` to support it, both shipped stores do, and `findByStatus` throws an `UnsupportedOperationException` on a store that does not. `find(sagaId)` works on any store, so a store you wrote yourself to run sagas never has to answer an ordered query it does not need.
+
+On the Spring stack the `@Saga` registrar publishes each saga's `SagaInstances` under a registry keyed by saga id:
+
+{% capture kotlin %}
+@Service
+class SagaDashboard(private val registry: SagaInstancesRegistry) {
+
+    fun stalled(sagaId: String, threshold: Duration): List<SagaInstance> =
+        registry.get(sagaId).findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100)
+
+    fun sagaIds(): Set<String> = registry.sagaIds()
+}
+{% endcapture %}
+{% capture java %}
+@Service
+class SagaDashboard {
+
+    private final SagaInstancesRegistry registry;
+
+    SagaDashboard(SagaInstancesRegistry registry) {
+        this.registry = registry;
+    }
+
+    List<SagaInstance> stalled(String sagaId, Duration threshold) {
+        return registry.get(sagaId).findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100);
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`get(id)` throws and names every id that is registered, which is what you want when the id is a constant in your own code. `find(id)` returns an `Optional` for an id that came from a request or a configuration value. `sagaIds()` lists them so a dashboard does not hardcode ids. Each saga is also published under the bean name `sagaInstances-<id>`, reachable with `getBean` or a `@Qualifier` if you prefer to inject one saga's view directly.
+
+One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
+
+Enumerating instances does not read saga state at all. The MongoDB store keeps `currentStep` in its own document field, the same way it already keeps the earliest pending timer, and projects the rest away, so listing flow-saga instances never decodes their received events. It indexes status together with `updatedAt` to serve the query. Rationale in [ADR 0070](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-saga-instance-observation.md).
 
 ## Reactive Spring Boot Starter
 
