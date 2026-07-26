@@ -1684,7 +1684,13 @@ For synchronous side effects, prefer `sideEffect(...)` or `options().sideEffect(
 
 ## Command Dispatch
 
-A saga or a policy needs to issue commands without knowing how those commands get turned into events. `CommandDispatcher<C>` is the interface for that, with one method, `void dispatch(C command)`. Delivery is at-least-once, so whatever `dispatch` calls into must be safe to run twice on the same command. Running it twice should never append the same events a second time.
+A saga or a policy needs to issue commands without knowing how those commands get turned into events. `CommandDispatcher<C>` is the interface for that. It has one method you must write, `void dispatch(C command)`, so a plain lambda is a valid dispatcher. Delivery is at-least-once, so whatever `dispatch` calls into must be safe to run twice on the same command. Running it twice should never append the same events a second time.
+
+There is a second, optional method, `void dispatchAll(List<C> commands)`. A saga hands one reaction's whole command list to it in a single call, and the default implementation just dispatches them one at a time, which is what a lambda dispatcher gets. Override it when your commands all target one stream or one decider and you can write them together, for example inside a single transaction.
+
+That matters because a saga dispatches before it saves its own state. If the third of three commands fails, the first two have already been dispatched, the state is not saved, and the redelivery runs the reaction again from the top. There is no per-command progress marker, so a command that keeps failing re-issues the ones before it every time. For a receiver backed by an `ApplicationService` that costs nothing, because it re-reads the stream and the target rejects a command it has already applied. For something external and not idempotent, such as sending an email or charging a card, it is worth overriding `dispatchAll` to make the batch atomic.
+
+Overriding it does not make dispatch exactly-once, and Occurrent does not promise that. It closes the window for the one dispatcher that can, and the contract stays at-least-once either way.
 
 {% include macros/command-dispatch/core/maven.md %}
 
@@ -4302,6 +4308,14 @@ val current: NameState? = view.currentState(mongoOperations, userId)
 
 <div class="comment">The Spring materialization helpers are Kotlin extensions, and the View DSL is blocking-only. From Java, build a <code>ViewStateRepository</code> over <code>MongoOperations</code> yourself and use <code>MaterializedView.create(...)</code> as shown above.</div>
 
+The id function can take the event's [metadata](#event-metadata) as well, so a Mongo-backed view can be keyed by the stream id rather than by something in the payload:
+
+```kotlin
+val names: MaterializedView<DomainEvent> = view.materialized(mongoOperations) { metadata, _ -> metadata.streamId }
+```
+
+One rule to know about, because getting it wrong used to produce a view that quietly stayed empty. The document you store must carry the same id the function resolves, as its `@Id`. Reads look the document up by the resolved id, while writes let Spring Data take the document id from the object you save, so if the two disagree every update reads nothing back, folds from the initial state, and writes a fresh document. Occurrent now fails with a message naming both ids instead of letting that happen. Types that Spring Data converts for you are fine, so a hex `String` resolved against an `ObjectId` id, or an `Int` against a `Long`, are not mismatches.
+
 ## Projection DSL
 
 A read model is the read side's counterpart to a decider. A [decider](#decider) folds events into state and decides new events. A projection folds events into state that you read. Occurrent already gives you a [`View`](#views) for the pure fold, but a `View` on its own doesn't know which events feed it, which view instance an event updates, or where its state is stored. The projection DSL couples those together, so a feature describes its read model right next to its fold, the same way [`DcbDecider`](#coupling-a-decider-to-a-boundary) couples a decider with its boundary and tags on the write side.
@@ -4717,7 +4731,7 @@ val gameLobby = saga<GameEvent, CloseGame> {
     startsOn<GameCreated>()
     correlateAll { it.gameId }
     step("awaiting-players") {
-        on<PlayerJoined>(then = end) { }
+        on<PlayerJoined>(then = end)
         timeout(after = Duration.ofMinutes(10), then = end) { received ->
             issue(CloseGame(received.initiating<GameCreated>().gameId))
         }
@@ -4730,12 +4744,30 @@ Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
                 .startsOn(GameCreated.class)
                 .correlateAll(GameEvent::gameId)
                 .step("awaiting-players", step -> step
-                        .on(PlayerJoined.class, Continuation.end(), player -> List.of())
+                        .on(PlayerJoined.class, Continuation.end())
                         .timeout(Duration.ofMinutes(10), Continuation.end(),
                                 received -> List.of(new CloseGame(received.initiating(GameCreated.class).gameId()))))
                 .build();
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Notice that `on<PlayerJoined>(then = end)` has no reaction at all. A branch, join, timeout or start that issues nothing simply omits it, in Java through a `StepBuilder` overload that takes no reaction.
+
+When there is a reaction, it returns what `issue` gives back rather than nothing. That is what makes the mistake below a compile error instead of a saga that silently does nothing at runtime, since a Kotlin lambda expecting `Unit` would have accepted the command and discarded it:
+
+```kotlin
+// Does not compile: the command is produced and never issued
+on<PaymentReserved>(then = end) { ShipOrder(it.orderId) }
+```
+
+You write reactions the same way you always would, because `issue` and the timer calls already return the receiver. The one case that needs a word is a reaction ending on an `if` with no `else`, which has type `Unit` and so cannot close the lambda. End it with `noMore`:
+
+```kotlin
+on<PaymentReserved>(then = end) {
+    if (it.partial) issue(ReserveRemainder(it.orderId))
+    noMore
+}
+```
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
@@ -4743,12 +4775,12 @@ A step is either a set of `on(...)` branches or a single `join(...)`, never both
 
 {% capture kotlin %}
 step("waiting-for-both-players") {
-    join(expect<PlayerReady>(2), then = next) { }
+    join(expect<PlayerReady>(2), then = next)
 }
 {% endcapture %}
 {% capture java %}
 .step("waiting-for-both-players", step -> step
-        .join(List.of(Expectation.of(PlayerReady.class, 2)), Continuation.next(), received -> List.of()))
+        .join(List.of(Expectation.of(PlayerReady.class, 2)), Continuation.next()))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -4760,7 +4792,7 @@ val auction = saga<AuctionEvent, CloseAuction> {
     correlate<AuctionStarted> { it.auctionId }
     correlate<BidPlaced> { it.auctionId }
     step("bidding") {
-        on<BidPlaced>(then = transitionTo("bidding")) { }
+        on<BidPlaced>(then = transitionTo("bidding"))
         timeout(at = { received -> received.initiating<AuctionStarted>().endsAt }, then = end) { received ->
             issue(CloseAuction(received.initiating<AuctionStarted>().auctionId))
         }
@@ -4774,7 +4806,7 @@ Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
                 .correlate(AuctionStarted.class, AuctionStarted::auctionId)
                 .correlate(BidPlaced.class, BidPlaced::auctionId)
                 .step("bidding", step -> step
-                        .on(BidPlaced.class, Continuation.transitionTo("bidding"), bid -> List.of())
+                        .on(BidPlaced.class, Continuation.transitionTo("bidding"))
                         .timeout(received -> received.initiating(AuctionStarted.class).endsAt(), Continuation.end(),
                                 received -> List.of(new CloseAuction(received.initiating(AuctionStarted.class).auctionId()))))
                 .build();
@@ -4996,7 +5028,7 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step; the event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it (head-of-line blocking) until it succeeds or the subscription is intervened on. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`, so a receiver has to tolerate more than plain at-least-once multiplicity.
 
-A flow saga does not remember its whole history. The received log a join, guard, or timeout reaction reads through `ReceivedEvents` is bounded to a configurable window: the current step's own events plus a carry-over of `historyWindow` earlier events, `FlowSaga.Builder.historyWindow(int events)` in Java, defaulting to 100 (the Kotlin flow builder does not yet expose the knob and always uses the default). The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted. Raise the window for a guard or join that needs to count back further than the default 100 events, or lower it to trim what a long-running instance persists. `FlowState`'s bookkeeping fields (`stepEntryIndex`, `previousStep`, `lastAction`, `matchedBranchIndex`, `windowStart`) are internal to the executor and are not a wire-format compatibility guarantee, unlike the retained domain events themselves, which serialize as CloudEvents through the application's `CloudEventConverter`. That means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
+A flow saga does not remember its whole history. The received log a join, guard, or timeout reaction reads through `ReceivedEvents` is bounded to a configurable window: the current step's own events plus a carry-over of `historyWindow` earlier events, `FlowSaga.Builder.historyWindow(int events)` in Java and `historyWindow(events)` inside the Kotlin `saga { }` block, defaulting to 100. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted. Raise the window for a guard or join that needs to count back further than the default 100 events, or lower it to trim what a long-running instance persists. `FlowState`'s bookkeeping fields (`stepEntryIndex`, `previousStep`, `lastAction`, `matchedBranchIndex`, `windowStart`) are internal to the executor and are not a wire-format compatibility guarantee, unlike the retained domain events themselves, which serialize as CloudEvents through the application's `CloudEventConverter`. That means they persist by their stable `CloudEventTypeMapper` type, the same representation the event store uses, not by a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
 For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) wires up both DSLs through `SagaRunner`, with both styles of dispatcher.
 
