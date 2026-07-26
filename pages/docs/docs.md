@@ -40,6 +40,7 @@ permalink: /documentation
 * * * [Transactional Side-Effects](#application-service-transactional-side-effects)
 * * * [Kotlin](#application-service-kotlin-extensions)
 * * [Command Dispatch](#command-dispatch)
+* * * [Convenience Factories](#convenience-factories)
 * * * [Deriving the Stream Id From Annotations](#deriving-the-stream-id-from-annotations)
 * * [Sagas](#sagas)
 * * [Policy](#policy)
@@ -1646,6 +1647,63 @@ A saga or a policy needs to issue commands without knowing how those commands ge
 `ApplicationService` is the write engine underneath. It takes a stream id and a decider, reads the stream, decides what to append, and appends it. A `CommandDispatcher` is what the saga calls instead of the `ApplicationService` directly. It resolves which stream the command targets, then hands the command to the `ApplicationService` (or an equivalent write path) that does the actual read, decide, and append. The saga only knows the command, not the stream id or the decider behind it.
 
 To resolve the target stream, a `CommandDispatcher` implementation needs a `StreamIdResolver<C>`, another single-method interface, `String streamId(C command)`. Write one by hand when the stream id has to be computed from the command, or derive it automatically with `@TargetStreamId`.
+
+### Convenience Factories
+
+Wiring a `CommandDispatcher` by hand means picking an `ApplicationService`, a `Decider`, and (for the stream case) a `StreamIdResolver`, and gluing them together yourself. `CommandDispatchers.decider(...)` and `DcbCommandDispatchers.decider(...)` do that gluing for you, one factory per style of decider.
+
+For a stream-keyed decider, `org.occurrent.command.CommandDispatchers.decider(deciderApplicationService, decider, streamIdResolver)` builds a `CommandDispatcher<C>` that resolves the stream id, then executes the decider through the application service. It lives in `occurrent-command-dispatch`, the same module as `CommandDispatcher` itself, but using it also pulls in `occurrent-decider`, a light, optional dependency you'd otherwise add yourself.
+
+{% capture java %}
+public record PlaceOrder(@TargetStreamId String orderId, String productId, int quantity) {
+}
+
+Decider<PlaceOrder, OrderState, OrderEvent> placeOrderDecider = ...;
+DeciderApplicationService<OrderEvent> applicationService = ...;
+StreamIdResolver<PlaceOrder> streamIdResolver = new AnnotationStreamIdResolver<>();
+
+CommandDispatcher<PlaceOrder> dispatcher = CommandDispatchers.decider(applicationService, placeOrderDecider, streamIdResolver);
+
+dispatcher.dispatch(new PlaceOrder(orderId, productId, quantity));
+{% endcapture %}
+{% capture kotlin %}
+data class PlaceOrder(
+    @get:TargetStreamId val orderId: String,
+    val productId: String,
+    val quantity: Int
+)
+
+val placeOrderDecider: Decider<PlaceOrder, OrderState, OrderEvent> = ...
+val applicationService: DeciderApplicationService<OrderEvent> = ...
+val streamIdResolver: StreamIdResolver<PlaceOrder> = AnnotationStreamIdResolver()
+
+val dispatcher: CommandDispatcher<PlaceOrder> = CommandDispatchers.decider(applicationService, placeOrderDecider, streamIdResolver)
+
+dispatcher.dispatch(PlaceOrder(orderId, productId, quantity))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+For a [`DcbDecider`](#coupling-a-decider-to-a-boundary), `org.occurrent.command.dcb.DcbCommandDispatchers.decider(dcbDeciderApplicationService, dcbDecider)` takes only those two arguments. A `DcbDecider` already carries its own `DcbCriteria` and `TagGenerator`, so there's no stream id to resolve. This factory lives in its own module, `occurrent-command-dispatch-dcb`, kept separate from `occurrent-command-dispatch` so that dispatching commands to plain, stream-keyed deciders doesn't drag in the DCB and CloudEvent stack.
+
+{% include macros/command-dispatch/dcb/maven.md %}
+
+{% capture java %}
+DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> enrollmentDecider = ...;
+DcbDeciderApplicationService<DomainEvent> applicationService = ...;
+
+CommandDispatcher<EnrollStudent> dispatcher = DcbCommandDispatchers.decider(applicationService, enrollmentDecider);
+
+dispatcher.dispatch(new EnrollStudent(courseId, studentId));
+{% endcapture %}
+{% capture kotlin %}
+val enrollmentDcbDecider: DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> = ...
+val applicationService: DcbDeciderApplicationService<DomainEvent> = ...
+
+val dispatcher: CommandDispatcher<EnrollStudent> = DcbCommandDispatchers.decider(applicationService, enrollmentDcbDecider)
+
+dispatcher.dispatch(EnrollStudent(courseId, studentId))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 ### Deriving the Stream Id From Annotations
 
