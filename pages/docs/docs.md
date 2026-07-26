@@ -4769,22 +4769,22 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-When a reaction issues a command only in some cases and nothing in the others, say so with `noMore`. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `noMore`:
+When a reaction issues a command only in some cases and none in the others, say so with `nothing`. It means there is nothing to issue, not that nothing happens: the branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
 
 ```kotlin
 // Issue only when the payment was partial, otherwise nothing
 on<PaymentReserved>(then = end) {
-    if (it.partial) issue(ReserveRemainder(it.orderId)) else noMore
+    if (it.partial) issue(ReserveRemainder(it.orderId)) else nothing
 }
 
 // The same thing when the conditional is the last of several statements
 on<PaymentReserved>(then = end) {
     if (it.partial) issue(ReserveRemainder(it.orderId))
-    noMore
+    nothing
 }
 ```
 
-A `when` works the same way, as long as every branch ends on a command or on `noMore`. Think of `noMore` as how you write "and nothing else happens here", which is a real outcome worth stating rather than an omission.
+A `when` works the same way, as long as every branch ends on a command or on `nothing`. Issuing no command is a real outcome worth stating rather than an omission, which is what the word is for.
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
