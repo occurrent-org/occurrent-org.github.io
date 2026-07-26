@@ -4878,7 +4878,7 @@ val dispatcher = CommandDispatcher<OrderCommand> { command ->
     applicationService.execute(command.orderId) { events -> handle(events, command) }
 }
 
-val subscription = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, cloudEventConverter)
+val runningSaga = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, cloudEventConverter)
     .run("order-fulfillment", orderFulfillment, stateStore, dispatcher)
 {% endcapture %}
 {% capture java %}
@@ -4886,7 +4886,7 @@ SagaStateStore<OrderSagaState> stateStore = SagaStateStore.inMemory();
 CommandDispatcher<OrderCommand> dispatcher = command ->
         applicationService.execute(command.orderId(), events -> handle(events, command));
 
-SagaSubscription subscription = SagaRunner.agnostic(subscriptionModel, cloudEventConverter)
+SagaSubscription runningSaga = SagaRunner.agnostic(subscriptionModel, cloudEventConverter)
         .run("order-fulfillment", orderFulfillment, stateStore, dispatcher);
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
@@ -5004,14 +5004,14 @@ Give the `SagaRunner` a `CompetingConsumerStrategy` with `competingConsumerStrat
 {% capture kotlin %}
 val strategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase)
 
-val subscription = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, cloudEventConverter)
+val runningSaga = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, cloudEventConverter)
     .competingConsumerStrategy(strategy)
     .run("order-fulfillment", orderFulfillment, stateStore, dispatcher)
 {% endcapture %}
 {% capture java %}
 CompetingConsumerStrategy strategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase);
 
-SagaSubscription subscription = SagaRunner.<OrderEvent, OrderCommand>agnostic(subscriptionModel, cloudEventConverter)
+SagaSubscription runningSaga = SagaRunner.<OrderEvent, OrderCommand>agnostic(subscriptionModel, cloudEventConverter)
         .competingConsumerStrategy(strategy)
         .run("order-fulfillment", orderFulfillment, stateStore, dispatcher);
 {% endcapture %}
@@ -5060,7 +5060,7 @@ The one thing to watch is idempotency, and it follows directly from the [deliver
 A saga runs for as long as its process does, so sooner or later you need to ask operational questions about one. Is this instance still running, which step is it waiting in, and which instances have stopped moving? `SagaInstance` answers those and nothing else:
 
 {% capture kotlin %}
-val instances = subscription.instances()
+val instances = runningSaga.instances()
 
 instances.find(orderId).ifPresent { instance ->
     println("${instance.sagaId()} is ${instance.status()} in step ${instance.currentStep()}")
@@ -5070,7 +5070,7 @@ instances.find(orderId).ifPresent { instance ->
 val stalled = instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(Duration.ofHours(1)), 50)
 {% endcapture %}
 {% capture java %}
-SagaInstances instances = subscription.instances();
+SagaInstances instances = runningSaga.instances();
 
 instances.find(orderId).ifPresent(instance ->
         System.out.println(instance.sagaId() + " is " + instance.status() + " in step " + instance.currentStep()));
@@ -5079,6 +5079,8 @@ instances.find(orderId).ifPresent(instance ->
 List<SagaInstance> stalled = instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(Duration.ofHours(1)), 50);
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`SagaInstances` reads the saga's state store, so it is not the event subscription answering these questions. `SagaSubscription.instances()` is a shortcut that hands you a view over the store the saga already runs against, which is also why it keeps working after you close the handle: closing stops that instance's timer poller, it does not close the store. With no handle at hand, in a separate admin process for instance, build one straight from the store with `SagaInstances.of(stateStore)`.
 
 A `SagaInstance` carries the id, the `SagaStatus` (`ACTIVE` or `COMPLETED`), the created, updated, and completed timestamps, when the next pending timer is due, and which step a flow saga is waiting in. `currentStep()` is `null` for a core saga, which names its states in your own state type rather than in a step the executor knows about.
 
