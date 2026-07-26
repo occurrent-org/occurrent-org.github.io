@@ -4300,92 +4300,6 @@ val current: NameState? = view.currentState(mongoOperations, userId)
 
 <div class="comment">The Spring materialization helpers are Kotlin extensions, and the View DSL is blocking-only. From Java, build a <code>ViewStateRepository</code> over <code>MongoOperations</code> yourself and use <code>MaterializedView.create(...)</code> as shown above.</div>
 
-# Spring Boot Starter
-
-<div class="notification">Occurrent {{site.occurrentversion}} requires <b>Java 21</b> or later.</div>
-
-Use the "Spring Boot Starter" project to bootstrap Occurrent quickly if using Spring Boot 4. Add the following to your build script:
-
-{% include macros/spring-boot-starter/maven.md %}
-
-Next create a Spring Boot application annotated with `@SpringBootApplication` as you would normally do, and also add the `@EnableOccurrent` annotation (located in package `org.occurrent.springboot.mongo.blocking`). 
-Occurrent will then configure the following components automatically:
- 
-* A Spring MongoDB Event Store instance (`EventStore`)
-* A Spring `CheckpointStorage` instance 
-* A durable Spring MongoDB competing consumer subscription model (`SubscriptionModel`)
-* A Jackson-based `CloudEventConverter`. From `0.20.1`, the starter autoconfigures the Jackson 3 lane by default. Existing applications can still use the Jackson 2 compatibility lane during migration, but in that case you need to define your own `CloudEventConverter` bean explicitly.
-  It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases).
-  You can do this, for example, by doing:
-  ```java
-  @Bean
-  public CloudEventTypeMapper<GameEvent> cloudEventTypeMapper() {
-    return ReflectionCloudEventTypeMapper.simple(GameEvent.class);
-  }
-  ```
-  This will use the "simple name" (via reflection) of a domain event as the cloud event type. But since the package name is now lost from the cloud event type property, the `ReflectionCloudEventTypeMapper` will append the package name of `GameEvent` when converting back into a domain event. 
-  This _only_ works if all your domain events are located in the exact same package as `GameEvent`. If this is not the case you need to implement a more advanced `CloudEventTypeMapper` such as
-  ```kotlin
-  class CustomTypeMapper : CloudEventTypeMapper<GameEvent> {
-      override fun getCloudEventType(type: Class<out GameEvent>): String = type.simpleName
-  
-      override fun <E : GameEvent> getDomainEventType(cloudEventType: String): Class<E> = when (cloudEventType) {
-          GameStarted::class.simpleName -> GameStarted::class
-          GamePlayed::class.simpleName -> GamePlayed::class
-          // Add all other events here!!
-          ...
-          else -> throw IllegalStateException("Event type $cloudEventType is unknown")
-      }.java as Class<E>
-  }
-  ```
-  or implement your own custom [CloudEventConverter](#cloudevent-conversion).
-* A `GenericApplicationService` instance (`ApplicationService`)
-* A subscription dsl instance (`Subscriptions`)
-* A query dsl instance (`DomainEventQueries`)
-* When the DCB capability is enabled, the DCB counterparts too: a DCB application service (`DcbApplicationService`), a DCB subscription dsl (`DcbSubscriptions`), and a DCB query dsl (`DcbDomainEventQueries`)
-* Support for [annotations](#spring-boot-annotations)
-
-For most new Spring Boot applications, the recommended setup is:
-
-* Spring Boot 4
-* `occurrent-mongodb-spring-boot-starter`
-* `occurrent-cloudevent-converter-jackson3` if you configure the converter explicitly
-
-If you are upgrading an existing application that still depends on the Jackson 2 converter API, you can continue to use that compatibility lane while migrating incrementally. The Spring Boot starter will not autoconfigure the Jackson 2 converter for you, so you must register a `CloudEventConverter` bean yourself, for example:
-
-```java
-import com.fasterxml.jackson.databind.ObjectMapper;
-import java.net.URI;
-import org.occurrent.application.converter.CloudEventConverter;
-import org.occurrent.application.converter.jackson.JacksonCloudEventConverter;
-import org.occurrent.application.converter.typemapper.CloudEventTypeMapper;
-
-@Bean
-CloudEventConverter<GameEvent> cloudEventConverter(ObjectMapper objectMapper, CloudEventTypeMapper<GameEvent> cloudEventTypeMapper) {
-    return new JacksonCloudEventConverter.Builder<GameEvent>(objectMapper, URI.create("urn:example:game"))
-            .typeMapper(cloudEventTypeMapper)
-            .build();
-}
-```
-
-Any user-defined `CloudEventConverter` bean takes precedence over the starter's built-in fallback converter, regardless of whether your custom converter uses Jackson 2 or Jackson 3.
-
-You can of course override other beans as well to tailor them to your needs. 
-See the source code of [org.occurrent.springboot.mongo.blocking.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java)
-if you want to know exactly what gets configured automatically.
-
-It's also possible to configure certain aspects from the `application.yaml` file under the "occurrent" namespace.
-For example:
-                 
-```yaml
-occurrent:
-  application-service:
-    enable-default-retry-strategy: false
-```
-
-You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java)
-to find which configuration properties that are supported.
-
 ## Projection DSL
 
 A read model is the read side's counterpart to a decider. A [decider](#decider) folds events into state and decides new events. A projection folds events into state that you read. Occurrent already gives you a [`View`](#views) for the pure fold, but a `View` on its own doesn't know which events feed it, which view instance an event updates, or where its state is stored. The projection DSL couples those together, so a feature describes its read model right next to its fold, the same way [`DcbDecider`](#coupling-a-decider-to-a-boundary) couples a decider with its boundary and tags on the write side.
@@ -5191,6 +5105,92 @@ class SagaDashboard {
 One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
 
 Enumerating instances does not read saga state at all. The MongoDB store keeps `currentStep` in its own document field, the same way it already keeps the earliest pending timer, and projects the rest away, so listing flow-saga instances never decodes their received events. It indexes status together with `updatedAt` to serve the query. Rationale in [ADR 0070](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-saga-instance-observation.md).
+
+# Spring Boot Starter
+
+<div class="notification">Occurrent {{site.occurrentversion}} requires <b>Java 21</b> or later.</div>
+
+Use the "Spring Boot Starter" project to bootstrap Occurrent quickly if using Spring Boot 4. Add the following to your build script:
+
+{% include macros/spring-boot-starter/maven.md %}
+
+Next create a Spring Boot application annotated with `@SpringBootApplication` as you would normally do, and also add the `@EnableOccurrent` annotation (located in package `org.occurrent.springboot.mongo.blocking`). 
+Occurrent will then configure the following components automatically:
+ 
+* A Spring MongoDB Event Store instance (`EventStore`)
+* A Spring `CheckpointStorage` instance 
+* A durable Spring MongoDB competing consumer subscription model (`SubscriptionModel`)
+* A Jackson-based `CloudEventConverter`. From `0.20.1`, the starter autoconfigures the Jackson 3 lane by default. Existing applications can still use the Jackson 2 compatibility lane during migration, but in that case you need to define your own `CloudEventConverter` bean explicitly.
+  It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases).
+  You can do this, for example, by doing:
+  ```java
+  @Bean
+  public CloudEventTypeMapper<GameEvent> cloudEventTypeMapper() {
+    return ReflectionCloudEventTypeMapper.simple(GameEvent.class);
+  }
+  ```
+  This will use the "simple name" (via reflection) of a domain event as the cloud event type. But since the package name is now lost from the cloud event type property, the `ReflectionCloudEventTypeMapper` will append the package name of `GameEvent` when converting back into a domain event. 
+  This _only_ works if all your domain events are located in the exact same package as `GameEvent`. If this is not the case you need to implement a more advanced `CloudEventTypeMapper` such as
+  ```kotlin
+  class CustomTypeMapper : CloudEventTypeMapper<GameEvent> {
+      override fun getCloudEventType(type: Class<out GameEvent>): String = type.simpleName
+  
+      override fun <E : GameEvent> getDomainEventType(cloudEventType: String): Class<E> = when (cloudEventType) {
+          GameStarted::class.simpleName -> GameStarted::class
+          GamePlayed::class.simpleName -> GamePlayed::class
+          // Add all other events here!!
+          ...
+          else -> throw IllegalStateException("Event type $cloudEventType is unknown")
+      }.java as Class<E>
+  }
+  ```
+  or implement your own custom [CloudEventConverter](#cloudevent-conversion).
+* A `GenericApplicationService` instance (`ApplicationService`)
+* A subscription dsl instance (`Subscriptions`)
+* A query dsl instance (`DomainEventQueries`)
+* When the DCB capability is enabled, the DCB counterparts too: a DCB application service (`DcbApplicationService`), a DCB subscription dsl (`DcbSubscriptions`), and a DCB query dsl (`DcbDomainEventQueries`)
+* Support for [annotations](#spring-boot-annotations)
+
+For most new Spring Boot applications, the recommended setup is:
+
+* Spring Boot 4
+* `occurrent-mongodb-spring-boot-starter`
+* `occurrent-cloudevent-converter-jackson3` if you configure the converter explicitly
+
+If you are upgrading an existing application that still depends on the Jackson 2 converter API, you can continue to use that compatibility lane while migrating incrementally. The Spring Boot starter will not autoconfigure the Jackson 2 converter for you, so you must register a `CloudEventConverter` bean yourself, for example:
+
+```java
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
+import org.occurrent.application.converter.CloudEventConverter;
+import org.occurrent.application.converter.jackson.JacksonCloudEventConverter;
+import org.occurrent.application.converter.typemapper.CloudEventTypeMapper;
+
+@Bean
+CloudEventConverter<GameEvent> cloudEventConverter(ObjectMapper objectMapper, CloudEventTypeMapper<GameEvent> cloudEventTypeMapper) {
+    return new JacksonCloudEventConverter.Builder<GameEvent>(objectMapper, URI.create("urn:example:game"))
+            .typeMapper(cloudEventTypeMapper)
+            .build();
+}
+```
+
+Any user-defined `CloudEventConverter` bean takes precedence over the starter's built-in fallback converter, regardless of whether your custom converter uses Jackson 2 or Jackson 3.
+
+You can of course override other beans as well to tailor them to your needs. 
+See the source code of [org.occurrent.springboot.mongo.blocking.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java)
+if you want to know exactly what gets configured automatically.
+
+It's also possible to configure certain aspects from the `application.yaml` file under the "occurrent" namespace.
+For example:
+                 
+```yaml
+occurrent:
+  application-service:
+    enable-default-retry-strategy: false
+```
+
+You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java)
+to find which configuration properties that are supported.
 
 ## Reactive Spring Boot Starter
 
