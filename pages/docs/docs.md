@@ -4731,7 +4731,7 @@ val gameLobby = saga<GameEvent, CloseGame> {
     startsOn<GameCreated>()
     correlateAll { it.gameId }
     step("awaiting-players") {
-        on<PlayerJoined>(then = end) { }
+        on<PlayerJoined>(then = end)
         timeout(after = Duration.ofMinutes(10), then = end) { received ->
             issue(CloseGame(received.initiating<GameCreated>().gameId))
         }
@@ -4744,12 +4744,30 @@ Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
                 .startsOn(GameCreated.class)
                 .correlateAll(GameEvent::gameId)
                 .step("awaiting-players", step -> step
-                        .on(PlayerJoined.class, Continuation.end(), player -> List.of())
+                        .on(PlayerJoined.class, Continuation.end())
                         .timeout(Duration.ofMinutes(10), Continuation.end(),
                                 received -> List.of(new CloseGame(received.initiating(GameCreated.class).gameId()))))
                 .build();
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Notice that `on<PlayerJoined>(then = end)` has no reaction at all. A branch, join, timeout or start that issues nothing simply omits it, in Java through a `StepBuilder` overload that takes no reaction.
+
+When there is a reaction, it returns what `issue` gives back rather than nothing. That is what makes the mistake below a compile error instead of a saga that silently does nothing at runtime, since a Kotlin lambda expecting `Unit` would have accepted the command and discarded it:
+
+```kotlin
+// Does not compile: the command is produced and never issued
+on<PaymentReserved>(then = end) { ShipOrder(it.orderId) }
+```
+
+You write reactions the same way you always would, because `issue` and the timer calls already return the receiver. The one case that needs a word is a reaction ending on an `if` with no `else`, which has type `Unit` and so cannot close the lambda. End it with `noMore`:
+
+```kotlin
+on<PaymentReserved>(then = end) {
+    if (it.partial) issue(ReserveRemainder(it.orderId))
+    noMore
+}
+```
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
@@ -4757,12 +4775,12 @@ A step is either a set of `on(...)` branches or a single `join(...)`, never both
 
 {% capture kotlin %}
 step("waiting-for-both-players") {
-    join(expect<PlayerReady>(2), then = next) { }
+    join(expect<PlayerReady>(2), then = next)
 }
 {% endcapture %}
 {% capture java %}
 .step("waiting-for-both-players", step -> step
-        .join(List.of(Expectation.of(PlayerReady.class, 2)), Continuation.next(), received -> List.of()))
+        .join(List.of(Expectation.of(PlayerReady.class, 2)), Continuation.next()))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -4774,7 +4792,7 @@ val auction = saga<AuctionEvent, CloseAuction> {
     correlate<AuctionStarted> { it.auctionId }
     correlate<BidPlaced> { it.auctionId }
     step("bidding") {
-        on<BidPlaced>(then = transitionTo("bidding")) { }
+        on<BidPlaced>(then = transitionTo("bidding"))
         timeout(at = { received -> received.initiating<AuctionStarted>().endsAt }, then = end) { received ->
             issue(CloseAuction(received.initiating<AuctionStarted>().auctionId))
         }
@@ -4788,7 +4806,7 @@ Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
                 .correlate(AuctionStarted.class, AuctionStarted::auctionId)
                 .correlate(BidPlaced.class, BidPlaced::auctionId)
                 .step("bidding", step -> step
-                        .on(BidPlaced.class, Continuation.transitionTo("bidding"), bid -> List.of())
+                        .on(BidPlaced.class, Continuation.transitionTo("bidding"))
                         .timeout(received -> received.initiating(AuctionStarted.class).endsAt(), Continuation.end(),
                                 received -> List.of(new CloseAuction(received.initiating(AuctionStarted.class).auctionId()))))
                 .build();
