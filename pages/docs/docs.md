@@ -4369,7 +4369,7 @@ The runner comes in the same three flavours as the [subscription DSL](#subscript
 
 DCB has its own pair rather than an option on these, because a `DcbProjection` is scoped by tags rather than by event type. `DcbProjectionRunner` and the Kotlin `dcbSubscriptions { }` take a `DcbProjection` and subscribe to its `DcbCriteria`, covered under [DCB projections](#dcb-projections).
 
-`project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, folds the event in, and saves the result. Use `subscriptions { }` (the capability-agnostic model) when the read model should see both stream-written and DCB-appended events, or `streamSubscriptions { }` for stream events only.
+`project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, folds the event in, and saves the result.
 
 ### Event metadata {#projection-event-metadata}
 
@@ -4410,14 +4410,15 @@ fun isUsernameClaimed(username: String) =
     }
 {% endcapture %}
 {% capture java %}
-Projection<Boolean, AccountEvent, String> view =
-        Projection.<Boolean, AccountEvent>singletonBuilder(false)
-                .on(AccountRegistered.class, (state, event) -> true)
-                .on(AccountClosed.class,     (state, event) -> false)
-                .on(UsernameChanged.class,   (state, event) -> event.newUsername().equals(username))
-                .build();
-DcbProjection<Boolean, AccountEvent, String> isUsernameClaimed =
-        new DcbProjection<>(view, DcbCriteria.tags(Tag.parse("username:" + username)));
+DcbProjection<Boolean, AccountEvent, String> isUsernameClaimed(String username) {
+    Projection<Boolean, AccountEvent, String> view =
+            Projection.<Boolean, AccountEvent>singletonBuilder(false)
+                    .on(AccountRegistered.class, (state, event) -> true)
+                    .on(AccountClosed.class,     (state, event) -> false)
+                    .on(UsernameChanged.class,   (state, event) -> event.newUsername().equals(username))
+                    .build();
+    return new DcbProjection<>(view, DcbCriteria.tags(Tag.parse("username:" + username)));
+}
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -4431,7 +4432,7 @@ When you want a strongly consistent answer at the moment you ask, skip the subsc
 val claimed: Boolean = dcbQueries.project(isUsernameClaimed("alice"))
 {% endcapture %}
 {% capture java %}
-boolean claimed = dcbProjectionRunner.project(isUsernameClaimed("alice"));
+boolean claimed = Projections.project(isUsernameClaimed("alice"), dcbQueries);
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -4563,7 +4564,7 @@ class ProjectionConfig {
 
 #### Store {#projection-annotation-store}
 
-Materializing the projection is store-agnostic. `store` selects the bean by type, `MaterializedView`, `ViewStateRepository`, or a `CrudRepository` subinterface on the blocking stack (no `CrudRepository` on reactive), and `storeName` selects by name on its own or alongside `store` to disambiguate. Leave both unset to fall back to the convention resolution described above. It's the same store abstraction [`ProjectionRunner.project(...)`](#maintaining-a-stored-read-model) already takes as a method argument, just resolved through the annotation instead of passed in code.
+You choose where the projection is stored. `store` selects the bean by type, `MaterializedView`, `ViewStateRepository`, or a `CrudRepository` subinterface on the blocking stack (no `CrudRepository` on reactive), and `storeName` selects by name on its own or alongside `store` to disambiguate. Leave both unset to fall back to the convention resolution described above. It's the same store abstraction [`ProjectionRunner.project(...)`](#maintaining-a-stored-read-model) already takes as a method argument, just resolved through the annotation instead of passed in code.
 
 #### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
 
@@ -4846,7 +4847,7 @@ A reaction never performs an effect. It returns a list of `SagaEffect` values an
 
 Timers use `Duration` and `Instant`, never the [deadline module](#deadlines). Keeping effects as plain data is what makes a reaction pure. A relative `Duration` is resolved against the clock by the runner when it stores the timer, not inside `react`, so the same reaction returns the same effect values every time and you can assert on them with plain equality.
 
-Here are all three effects in play: reserving payment issues a command and arms the payment timer, reserving it successfully issues another command and disarms that same timer:
+Here are three of them in play: reserving payment issues a command and arms the payment timer, reserving it successfully issues another command and disarms that same timer:
 
 {% capture kotlin %}
 react<OrderPlaced> { _, e ->
@@ -4902,7 +4903,7 @@ CommandDispatcher<OrderCommand> dispatcher =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The `SagaStateStore` persists each instance. `SagaStateStore.inMemory()` is for tests and single-node use, and `SpringMongoSagaStateStore` (in the blocking MongoDB starter) is the durable one. Unlike a read-model store it supports a compare-and-set save, because an event and a timer can touch the same instance concurrently, so the runner detects a lost update and retries instead of overwriting. Timers live in the same stored envelope as the state, not in an external scheduler. A timer poller inside the runner periodically reads instances with a due timer and re-enters them through the same pipeline a live event uses. That means no deadline or JobRunr infrastructure to run, at the cost of firing precision bounded by the poll interval, which does not matter at the minutes-to-days timescale sagas work on.
+The store's type parameter follows the saga's state, so it is `SagaStateStore<OrderSagaState>` for the core-DSL saga above and `SagaStateStore<FlowState<OrderEvent>>` for the flow one. The `SagaStateStore` persists each instance. `SagaStateStore.inMemory()` is for tests and single-node use, and `SpringMongoSagaStateStore` (in the blocking MongoDB starter) is the durable one. Unlike a read-model store it supports a compare-and-set save, because an event and a timer can touch the same instance concurrently, so the runner detects a lost update and retries instead of overwriting. Timers live in the same stored envelope as the state, not in an external scheduler. A timer poller inside the runner periodically reads instances with a due timer and re-enters them through the same pipeline a live event uses. That means no deadline or JobRunr infrastructure to run, at the cost of firing precision bounded by the poll interval, which does not matter at the minutes-to-days timescale sagas work on.
 
 Building a `SpringMongoSagaStateStore` by hand for a flow saga needs its four-argument constructor, with the application's `CloudEventConverter` passed alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using the three-argument constructor, throws `IllegalArgumentException` rather than silently losing that package independence. A core saga's state carries no such requirement, since it serializes with the application's own `MongoConverter`.
 
@@ -4939,16 +4940,18 @@ import org.occurrent.annotation.Saga;
 class OrderFulfillmentSaga {
 
     @Saga(id = "order-fulfillment")
-    org.occurrent.dsl.saga.Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment() {
-        return org.occurrent.dsl.saga.Saga.<OrderEvent, OrderSagaState, OrderCommand>builder(null)
+    org.occurrent.dsl.saga.Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> orderFulfillment() {
+        return FlowSaga.<OrderEvent, OrderCommand>builder()
                 .correlateAll(OrderEvent::orderId)
-                .startsOn(OrderPlaced.class)
-                .evolve(OrderPlaced.class, (state, e) -> new AwaitingPayment(e.orderId()))
-                .react(OrderPlaced.class, (state, e) -> List.of(
-                        SagaEffect.issue(new ReservePayment(e.orderId(), e.amount())),
-                        SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
-                // ...the rest of the folds and reactions from the core example above
-                .isTerminal(state -> state instanceof Completed || state instanceof Cancelled)
+                .startsOn(OrderPlaced.class, null,
+                        order -> List.of(new ReservePayment(order.orderId(), order.amount())))
+                .step("awaiting-payment", step -> step
+                        .on(PaymentReserved.class, Continuation.end(),
+                                payment -> List.of(new ShipOrder(payment.orderId())))
+                        .on(PaymentFailed.class, Continuation.end(),
+                                failure -> List.of(new CancelOrder(failure.orderId(), failure.reason())))
+                        .timeout(Duration.ofMinutes(30), Continuation.end(),
+                                received -> List.of(new CancelOrder(received.initiating(OrderPlaced.class).orderId(), "payment timeout"))))
                 .build();
     }
 }
