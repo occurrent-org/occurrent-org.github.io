@@ -131,6 +131,7 @@ permalink: /documentation
 * * [Saga DSL](#saga-dsl)
 * * * [The Core DSL](#saga-core-dsl)
 * * * [The Flow DSL](#saga-flow-dsl)
+* * * [Correlation](#saga-correlation)
 * * * [Event Metadata](#saga-event-metadata)
 * * * [Effects Are Data](#saga-effects)
 * * * [Running a Saga](#running-a-saga)
@@ -4697,7 +4698,7 @@ Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`correlateAll` (or a per-type `correlate`) says which instance an event belongs to, returned as a plain `String` id. `startsOn` names the event types that create a new instance. An event that correlates to no existing instance and is not a start event is skipped rather than starting one on the wrong event. `build()` fails loudly if any handled event type has no correlation rule, so "event arrived, no idea which instance" cannot happen at run time. `isTerminal` marks the states that end the process. A terminal instance ignores further input, and the runner cancels its outstanding timers.
+`startsOn` names the event types that create a new instance, and `correlateAll` (or a per-type `correlate`) says which instance every other event belongs to, described under [correlation](#saga-correlation) below. `isTerminal` marks the states that end the process. A terminal instance ignores further input, and the runner cancels its outstanding timers.
 
 The flow DSL cannot express everything, on purpose. It has no dynamic N-of-M joins, no accumulators across steps, and no "this event is valid in every step" matching. A process that needs any of those drops to the core DSL, where `evolve` and `react` can express them directly.
 
@@ -4709,8 +4710,8 @@ The order-fulfillment example above is the shape to copy for a branch-and-timeou
 
 {% capture kotlin %}
 val gameLobby = saga<GameEvent, CloseGame> {
-    startsOn<GameCreated>(correlatedBy = { it.gameId })
-    correlate<PlayerJoined> { it.gameId }
+    startsOn<GameCreated>()
+    correlateAll { it.gameId }
     step("awaiting-players") {
         on<PlayerJoined>(then = end) { }
         timeout(after = Duration.ofMinutes(10), then = end) { received ->
@@ -4722,8 +4723,8 @@ val gameLobby = saga<GameEvent, CloseGame> {
 {% capture java %}
 Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
         FlowSaga.<GameEvent, CloseGame>builder()
-                .startsOn(GameCreated.class, GameCreated::gameId)
-                .correlate(PlayerJoined.class, PlayerJoined::gameId)
+                .startsOn(GameCreated.class)
+                .correlateAll(GameEvent::gameId)
                 .step("awaiting-players", step -> step
                         .on(PlayerJoined.class, Continuation.end(), player -> List.of())
                         .timeout(Duration.ofMinutes(10), Continuation.end(),
@@ -4734,7 +4735,7 @@ Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
-A step is either a set of `on(...)` branches or a single `join(...)`, never both. A join waits until every `Expectation` it lists is met, counted since the step was entered, then runs once and follows its `Continuation`. Here is a step that waits for both players in the lobby above to ready up before it advances:
+A step is either a set of `on(...)` branches or a single `join(...)`, never both. A join waits until every `Expectation` it lists is met, counted since the step was entered, then runs once and follows its `Continuation`. Here is a step that waits for both players in the lobby above to ready up before it advances. It needs no new correlation, because the lobby's `correlateAll` already covers `PlayerReady`, which is what that fallback buys you:
 
 {% capture kotlin %}
 step("waiting-for-both-players") {
@@ -4774,7 +4775,22 @@ Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`startsOn` and `correlate` register into the same correlation map, so calling `startsOn` for a type already registered via `correlate` (or the reverse) throws `IllegalStateException` instead of silently overwriting the earlier registration. Register each event type's correlation exactly once, whichever of the two you use.
+### Correlation {#saga-correlation}
+
+A saga is not one process, it is many instances of the same process, one per order or game or auction. Correlation is how an incoming event finds its instance: for every event the saga is handed, it derives a `String` id, and that id is the key the state store loads and saves under. Two events that produce the same id are the same running saga. The id is a plain `String` so it survives being persisted and read back unchanged, and it is yours to choose, usually the domain id already on the event.
+
+Three declarations, all available on both the core and the flow DSL:
+
+`startsOn` names the event type that creates an instance. Give it a correlation inline, `startsOn<GameCreated>(correlatedBy = { it.gameId })`, or call it bare and let `correlateAll` cover it.
+
+`correlate<T>` registers one event type's correlation. Use it when the types key differently, say an event that carries `paymentId` in a saga otherwise keyed by `orderId`, and when you want adding an event type to a step to be a decision you have to make rather than one the fallback makes for you.
+
+`correlateAll` registers a fallback used for every type that has no `correlate` or `startsOn` correlation of its own. It fits a sealed event hierarchy exposing one shared id, `correlateAll { it.orderId }`, which is the common case and is what the examples above use. It can be set only once.
+
+The builder checks the rules rather than trusting you to follow them. Every event type the saga handles has to be correlated, by its own `correlate`, by `startsOn`, or by the fallback, and `build()` throws naming the type if one is not. `startsOn` and `correlate` write into the same map, so registering the same type through both throws instead of silently overwriting the first. Setting `correlateAll` twice throws too.
+
+Two things happen at run time rather than at build time, and both are deliberately quiet. A correlator that returns `null` means "this event belongs to no instance", and the event is skipped. So is an event that correlates to an instance that does not exist yet, unless its type is a start type, which is what stops a mid-process event from starting a saga at the wrong point.
+
 
 ### Event Metadata {#saga-event-metadata}
 
