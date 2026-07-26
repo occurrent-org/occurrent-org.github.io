@@ -4086,7 +4086,7 @@ operator fun invoke(gameId: GameId, timeOfGuess: Timestamp, playerId: PlayerId, 
 
 One consequence worth knowing when you read a failure. [ADR 21](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0021-dcb-write-path-query-scoped-concurrency.md) describes the global position counter as being updated outside the append transaction, which holds only while the store owns that transaction. When the store joins your transaction the counter update joins it as well, so one shared document becomes a conflict point for every concurrent append in that transaction, even for appends to boundaries that have nothing to do with each other. A nested append often loses on the counter before it ever reaches the append itself.
 
-The full reasoning is in [ADR 70](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-retry-only-where-the-transaction-is-owned.md).
+The full reasoning is in [ADR 74](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0074-retry-only-where-the-transaction-is-owned.md).
 
 # DSL's
 
