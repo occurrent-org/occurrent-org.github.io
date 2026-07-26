@@ -4365,6 +4365,10 @@ streamSubscriptions(subscriptionModel, cloudEventConverter) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+The runner comes in the same three flavours as the [subscription DSL](#subscription-dsl), so `project` is not tied to stream events. `ProjectionRunner.stream(...)` and the Kotlin `streamSubscriptions { }` above stay scoped to stream events, excluding anything a DCB append wrote. `ProjectionRunner.agnostic(...)` and `subscriptions { }` are capability-neutral: on a store that has both capabilities they feed the projection stream-written and DCB-appended events together, selected by the projection's own event types alone. Reach for the neutral pair when the read model just wants the events, whichever write model produced them, and for the stream pair when it must stay on stream events.
+
+DCB has its own pair rather than an option on these, because a `DcbProjection` is scoped by tags rather than by event type. `DcbProjectionRunner` and the Kotlin `dcbSubscriptions { }` take a `DcbProjection` and subscribe to its `DcbCriteria`, covered under [DCB projections](#dcb-projections).
+
 `project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, folds the event in, and saves the result. Use `subscriptions { }` (the capability-agnostic model) when the read model should see both stream-written and DCB-appended events, or `streamSubscriptions { }` for stream events only.
 
 ### Event metadata {#projection-event-metadata}
@@ -4491,7 +4495,7 @@ The annotation and the DSL class share the name `Projection`, so a Java factory 
 
 The factory method doesn't have to be a `@Bean` on a `@Configuration` class. The bean post-processor scans every Spring bean's declared methods for `@Projection`, so a plain `@Component` works too, and reads better for a single dedicated projection:
 
-{% capture kotlin %}
+```kotlin
 import org.occurrent.annotation.Projection
 
 @Component
@@ -4502,8 +4506,7 @@ class CourseDashboardProjection {
         on<StudentEnrolled> { state, event -> state.withEnrollment(event) }
     }
 }
-{% endcapture %}
-{% include macros/docsSnippet.html kotlin=kotlin %}
+```
 
 The `@Configuration` plus `@Bean` form still works, and is handy for grouping several projections in one class. For a single projection, `@Component` is the cleaner shape: with `@Bean`, Spring also registers the returned `Projection` as an unused context bean and calls the factory method an extra time, whereas `@Component` invokes it once.
 
