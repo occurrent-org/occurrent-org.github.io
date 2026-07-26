@@ -4631,7 +4631,7 @@ val orderFulfillment: Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> =
 Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> orderFulfillment =
         FlowSaga.<OrderEvent, OrderCommand>builder()
                 .correlateAll(OrderEvent::orderId)
-                .startsOn(OrderPlaced.class, null,
+                .startsOn(OrderPlaced.class,
                         order -> List.of(new ReservePayment(order.orderId(), order.amount())))
                 .step("awaiting-payment", step -> step
                         .on(PaymentReserved.class, Continuation.end(),
@@ -4756,7 +4756,8 @@ A `transitionTo` names any step, including the current one, which is how a flow 
 
 {% capture kotlin %}
 val auction = saga<AuctionEvent, CloseAuction> {
-    startsOn<AuctionStarted>(correlatedBy = { it.auctionId })
+    startsOn<AuctionStarted>()
+    correlate<AuctionStarted> { it.auctionId }
     correlate<BidPlaced> { it.auctionId }
     step("bidding") {
         on<BidPlaced>(then = transitionTo("bidding")) { }
@@ -4769,7 +4770,8 @@ val auction = saga<AuctionEvent, CloseAuction> {
 {% capture java %}
 Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
         FlowSaga.<AuctionEvent, CloseAuction>builder()
-                .startsOn(AuctionStarted.class, AuctionStarted::auctionId)
+                .startsOn(AuctionStarted.class)
+                .correlate(AuctionStarted.class, AuctionStarted::auctionId)
                 .correlate(BidPlaced.class, BidPlaced::auctionId)
                 .step("bidding", step -> step
                         .on(BidPlaced.class, Continuation.transitionTo("bidding"), bid -> List.of())
@@ -4785,13 +4787,13 @@ A saga is not one process, it is many instances of the same process, one per ord
 
 Three declarations, all available on both the core and the flow DSL:
 
-`startsOn` names the event type that creates an instance. Give it a correlation inline, `startsOn<GameCreated>(correlatedBy = { it.gameId })`, or call it bare and let `correlateAll` cover it.
+`startsOn` names the event type that creates an instance and optionally what to issue when it does, and correlation for that type comes from `correlate` or `correlateAll` like any other type.
 
 `correlate<T>` registers one event type's correlation. Use it when the types key differently, say an event that carries `paymentId` in a saga otherwise keyed by `orderId`, and when you want adding an event type to a step to be a decision you have to make rather than one the fallback makes for you.
 
-`correlateAll` registers a fallback used for every type that has no `correlate` or `startsOn` correlation of its own. It fits a sealed event hierarchy exposing one shared id, `correlateAll { it.orderId }`, which is the common case and is what the examples above use. It can be set only once.
+`correlateAll` registers a fallback used for every type that has no `correlate` correlation of its own. It fits a sealed event hierarchy exposing one shared id, `correlateAll { it.orderId }`, which is the common case and is what the examples above use. It can be set only once.
 
-The builder checks the rules rather than trusting you to follow them. Every event type the saga handles has to be correlated, by its own `correlate`, by `startsOn`, or by the fallback, and `build()` throws naming the type if one is not. `startsOn` and `correlate` write into the same map, so registering the same type through both throws instead of silently overwriting the first. Setting `correlateAll` twice throws too.
+The builder checks the rules rather than trusting you to follow them. Every event type the saga handles has to be correlated, by its own `correlate` or by the fallback, and `build()` throws naming the type if one is not. Registering the same type through `correlate` twice throws instead of silently overwriting the first, and so does setting `correlateAll` twice.
 
 Two things happen at run time rather than at build time, and both are deliberately quiet. A correlator that returns `null` means "this event belongs to no instance", and the event is skipped. So is an event that correlates to an instance that does not exist yet, unless its type is a start type, which is what stops a mid-process event from starting a saga at the wrong point.
 
@@ -4943,7 +4945,7 @@ class OrderFulfillmentSaga {
     org.occurrent.dsl.saga.Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> orderFulfillment() {
         return FlowSaga.<OrderEvent, OrderCommand>builder()
                 .correlateAll(OrderEvent::orderId)
-                .startsOn(OrderPlaced.class, null,
+                .startsOn(OrderPlaced.class,
                         order -> List.of(new ReservePayment(order.orderId(), order.amount())))
                 .step("awaiting-payment", step -> step
                         .on(PaymentReserved.class, Continuation.end(),
