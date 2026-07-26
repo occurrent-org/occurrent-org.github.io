@@ -4785,7 +4785,7 @@ Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
 
 A saga is not one process, it is many instances of the same process, one per order or game or auction. Correlation is how an incoming event finds its instance: for every event the saga is handed, it derives a `String` id, and that id is the key the state store loads and saves under. Two events that produce the same id are the same running saga. The id is a plain `String` so it survives being persisted and read back unchanged, and it is yours to choose, usually the domain id already on the event.
 
-Three declarations, all available on both the core and the flow DSL:
+Two declarations do the correlating, and both are available on the core and the flow DSL. A third names the starting event, which has to be correlated like any other:
 
 `startsOn` names the event type that creates an instance and optionally what to issue when it does, and correlation for that type comes from `correlate` or `correlateAll` like any other type.
 
