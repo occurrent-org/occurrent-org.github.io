@@ -79,7 +79,8 @@ if (document.location.pathname.includes("/documentation")) {
         "saga-dsl" : "0.31.0",
         "projection-dsl" : "0.31.0",
         "snapshots" : "0.31.0",
-        "synchronous-subscriptions" : "0.31.0"
+        "synchronous-subscriptions" : "0.31.0",
+        "dcb-read-options" : "0.31.0"
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
