@@ -4760,7 +4760,16 @@ When there is a reaction, it returns what `issue` gives back rather than nothing
 on<PaymentReserved>(then = end) { ShipOrder(it.orderId) }
 ```
 
-You write reactions the same way you always would, because `issue` and the timer calls already return the receiver. The one case that needs a word is a reaction ending on an `if` with no `else`, which has type `Unit` and so cannot close the lambda. End it with `noMore`:
+You write reactions exactly as you always would, because `issue` and the timer calls already return the receiver. Conditionals included, as long as the reaction ends on a command:
+
+```kotlin
+on<PaymentReserved>(then = end) {
+    if (it.partial) issue(ReserveRemainder(it.orderId))
+    issue(ShipOrder(it.orderId))
+}
+```
+
+There is one shape that needs a word. A reaction whose *last* statement is an `if` with no `else` ends on something of type `Unit`, which cannot close the lambda, so end it with `noMore`:
 
 ```kotlin
 on<PaymentReserved>(then = end) {
@@ -4768,6 +4777,8 @@ on<PaymentReserved>(then = end) {
     noMore
 }
 ```
+
+This is rare in practice. No reaction in Occurrent's own tests or examples needs it.
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
