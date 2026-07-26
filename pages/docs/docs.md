@@ -3609,7 +3609,7 @@ occurrent:
     enable-default-retry-strategy: false
 ```
 
-You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.mongo.blocking.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentProperties.java)
+You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java)
 to find which configuration properties that are supported.
 
 ## Reactive Spring Boot Starter
