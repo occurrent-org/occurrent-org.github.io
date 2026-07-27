@@ -3789,39 +3789,41 @@ try {
 
 ### Reading part of a boundary {#dcb-read-options}
 
-`read`, `exists` and `count` each take an optional `DcbReadOptions` that narrows what the store looks at. It carries three things: a position window, a `limit` on how many matching events come back, and a `direction` picking which end of the match that limit keeps.
+`read`, `exists` and `count` each take an optional `DcbReadOptions` with a position window. A read can also select part of the matching events with a `direction`, `skip` and `limit`. `exists` and `count` use the criteria and position window, but ignore those three selection options.
 
 The position window is what a catch-up or a resumed subscription uses. `DcbReadOptions.afterPosition(p)` reads only what was appended after DCB sequence position `p`, `upToPosition(p)` stops at `p` inclusive, and `between(after, upTo)` does both. Without options you get `fromBeginning()`, everything up to the store's DCB head at read time.
 
-`limit` and `direction` are the interesting pair. `FORWARD` keeps the oldest matching events, `BACKWARD` the newest, so `DcbReadOptions.backwardsLimited(1)` reads the single newest event in a boundary in one round trip instead of folding the whole thing. That is how a gapless sequence finds its last entry.
+Direction decides which end of the match selection starts from. `FORWARD` starts with the oldest matching event, while `BACKWARD` starts with the newest. The store skips from that end and then applies the limit. `DcbReadOptions.fromBeginning().backwards().limit(1)` reads the single newest event in a boundary, while adding `skip(4)` reads the fifth newest. This is how a gapless sequence finds its last entry without folding the whole boundary.
 
 {% capture java %}
 DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("invoice-sequence", "2026"));
 
 // The newest matching event, without reading the rest
-DcbEventStream last = eventStore.read(boundary, DcbReadOptions.backwardsLimited(1));
+DcbEventStream last = eventStore.read(boundary, DcbReadOptions.fromBeginning().backwards().limit(1));
 
-// The same thing spelled out, plus a position window
-DcbReadOptions options = DcbReadOptions.afterPosition(1000).backwards().limit(10);
+// Ten events after the five newest matches, inside a position window
+DcbReadOptions options = DcbReadOptions.afterPosition(1000).backwards().skip(5).limit(10);
 DcbEventStream recent = eventStore.read(boundary, options);
 {% endcapture %}
 {% capture kotlin %}
 val boundary = DcbCriteria.tagsAnyOf(Tag.of("invoice-sequence", "2026"))
 
 // The newest matching event, without reading the rest
-val last = eventStore.read(boundary, DcbReadOptions.backwardsLimited(1))
+val last = eventStore.read(boundary, DcbReadOptions.fromBeginning().backwards().limit(1))
 
-// The same thing spelled out, plus a position window
-val options = DcbReadOptions.afterPosition(1000).backwards().limit(10)
+// Ten events after the five newest matches, inside a position window
+val options = DcbReadOptions.afterPosition(1000).backwards().skip(5).limit(10)
 val recent = eventStore.read(boundary, options)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Two things about these options are easy to get wrong, so they are worth stating plainly.
+Three things about these options are easy to get wrong, so they are worth stating plainly.
 
-**Direction never changes the order you get back.** A `DcbEventStream` always lists events ascending by DCB position. `BACKWARD` only decides which end of the match survives the `limit`. Read 10 events backwards and you get the 10 newest, still oldest-first.
+**Direction never changes the order you get back.** A `DcbEventStream` always lists events ascending by DCB position. `BACKWARD` decides which end `skip` and `limit` start from. Read 10 events backwards and you get the 10 newest, still oldest-first.
 
-**Neither the limit nor the direction affects the consistency token.** The token reflects every event matching the criteria at read time, not the handful you asked for. So a limited read is still safe to append against: `backwardsLimited(1)` followed by a `failIfEventsMatch(boundary, token)` append still fails if anything else landed in that boundary, including events the read never returned.
+**Skip happens before limit.** `backwards().skip(4).limit(1)` skips the four newest matches and returns the fifth newest. A large MongoDB skip can be expensive, so use position windows for catch-up and large scans.
+
+**Direction, skip and limit do not affect the consistency token.** The token reflects every event matching the criteria at read time, not the handful you asked for. A read using `fromBeginning().backwards().limit(1)` followed by a `failIfEventsMatch(boundary, token)` append still fails if anything else landed in that boundary, including events the read never returned.
 
 ## The DCB Application Service
 
