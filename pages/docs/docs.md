@@ -5587,7 +5587,7 @@ val repository = viewStateRepository<String, String>({ store[it] }, { id, state 
 
 ProjectionRunner.agnostic(subscriptionModel, converter).project("current-name", currentName, repository)
 
-eventStore.write("johan", converter.toCloudEvents(listOf(NameDefined("johan", "Johan Haleby"))))
+eventStore.write("johan", converter.toCloudEvents(listOf(nameDefined("johan", "Johan Haleby"))))
 
 await untilAsserted { assertThat(store["johan"]).isEqualTo("Johan Haleby") }
 {% endcapture %}
@@ -5597,11 +5597,13 @@ ViewStateRepository<String, String> repository = ViewStateRepository.create(stor
 
 ProjectionRunner.agnostic(subscriptionModel, converter).project("current-name", currentName, repository);
 
-eventStore.write("johan", converter.toCloudEvents(List.of(new NameDefined("johan", "Johan Haleby"))));
+eventStore.write("johan", converter.toCloudEvents(List.of(nameDefined("johan", "Johan Haleby"))));
 
 await().untilAsserted(() -> assertThat(store.get("johan")).isEqualTo("Johan Haleby"));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`currentName()` and `nameDefined(...)` are local test factories over your own projection and event types, not part of Occurrent. The snippets in this chapter come from `DocumentedProjectionTest` and `DocumentedProjectionKotlinTest` in `dsl/projection-dsl/blocking/src/test`, which run in CI, so you can read the full setup there.
 
 ### Read after write, for a synchronous projection {#testing-projection-synchronous}
 
@@ -5610,7 +5612,7 @@ A projection in `SYNCHRONOUS` mode updates its read model inside `execute(...)`,
 {% capture kotlin %}
 ProjectionRunner.agnostic(synchronousSubscriptions, converter).project("current-name", currentName, repository)
 
-applicationService.execute("johan") { listOf(NameDefined("johan", "Johan Haleby")) }
+applicationService.execute("johan") { listOf(nameDefined("johan", "Johan Haleby")) }
 
 // No await: a synchronous projection is already updated when execute returns
 assertThat(store["johan"]).isEqualTo("Johan Haleby")
@@ -5618,7 +5620,7 @@ assertThat(store["johan"]).isEqualTo("Johan Haleby")
 {% capture java %}
 ProjectionRunner.agnostic(synchronousSubscriptions, converter).project("current-name", currentName, repository);
 
-applicationService.execute("johan", state -> List.of(new NameDefined("johan", "Johan Haleby")));
+applicationService.execute("johan", state -> List.of(nameDefined("johan", "Johan Haleby")));
 
 // No await: a synchronous projection is already updated when execute returns
 assertThat(store.get("johan")).isEqualTo("Johan Haleby");
@@ -5659,27 +5661,39 @@ This one is a property rather than a snippet, and it is the strongest test in th
 
 {% capture kotlin %}
 // Push: subscription-fed into a store
-dcbSubscriptions.project("is-username-claimed", isUsernameClaimedProjection("johan"), repository)
-append("username:johan", AccountRegistered("johan"))
-await untilAsserted { assertThat(store["is-username-claimed"]).isTrue() }
+ProjectionRunner.agnostic(subscriptionModel, converter).project("current-name", currentName(), repository)
+write("johan", nameDefined("johan", "Johan"), nameWasChanged("johan", "Johan Haleby"))
+
+// A second instance, so the pull side actually has to scope to one of them
+write("eve", nameDefined("eve", "Eve"))
+await untilAsserted { assertThat(store["johan"]).isEqualTo("Johan Haleby") }
 
 // Pull: the same descriptor folded over a query, right now
-assertThat(dcbQueries.project(isUsernameClaimedProjection("johan"))).isTrue()
+val queries = DomainEventQueries(eventStore, converter)
+assertThat(queries.project(currentName(), "johan")).isEqualTo(store["johan"])
 {% endcapture %}
 {% capture java %}
 // Push: subscription-fed into a store
-dcbSubscriptions.project("is-username-claimed", isUsernameClaimedProjection("johan"), repository);
-append("username:johan", new AccountRegistered("johan"));
-await().untilAsserted(() -> assertThat(store.get("is-username-claimed")).isTrue());
+ProjectionRunner.agnostic(subscriptionModel, converter).project("current-name", currentName(), repository);
+write("johan", nameDefined("johan", "Johan"), nameWasChanged("johan", "Johan Haleby"));
+
+// A second instance, so the pull side actually has to scope to one of them
+write("eve", nameDefined("eve", "Eve"));
+await().untilAsserted(() -> assertThat(store.get("johan")).isEqualTo("Johan Haleby"));
 
 // Pull: the same descriptor folded over a query, right now
-assertThat(dcbQueries.project(isUsernameClaimedProjection("johan"))).isTrue();
+DomainEventQueries<DomainEvent> queries = new DomainEventQueries<>(eventStore, converter);
+assertThat(ProjectionExtensionsKt.project(queries, currentName(), "johan")).isEqualTo(store.get("johan"));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A disagreement is a bug in one of the two paths, and this catches classes of mistake a single expected value never will, a filter that selects different events on replay than live, or an id derivation that only works when metadata is present. The [projection-dsl example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/projection-dsl) does this for every one of its vignettes, in Java and Kotlin, for stream and DCB projections.
+A disagreement is a bug in one of the two paths, and this catches classes of mistake a single expected value never will, a filter that selects different events on replay than live, or an id derivation that only works when metadata is present.
 
-Note what a single-instance projection keys on. It stores its one slot under the subscription id, not under any value from the events, so the assertion above reads `store["is-username-claimed"]` rather than `store["johan"]`. Getting that wrong gives you a test that looks reasonable and always sees `null`.
+Write a second instance, as above. With only one instance in the store the pull side's scoping is a no-op, so the test cannot tell a correctly scoped fold from one that folds everything and happens to agree.
+
+Two rough edges to know about. In Kotlin the on-demand fold is an extension, so it needs `import org.occurrent.dsl.projection.blocking.project` unless your test happens to sit in that package. In Java it is only reachable as `ProjectionExtensionsKt.project(...)`, a Kotlin compilation artifact rather than a name you would go looking for. That is tracked in [issue 453](https://github.com/johanhaleby/occurrent/issues/453).
+
+For a DCB projection the same pair is `dcbSubscriptions.project(id, projection, repository)` and `dcbQueries.project(projection)`, and note that a single-instance projection stores its one slot under the subscription id rather than under any value from the events. Reading the wrong key gives a test that looks reasonable and always sees `null`. The [projection-dsl example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/projection-dsl) does this pairing for every one of its vignettes, in Java and Kotlin, for stream and DCB.
 
 ## Integration Testing {#integration-testing}
 
