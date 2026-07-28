@@ -5369,6 +5369,279 @@ Here's a summary of the different startup modes:
 | `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.CheckpointStorage`, it'll never miss an event during startup.                                                                                      |
 | `BACKGROUND`         | The subscription will NOT wait until it's started up fully before Spring continues starting the rest of the application; instead, it will be started in the background. Typically, this is useful if you instruct the subscription to start at an earlier date (such as the beginning of time), and you have a lot of events to read before the subscription has caught up. In this case, you may wish to start the Spring application before the subscription has fully started (i.e., before all historic events have been replayed) because waiting for all events to replay takes too long. The subscription will then replay all historic events in the background before switching to continuous mode. |
 
+# Testing
+
+A saga and a projection are pure data folded by pure functions, so most of what you want to assert needs no store, no subscription, no Docker and no waiting. That is the first level, and it should carry nearly all of your coverage. The second level runs the real executor over an in-memory event store, and one test at that level is usually enough to prove the wiring.
+
+Everything below uses JUnit Jupiter and AssertJ. The API used is the same on JUnit 5 and 6, so the snippets work on either.
+
+## Testing a Saga {#testing-a-saga}
+
+`Saga.step(state, input)` folds `evolve` and then `react`, and returns the new state together with the effects that transition produced. It is what the executor runs per input, which is why it is also what a test drives. No clock, no scheduler, no store.
+
+The sagas below are the ones from [the Flow DSL](#saga-flow-dsl), and they are kept compiling as real tests in `dsl/saga-dsl/common/src/test`, so what you read here is what runs.
+
+Start with a plain event. A branch that leaves a step reports where the flow went next:
+
+{% capture kotlin %}
+val started = start(lobby, GameCreated("game-1"))
+
+val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
+
+assertThat(step.state.currentStep()).isEqualTo("waiting-for-both-players")
+{% endcapture %}
+{% capture java %}
+Saga.Step<FlowState<GameEvent>, CloseGame> started = start(lobby, new GameCreated("game-1"));
+
+Saga.Step<FlowState<GameEvent>, CloseGame> step = lobby.step(started.state(), SagaInput.event(new PlayerJoined("game-1")));
+
+assertThat(step.state().currentStep()).isEqualTo("waiting-for-both-players");
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Two things to know before you write the first test
+
+**`step` does not apply `onStart`.** A start event creates the instance, and `onStart` runs once at that point, but `step` is only `evolve` plus `react`. So a start event is applied the way the executor does it, and it is worth a small helper because every saga test needs it:
+
+{% capture kotlin %}
+fun <E : Any, C : Any> start(saga: Saga<E, FlowState<E>, C>, event: E): Saga.Step<FlowState<E>, C> {
+    val state = saga.evolve(saga.initialState(), SagaInput.event(event))
+    val effects = saga.onStart(state, event) + saga.react(state, SagaInput.event(event))
+    return Saga.Step(state, effects)
+}
+{% endcapture %}
+{% capture java %}
+static <E, C> Saga.Step<FlowState<E>, C> start(Saga<E, FlowState<E>, C> saga, E event) {
+    FlowState<E> state = saga.evolve(saga.initialState(), SagaInput.event(event));
+    List<SagaEffect<C>> effects = new ArrayList<>(saga.onStart(state, event));
+    effects.addAll(saga.react(state, SagaInput.event(event)));
+    return new Saga.Step<>(state, effects);
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout`. Assert on the commands you care about rather than on the whole list:
+
+{% capture kotlin %}
+val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
+
+// The branch issues nothing, but leaving the step still cancels its timeout
+assertThat(step.effects).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"))
+{% endcapture %}
+{% capture java %}
+Saga.Step<FlowState<GameEvent>, CloseGame> step = lobby.step(started.state(), SagaInput.event(new PlayerJoined("game-1")));
+
+// The branch issues nothing, but leaving the step still cancels its timeout
+assertThat(step.effects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### Firing a timeout without waiting {#testing-saga-timeouts}
+
+This is the part worth knowing. A timeout is an input, so you fire it by naming its timer instead of letting time pass. A flow step's timeout is named after the step, with a `step:` prefix, so a step called `awaiting-players` fires as `step:awaiting-players`:
+
+{% capture kotlin %}
+val step = lobby.step(started.state, SagaInput.timeout(SagaTimeout("game-1", "step:awaiting-players")))
+
+assertAll(
+    { assertThat(step.effects).containsExactly(SagaEffect.issue(CloseGame("game-1"))) },
+    { assertThat(step.state.completed()).isTrue() }
+)
+{% endcapture %}
+{% capture java %}
+Saga.Step<FlowState<GameEvent>, CloseGame> step =
+        lobby.step(started.state(), SagaInput.timeout(new SagaTimeout("game-1", "step:awaiting-players")));
+
+assertAll(
+        () -> assertThat(step.effects()).containsExactly(SagaEffect.issue(new CloseGame("game-1"))),
+        () -> assertThat(step.state().completed()).isTrue()
+);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+An absolute `timeout(at = ...)` is fired exactly the same way. The deadline decides when the executor would fire the timer, and it has no say in what happens once it does, so a test never has to reach that instant. A timer name the saga does not know is a no-op, which is also worth a test, because it is what a typo in a `reactOnTimeout` name looks like.
+
+### A join, one event at a time {#testing-saga-joins}
+
+A join runs once every expectation is met, counted since the step was entered. The interesting test is the one before that, where the join is partially fulfilled and must not advance. Feed the events one at a time and pass each step's state into the next:
+
+{% capture kotlin %}
+// One of the two expected events: the flow must stay put
+val afterFirst = lobby.step(joinStepEntered, SagaInput.event(PlayerReady("game-1")))
+assertThat(afterFirst.state.currentStep()).isEqualTo("waiting-for-both-players")
+
+// The second one fulfils the join and follows its continuation
+val afterSecond = lobby.step(afterFirst.state, SagaInput.event(PlayerReady("game-1")))
+assertThat(afterSecond.state.completed()).isTrue()
+{% endcapture %}
+{% capture java %}
+// One of the two expected events: the flow must stay put
+Saga.Step<FlowState<GameEvent>, CloseGame> afterFirst = lobby.step(joinStepEntered, SagaInput.event(new PlayerReady("game-1")));
+assertThat(afterFirst.state().currentStep()).isEqualTo("waiting-for-both-players");
+
+// The second one fulfils the join and follows its continuation
+Saga.Step<FlowState<GameEvent>, CloseGame> afterSecond = lobby.step(afterFirst.state(), SagaInput.event(new PlayerReady("game-1")));
+assertThat(afterSecond.state().completed()).isTrue();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Write the partial case first. A join that advances too early passes a test that only checks the fulfilled path.
+
+### Transitions and loops {#testing-saga-transitions}
+
+`currentStep()` is how you assert where a flow went, and that covers `next`, `end` and `transitionTo` alike. A back-edge is the one that repays testing, because a loop that quietly leaves its step looks the same from the outside as one that stays. Using the auction from the Flow DSL section, each bid re-enters `bidding`, and the deadline still closes it after any number of bids:
+
+{% capture kotlin %}
+val afterBid = auction.step(started.state, SagaInput.event(BidPlaced("auction-1", 100)))
+assertThat(afterBid.state.currentStep()).isEqualTo("bidding")
+
+val closed = auction.step(afterBid.state, SagaInput.timeout(SagaTimeout("auction-1", "step:bidding")))
+assertThat(closed.effects).containsExactly(SagaEffect.issue(CloseAuction("auction-1")))
+{% endcapture %}
+{% capture java %}
+Saga.Step<FlowState<AuctionEvent>, CloseAuction> afterBid = auction.step(started.state(), SagaInput.event(new BidPlaced("auction-1", 100)));
+assertThat(afterBid.state().currentStep()).isEqualTo("bidding");
+
+Saga.Step<FlowState<AuctionEvent>, CloseAuction> closed =
+        auction.step(afterBid.state(), SagaInput.timeout(new SagaTimeout("auction-1", "step:bidding")));
+assertThat(closed.effects()).containsExactly(SagaEffect.issue(new CloseAuction("auction-1")));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A guard is tested the same way, by driving the same branch twice with events that differ only in the guarded value and asserting the flow moved in one case and not the other.
+
+### Through the executor, once {#testing-saga-end-to-end}
+
+The level above proves the saga. This level proves the wiring: that the runner subscribes, correlates, persists and dispatches. Use the in-memory event store and subscription model, `SagaStateStore.inMemory()`, and a `CommandDispatcher` that collects into a list so you can assert on it.
+
+A timeout is the one case that genuinely needs time to pass here, and the poll interval is configurable so it does not need much. Shrink both the interval and the saga's own timeout:
+
+{% capture kotlin %}
+val issued = CopyOnWriteArrayList<OrderCommand>()
+val dispatcher = CommandDispatcher<OrderCommand> { issued.add(it) }
+val config = SagaRunnerConfig.defaults().withTimerPollInterval(Duration.ofMillis(50))
+
+val runner = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, converter)
+runner.run("orders", orderFulfillment(Duration.ofMillis(150)), stateStore, dispatcher, null, config)
+    .waitUntilStarted()
+
+eventStore.write(orderId, converter.toCloudEvents(listOf(OrderPlaced(orderId, 42.0))))
+
+await.atMost(5, TimeUnit.SECONDS).untilAsserted {
+    assertThat(issued).containsExactly(ReservePayment(orderId, 42.0), CancelOrder(orderId, "payment timeout"))
+}
+{% endcapture %}
+{% capture java %}
+List<OrderCommand> issued = new CopyOnWriteArrayList<>();
+CommandDispatcher<OrderCommand> dispatcher = issued::add;
+SagaRunnerConfig config = SagaRunnerConfig.defaults().withTimerPollInterval(Duration.ofMillis(50));
+
+SagaRunner<OrderEvent, OrderCommand> runner = SagaRunner.agnostic(subscriptionModel, converter);
+runner.run("orders", orderFulfillment(Duration.ofMillis(150)), stateStore, dispatcher, null, config)
+        .waitUntilStarted();
+
+eventStore.write(orderId, converter.toCloudEvents(List.of(new OrderPlaced(orderId, 42.0))));
+
+await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+        assertThat(issued).containsExactly(new ReservePayment(orderId, 42.0), new CancelOrder(orderId, "payment timeout")));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) runs exactly this, in both languages, with no Docker.
+
+If you use `received.initiating<GameCreated>()` in a Kotlin reaction, import it by name with `import org.occurrent.dsl.saga.flow.initiating`. `ReceivedEvents` also has a no-arg `initiating()`, and a member wins over an extension, so without the import the reified form does not resolve.
+
+## Testing a Projection {#testing-a-projection}
+
+A projection carries its fold in a `View`, so the smallest test asks the view to evolve a state and asserts the result. No store, no subscription:
+
+{% capture kotlin %}
+val view = isUsernameClaimed("bob").view()
+
+var state = view.evolve(view.initialState(), AccountRegistered("1", "bob"))
+assertThat(state).isTrue()
+
+state = view.evolve(state, UsernameChanged("1", "alice"))
+assertThat(state).isFalse()
+{% endcapture %}
+{% capture java %}
+View<Boolean, AccountEvent> view = isUsernameClaimed("bob").view();
+
+Boolean state = view.evolve(view.initialState(), new AccountRegistered("1", "bob"));
+assertThat(state).isTrue();
+
+state = view.evolve(state, new UsernameChanged("1", "alice"));
+assertThat(state).isFalse();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Cover the type without a handler too. A projection returns the state unchanged for an event it does not handle, and a fold that accidentally resets instead is easy to write and invisible without that test.
+
+Above that level, run the projection into a store and assert what landed there, using the in-memory event store and subscription model from the [integration testing](#integration-testing) section below. The [projection-dsl example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/projection-dsl) has a worked test per flavour, in Java and Kotlin, for stream and DCB projections, for `SYNCHRONOUS` mode where the assertion is a read straight after the write, and for a projection fed from a broker, which is tested by calling `accept(...)` directly so no broker is involved.
+
+That example is also worth copying for a property rather than a snippet. It runs each projection two ways, pushed through a subscription into a stored read model and folded over a query on demand, then asserts the two agree. Any disagreement is a bug in one of the paths, and it catches far more than a single hand-written expectation.
+
+## Integration Testing {#integration-testing}
+
+### Without a framework {#testing-in-memory}
+
+The in-memory event store and subscription model are a complete setup, and they need no Docker. Pass the subscription model into the event store so a write reaches subscribers:
+
+{% capture kotlin %}
+val subscriptionModel = InMemorySubscriptionModel()
+val eventStore = InMemoryEventStore(subscriptionModel)
+{% endcapture %}
+{% capture java %}
+InMemorySubscriptionModel subscriptionModel = new InMemorySubscriptionModel();
+InMemoryEventStore eventStore = new InMemoryEventStore(subscriptionModel);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Reach for this first. Every example in the repository tests this way, which is why the examples run without a container.
+
+### With Spring Boot and Testcontainers {#testing-spring-boot}
+
+To test the annotations, and the catch-up and checkpoint machinery behind them, you need a real MongoDB replica set. Provide it as a `@ServiceConnection` bean so Boot points itself at the container:
+
+```java
+@SpringBootTest
+@Testcontainers
+class ProjectionAnnotationTest {
+
+    @TestConfiguration
+    static class Containers {
+
+        @Bean
+        @ServiceConnection
+        MongoDBContainer mongoDbContainer() {
+            return new MongoDBContainer("mongo:8.0").withReplicaSet();
+        }
+    }
+}
+```
+
+One trap. `MongoDBContainer.getReplicaSetUrl()` with no argument always targets the database named `test`, and you cannot append a suffix to the returned URL because MongoDB rejects dots in database names, so the name silently stays `test` and tests collide. When a test needs its own database, ask for it by name with `getReplicaSetUrl(String)`.
+
+### Using the subscription life cycle {#testing-subscription-lifecycle}
+
+`SubscriptionModelLifeCycle` exists partly for tests, and its own documentation says so: pausing a subscription is described as useful when you want to write events without triggering that particular subscription. That is a sharp tool for an integration test, because it lets you separate writing from consuming.
+
+Pausing is not instantaneous, so wait for it before writing. Skipping this is the single most common way to make one of these tests flaky:
+
+```java
+subscriptionModel.pauseSubscription("orders");
+await().atMost(ofSeconds(10)).until(() -> subscriptionModel.isPaused("orders"));
+
+// Events written now are not delivered to this subscription
+eventStore.write(orderId, events);
+
+subscriptionModel.resumeSubscription("orders");
+```
+
+Resuming continues from the stored checkpoint rather than replaying from the beginning, so this is also how you test that resume behaviour is what you think it is: pause, write, resume, and assert the handler saw exactly what was written while it was away.
+
+Two more worth knowing. `waitUntilStarted()` closes the race between subscribing and writing, and it is why the examples call it before their first write. `cancelSubscription(id)` drops a subscription entirely and frees its id, which is useful when one test class exercises several subscriptions in turn. The in-memory subscription model supports all of these, so most of this can be tested with no container at all.
+
 # Upgrading
 
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
