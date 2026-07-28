@@ -1831,7 +1831,7 @@ provided by Occurrent allows for this through a synchronous `SideEffect` that ru
 
 A snapshot caches the folded state of a stream at a known version, so a later command replays only the events written after it instead of the whole history. Occurrent ships first-class support for this, from a [Decider](#decider) (the decision state) and from a plain [View](#views), across stream and DCB and both the blocking and reactor stacks.
 
-A snapshot is a discardable, schema-versioned cache, never a source of truth. If the stored schema version does not match the one you declare, or no snapshot exists, Occurrent falls back to a full replay. Enabling a snapshot costs one snapshot load and one tail read per command that snapshots, and nothing at all when you do not use it. The rationale is recorded in [ADR 61](https://github.com/johanhaleby/occurrent/blob/master/doc/architecture/decisions/0061-first-class-snapshot-support.md).
+A snapshot is a discardable, schema-versioned cache, never a source of truth. If the stored schema version does not match the one you declare, or no snapshot exists, Occurrent falls back to a full replay. Enabling a snapshot costs one snapshot load and one tail read per command that snapshots, and nothing at all when you do not use it. The rationale is recorded in [ADR 61](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0061-first-class-snapshot-support.md).
 
 A snapshot whose version is ahead of the stream's true head is now discarded rather than trusted, and folding restarts from the initial state. This happens when a stream is reset or truncated below the snapshot, for example [archiving a stream](#eventstore-operations) with `deleteEventStream` after a "closing the books" cutover. The version check is a safety net, not the primary defense, so pair a stream reset with `SnapshotStore.delete(key)` to drop the stale snapshot up front. The maintained `@Snapshot` path applies the same guard: a reset below the snapshot makes it rebuild and self-heal instead of freezing on stale state. DCB snapshots are immune to this, because a DCB snapshot is versioned by the global DCB position, which is monotonic and never resets.
 
@@ -2021,7 +2021,7 @@ eventStore.deleteEventStream("account-42:2026-Q1")
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Once a closed period's events are genuinely no longer needed, archive them with the event store's [delete operations](#eventstore-operations). If the archived stream had a snapshot, delete it in the same call with `SnapshotStore.delete(key)`. Occurrent's version guard catches a snapshot left ahead of a truncated stream, but do not rely on it as the primary defense. The runnable [`closing-the-books`](https://github.com/johanhaleby/occurrent/tree/master/example/snapshot/closing-the-books) example runs this end to end.
+Once a closed period's events are genuinely no longer needed, archive them with the event store's [delete operations](#eventstore-operations). If the archived stream had a snapshot, delete it in the same call with `SnapshotStore.delete(key)`. Occurrent's version guard catches a snapshot left ahead of a truncated stream, but do not rely on it as the primary defense. The runnable [`closing-the-books`](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/snapshot/closing-the-books) example runs this end to end.
 
 ## Deadlines
 
@@ -2353,7 +2353,7 @@ var cloudEvent = new CloudEventBuilder().time(now). .. .build();
 // Now you can write the cloud event
 ```
 
-For more thoughts on this, refer to the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/master/doc/architecture/decisions/0004-mongodb-datetime-representation.md) on time representation in MongoDB. 
+For more thoughts on this, refer to the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0004-mongodb-datetime-representation.md) on time representation in MongoDB. 
 
 ### MongoDB Indexes
 
