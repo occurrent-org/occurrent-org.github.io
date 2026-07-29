@@ -5577,9 +5577,123 @@ assertThat(state).isFalse();
 
 Cover the type without a handler too. A projection returns the state unchanged for an event it does not handle, and a fold that accidentally resets instead is easy to write and invisible without that test.
 
-Above that level, run the projection into a store and assert what landed there, using the in-memory event store and subscription model from the [integration testing](#integration-testing) section below. The [projection-dsl example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/projection-dsl) has a worked test per flavour, in Java and Kotlin, for stream and DCB projections, for `SYNCHRONOUS` mode where the assertion is a read straight after the write, and for a projection fed from a broker, which is tested by calling `accept(...)` directly so no broker is involved.
+### Into a store {#testing-projection-materialized}
 
-That example is also worth copying for a property rather than a snippet. It runs each projection two ways, pushed through a subscription into a stored read model and folded over a query on demand, then asserts the two agree. Any disagreement is a bug in one of the paths, and it catches far more than a single hand-written expectation.
+Above that level, run the projection through a `ProjectionRunner` into a repository and assert what landed there. The subscription is asynchronous, so the assertion waits:
+
+{% capture kotlin %}
+val store = ConcurrentHashMap<String, String>()
+val repository = viewStateRepository<String, String>({ store[it] }, { id, state -> store[id] = state })
+
+ProjectionRunner.agnostic(subscriptionModel, converter).project("current-name", currentName, repository)
+
+eventStore.write("johan", converter.toCloudEvents(listOf(nameDefined("johan", "Johan Haleby"))))
+
+await untilAsserted { assertThat(store["johan"]).isEqualTo("Johan Haleby") }
+{% endcapture %}
+{% capture java %}
+Map<String, String> store = new ConcurrentHashMap<>();
+ViewStateRepository<String, String> repository = ViewStateRepository.create(store::get, store::put);
+
+ProjectionRunner.agnostic(subscriptionModel, converter).project("current-name", currentName, repository);
+
+eventStore.write("johan", converter.toCloudEvents(List.of(nameDefined("johan", "Johan Haleby"))));
+
+await().untilAsserted(() -> assertThat(store.get("johan")).isEqualTo("Johan Haleby"));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`currentName()` and `nameDefined(...)` are local test factories over your own projection and event types, not part of Occurrent. The snippets in this chapter come from `DocumentedProjectionTest` and `DocumentedProjectionKotlinTest` in `dsl/projection-dsl/blocking/src/test`, which run in CI, so you can read the full setup there.
+
+### Read after write, for a synchronous projection {#testing-projection-synchronous}
+
+A projection in `SYNCHRONOUS` mode updates its read model inside `execute(...)`, which is the whole reason the mode exists, so the test that proves it is the one with no waiting at all. Register the projection against the synchronous subscription model and read the store on the line after the write:
+
+{% capture kotlin %}
+ProjectionRunner.agnostic(synchronousSubscriptions, converter).project("current-name", currentName, repository)
+
+applicationService.execute("johan") { listOf(nameDefined("johan", "Johan Haleby")) }
+
+// No await: a synchronous projection is already updated when execute returns
+assertThat(store["johan"]).isEqualTo("Johan Haleby")
+{% endcapture %}
+{% capture java %}
+ProjectionRunner.agnostic(synchronousSubscriptions, converter).project("current-name", currentName, repository);
+
+applicationService.execute("johan", state -> List.of(nameDefined("johan", "Johan Haleby")));
+
+// No await: a synchronous projection is already updated when execute returns
+assertThat(store.get("johan")).isEqualTo("Johan Haleby");
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Reaching for `await` here would hide the bug you are testing for, because a waiting assertion passes whether the update was synchronous or merely fast.
+
+### Fed from a broker, without a broker {#testing-projection-push}
+
+A projection fed from RabbitMQ or Kafka is driven by `accept(...)`, and your test can call that itself. Register against the push subscription model, then hand it the events your listener would have handed it. No broker, no container:
+
+{% capture kotlin %}
+ProjectionRunner.agnostic(pushModel, converter).project("order-status", projection, repository)
+
+// Stand in for the listener
+pushModel.accept(converter.toCloudEvent(OrderPlaced("order-1", "The Pragmatic Programmer")))
+pushModel.accept(converter.toCloudEvent(OrderShipped("order-1")))
+
+assertThat(store["order-1"]).isEqualTo(OrderStatusView("order-1", "The Pragmatic Programmer", "SHIPPED"))
+{% endcapture %}
+{% capture java %}
+ProjectionRunner.agnostic(pushModel, converter).project("order-status", projection, repository);
+
+// Stand in for the listener
+pushModel.accept(converter.toCloudEvent(new OrderPlaced("order-1", "The Pragmatic Programmer")));
+pushModel.accept(converter.toCloudEvent(new OrderShipped("order-1")));
+
+assertThat(store.get("order-1")).isEqualTo(new OrderStatusView("order-1", "The Pragmatic Programmer", "SHIPPED"));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The catch-up in front of a push feed is worth its own test, because that is where a rebuilt projection either replays its history or silently starts empty. Write history before registering, then assert the projection ends up with the state the whole history implies rather than only the events you pushed afterwards.
+
+### The push and pull agreement {#testing-projection-agreement}
+
+This one is a property rather than a snippet, and it is the strongest test in the set. The same projection descriptor can be run two ways, pushed through a subscription into a stored read model, or folded over a query on demand. Both should give the same answer, so assert that instead of hand-writing the expected value twice:
+
+{% capture kotlin %}
+// Push: subscription-fed into a store
+ProjectionRunner.agnostic(subscriptionModel, converter).project("current-name", currentName(), repository)
+write("johan", nameDefined("johan", "Johan"), nameWasChanged("johan", "Johan Haleby"))
+
+// A second instance, so the pull side actually has to scope to one of them
+write("eve", nameDefined("eve", "Eve"))
+await untilAsserted { assertThat(store["johan"]).isEqualTo("Johan Haleby") }
+
+// Pull: the same descriptor folded over a query, right now
+val queries = DomainEventQueries(eventStore, converter)
+assertThat(queries.project(currentName(), "johan")).isEqualTo(store["johan"])
+{% endcapture %}
+{% capture java %}
+// Push: subscription-fed into a store
+ProjectionRunner.agnostic(subscriptionModel, converter).project("current-name", currentName(), repository);
+write("johan", nameDefined("johan", "Johan"), nameWasChanged("johan", "Johan Haleby"));
+
+// A second instance, so the pull side actually has to scope to one of them
+write("eve", nameDefined("eve", "Eve"));
+await().untilAsserted(() -> assertThat(store.get("johan")).isEqualTo("Johan Haleby"));
+
+// Pull: the same descriptor folded over a query, right now
+DomainEventQueries<DomainEvent> queries = new DomainEventQueries<>(eventStore, converter);
+assertThat(ProjectionExtensionsKt.project(queries, currentName(), "johan")).isEqualTo(store.get("johan"));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A disagreement is a bug in one of the two paths, and this catches classes of mistake a single expected value never will, a filter that selects different events on replay than live, or an id derivation that only works when metadata is present.
+
+Write a second instance, as above. With only one instance in the store the pull side's scoping is a no-op, so the test cannot tell a correctly scoped fold from one that folds everything and happens to agree.
+
+Two rough edges to know about. In Kotlin the on-demand fold is an extension, so it needs `import org.occurrent.dsl.projection.blocking.project` unless your test happens to sit in that package. In Java it is only reachable as `ProjectionExtensionsKt.project(...)`, a Kotlin compilation artifact rather than a name you would go looking for. That is tracked in [issue 453](https://github.com/johanhaleby/occurrent/issues/453).
+
+For a DCB projection the same pair is `dcbSubscriptions.project(id, projection, repository)` and `dcbQueries.project(projection)`, and note that a single-instance projection stores its one slot under the subscription id rather than under any value from the events. Reading the wrong key gives a test that looks reasonable and always sees `null`. The [projection-dsl example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/projection-dsl) does this pairing for every one of its vignettes, in Java and Kotlin, for stream and DCB.
 
 ## Integration Testing {#integration-testing}
 
