@@ -5756,6 +5756,74 @@ Resuming continues from the stored checkpoint rather than replaying from the beg
 
 Two more worth knowing. `waitUntilStarted()` closes the race between subscribing and writing, and it is why the examples call it before their first write. `cancelSubscription(id)` drops a subscription entirely and frees its id, which is useful when one test class exercises several subscriptions in turn. The in-memory subscription model supports all of these, so most of this can be tested with no container at all.
 
+### Stopping every subscription, then opting in {#testing-subscription-deny-by-default}
+
+Pausing the subscriptions a test does not want works until somebody adds a subscription to the application. The new one then runs in every test that never mentioned it, and a test that used to pass can start failing for a reason nowhere in its own code.
+
+Turning the default around removes that whole class of problem. Stop the entire subscription model before each test, and let each test name what it needs:
+
+```java
+class StopSubscriptionsExtension implements BeforeEachCallback, AfterEachCallback {
+
+    private final SubscriptionModel subscriptionModel;
+
+    StopSubscriptionsExtension(SubscriptionModel subscriptionModel) {
+        this.subscriptionModel = subscriptionModel;
+    }
+
+    @Override
+    public void beforeEach(ExtensionContext context) {
+        subscriptionModel.stop();
+    }
+
+    @Override
+    public void afterEach(ExtensionContext context) {
+        subscriptionModel.stop();
+    }
+
+    void start(String subscriptionId) {
+        subscriptionModel.resumeSubscription(subscriptionId).waitUntilStarted();
+    }
+}
+```
+
+`stop()` leaves every running subscription paused rather than cancelled, which is what lets `resumeSubscription` bring them back one at a time. Keeping `waitUntilStarted()` inside the helper means no test can forget it.
+
+A test now opens with its own dependency list:
+
+```java
+@Test
+void order_projection_is_updated_when_an_order_is_placed() {
+    subscriptions.start("order-projection");
+
+    eventStore.write(orderId, orderPlaced());
+
+    await().untilAsserted(() -> assertThat(orders.findById(orderId)).isPresent());
+}
+```
+
+Stopping in `afterEach` matters as much as in `beforeEach`. Spring caches the test context across test classes, so a subscription that one class resumed is still running when the next class starts.
+
+If you also flush the database between tests, stop the subscriptions first, and pin the order with `@Order` rather than relying on the order of the fields:
+
+```java
+@RegisterExtension
+@Order(1)
+StopSubscriptionsExtension subscriptions = new StopSubscriptionsExtension(subscriptionModel);
+
+@RegisterExtension
+@Order(2)
+FlushDatabaseExtension flush = new FlushDatabaseExtension(mongoTemplate);
+```
+
+While flushing, delete the documents instead of dropping the collections or the database. Dropping them invalidates a live MongoDB change stream, and the subscriptions you resume afterwards then receive nothing.
+
+Then keep at least one test with everything running. Deny-by-default means nothing checks two subscriptions reacting to the same event unless you ask it to.
+
+One cost stays. Every subscription still starts once while the application context boots, and is stopped again before the first test, so on MongoDB you pay for a change stream opened and closed per subscription per context. A JUnit extension runs after the context is refreshed, so nothing in the test can prevent that.
+
+A subscription id that no longer exists throws `IllegalArgumentException` from `resumeSubscription`, so renaming one breaks the tests that named it instead of quietly leaving them asserting nothing.
+
 # Upgrading
 
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
