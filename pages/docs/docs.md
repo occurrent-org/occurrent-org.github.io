@@ -5683,7 +5683,7 @@ await().untilAsserted(() -> assertThat(store.get("johan")).isEqualTo("Johan Hale
 
 // Pull: the same descriptor folded over a query, right now
 DomainEventQueries<DomainEvent> queries = new DomainEventQueries<>(eventStore, converter);
-assertThat(ProjectionExtensionsKt.project(queries, currentName(), "johan")).isEqualTo(store.get("johan"));
+assertThat(Projections.project(currentName(), queries, "johan")).isEqualTo(store.get("johan"));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -5691,7 +5691,7 @@ A disagreement is a bug in one of the two paths, and this catches classes of mis
 
 Write a second instance, as above. With only one instance in the store the pull side's scoping is a no-op, so the test cannot tell a correctly scoped fold from one that folds everything and happens to agree.
 
-Two rough edges to know about. In Kotlin the on-demand fold is an extension, so it needs `import org.occurrent.dsl.projection.blocking.project` unless your test happens to sit in that package. In Java it is only reachable as `ProjectionExtensionsKt.project(...)`, a Kotlin compilation artifact rather than a name you would go looking for. That is tracked in [issue 453](https://github.com/johanhaleby/occurrent/issues/453).
+One thing to know. In Kotlin the on-demand fold is an extension, so it needs `import org.occurrent.dsl.projection.blocking.project` unless your test happens to sit in that package. From Java it's the static `Projections.project(projection, queries, instanceId)`, described under [Reading on demand](#reading-on-demand).
 
 For a DCB projection the same pair is `dcbSubscriptions.project(id, projection, repository)` and `dcbQueries.project(projection)`, and note that a single-instance projection stores its one slot under the subscription id rather than under any value from the events. Reading the wrong key gives a test that looks reasonable and always sees `null`. The [projection-dsl example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/projection-dsl) does this pairing for every one of its vignettes, in Java and Kotlin, for stream and DCB.
 
