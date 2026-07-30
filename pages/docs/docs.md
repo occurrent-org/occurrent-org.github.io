@@ -5818,6 +5818,12 @@ FlushDatabaseExtension flush = new FlushDatabaseExtension(mongoTemplate);
 
 While flushing, delete the documents instead of dropping the collections or the database. Dropping them invalidates a live MongoDB change stream, and the subscriptions you resume afterwards then receive nothing.
 
+Flush the checkpoint collection along with the events, `subscriptions` unless you changed `occurrent.subscription.collection`. Resuming a subscription continues from its stored checkpoint, so a subscription left behind by an earlier test picks up whatever that test wrote while it was stopped, and the second test then sees events it never wrote. Clearing the events alone does not prevent this, because the checkpoint is what decides where the resume starts.
+
+The in-memory subscription model does not have this problem. Events written while a subscription is stopped are dropped rather than queued, so there is nothing to catch up on when a later test starts it again.
+
+Register your subscriptions once, not per test. A second `subscribe` call with an id that already exists fails with `Subscription <id> is already defined`, and the ids stay registered because stopping a subscription is not the same as cancelling it. Under Spring the application registers them at startup and a test never touches that. Without Spring, register them in `@BeforeAll`. Registering in `@BeforeEach` fails on the second test, and it would not work anyway: JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped and runs in every test.
+
 Then keep at least one test with everything running. Deny-by-default means nothing checks two subscriptions reacting to the same event unless you ask it to.
 
 One cost stays. Every subscription still starts once while the application context boots, and is stopped again before the first test, so on MongoDB you pay for a change stream opened and closed per subscription per context. A JUnit extension runs after the context is refreshed, so nothing in the test can prevent that.
