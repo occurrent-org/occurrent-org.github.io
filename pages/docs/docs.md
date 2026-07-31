@@ -5760,34 +5760,33 @@ Two more worth knowing. `waitUntilStarted()` closes the race between subscribing
 
 Pausing the subscriptions a test does not want works until somebody adds a subscription to the application. The new one then runs in every test that never mentioned it, and a test that used to pass can start failing for a reason nowhere in its own code.
 
-Turning the default around removes that whole class of problem. Stop the entire subscription model before each test, and let each test name what it needs:
+Turning the default around removes that whole class of problem. Stop the entire subscription model before each test, and let each test name what it needs. `occurrent-testing-junit-jupiter` is the JUnit 5 extension that does it:
 
-```java
-class StopSubscriptionsExtension implements BeforeEachCallback, AfterEachCallback {
-
-    private final SubscriptionModel subscriptionModel;
-
-    StopSubscriptionsExtension(SubscriptionModel subscriptionModel) {
-        this.subscriptionModel = subscriptionModel;
-    }
-
-    @Override
-    public void beforeEach(ExtensionContext context) {
-        subscriptionModel.stop();
-    }
-
-    @Override
-    public void afterEach(ExtensionContext context) {
-        subscriptionModel.stop();
-    }
-
-    void start(String subscriptionId) {
-        subscriptionModel.resumeSubscription(subscriptionId).waitUntilStarted();
-    }
-}
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-junit-jupiter</artifactId>
+    <version>{{site.occurrentversion}}</version>
+    <scope>test</scope>
+</dependency>
 ```
 
-`stop()` leaves every running subscription paused rather than cancelled, which is what lets `resumeSubscription` bring them back one at a time. Keeping `waitUntilStarted()` inside the helper means no test can forget it.
+It depends on JUnit and the blocking subscription API and nothing else, so it works without Spring and without a container:
+
+{% capture java %}
+@RegisterExtension
+static final OccurrentSubscriptionsExtension subscriptions =
+        OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
+{% endcapture %}
+{% capture kotlin %}
+@JvmField
+@RegisterExtension
+val subscriptions = subscriptionModel.stoppedByDefault()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+<div class="comment">Kotlin needs the "@JvmField", or JUnit never picks the field up and every subscription stays live.</div>
+
+`stop()` leaves every running subscription paused rather than cancelled, which is what lets the extension bring them back one at a time. `start(id)` waits until the subscription is really listening before it returns, so no test can forget that and race its own write.
 
 A test now opens with its own dependency list:
 
@@ -5809,12 +5808,69 @@ If you also flush the database between tests, stop the subscriptions first, and 
 ```java
 @RegisterExtension
 @Order(1)
-StopSubscriptionsExtension subscriptions = new StopSubscriptionsExtension(subscriptionModel);
+OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
 
 @RegisterExtension
 @Order(2)
 FlushDatabaseExtension flush = new FlushDatabaseExtension(mongoTemplate);
 ```
+
+### Naming several subscriptions, or all of them {#testing-subscription-starting-several}
+
+Two shortcuts for the cases where naming one id per test is the wrong shape.
+
+`alwaysStart` names subscriptions that every test in the class needs, resumed in `beforeEach` right after the stop, so individual tests do not repeat themselves:
+
+```java
+OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection")
+```
+
+`startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
+
+```java
+subscriptions.startAll();
+```
+
+Both rest on the model being able to list its subscriptions, through `IntrospectableSubscriptionModel`. The in-memory, Spring MongoDB and native MongoDB models implement it, and so does the competing consumer model, which also reports a consumer still waiting for its lock. Name an id that does not exist and the failure tells you the ids that do, instead of only repeating the one you got wrong.
+
+### Wiring it into a Spring Boot test {#testing-subscription-spring-boot}
+
+`occurrent-testing-spring-boot` wires the same extension into the application context, so a test autowires it rather than constructing it:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-spring-boot</artifactId>
+    <version>{{site.occurrentversion}}</version>
+    <scope>test</scope>
+</dependency>
+```
+
+{% capture java %}
+@SpringBootTest
+@EnableOccurrentTesting
+class OrderProjectionTest {
+
+    @Autowired
+    @RegisterExtension
+    OccurrentSubscriptionsExtension subscriptions;
+}
+{% endcapture %}
+{% capture kotlin %}
+@SpringBootTest
+@EnableOccurrentTesting
+class OrderProjectionTest {
+
+    @Autowired
+    @RegisterExtension
+    lateinit var subscriptions: OccurrentSubscriptionsExtension
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The extension bean is all `@EnableOccurrentTesting` adds. Your event store and subscription model are left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
+
+Your application registers its subscriptions at startup through its annotations, so a test never registers them itself. Outside Spring, register them once in `@BeforeAll`. Doing it in `@BeforeEach` fails on the second test with `Subscription <id> is already defined`, and would not work anyway, because JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped.
 
 While flushing, delete the documents instead of dropping the collections or the database. Dropping them invalidates a live MongoDB change stream, and the subscriptions you resume afterwards then receive nothing.
 
