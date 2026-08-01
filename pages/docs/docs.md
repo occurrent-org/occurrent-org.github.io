@@ -1686,9 +1686,13 @@ For synchronous side effects, prefer `sideEffect(...)` or `options().sideEffect(
 
 A saga or a policy needs to issue commands without knowing how those commands get turned into events. `CommandDispatcher<C>` is the interface for that. It has one method you must write, `void dispatch(C command)`, so a plain lambda is a valid dispatcher. Delivery is at-least-once, so whatever `dispatch` calls into must be safe to run twice on the same command. Running it twice should never append the same events a second time.
 
-There is a second, optional method, `void dispatchAll(List<C> commands)`. A saga hands one reaction's whole command list to it in a single call, and the default implementation just dispatches them one at a time, which is what a lambda dispatcher gets. Override it when your commands all target one stream or one decider and you can write them together, for example inside a single transaction.
+There is a second, optional method, `void dispatchAll(List<C> commands)`. A saga hands one reaction's whole command list to it in a single call, and the default implementation just dispatches them one at a time, which is what a plain lambda dispatcher gets.
 
-That matters because a saga dispatches before it saves its own state. If the third of three commands fails, the first two have already been dispatched, the state is not saved, and the redelivery runs the reaction again from the top. There is no per-command progress marker, so a command that keeps failing re-issues the ones before it every time. For a receiver backed by an `ApplicationService` that costs nothing, because it re-reads the stream and the target rejects a command it has already applied. For something external and not idempotent, such as sending an email or charging a card, it is worth overriding `dispatchAll` to make the batch atomic.
+That matters because a saga dispatches before it saves its own state. If the third of three commands fails, the first two have already been dispatched, the state is not saved, and the redelivery runs the reaction again from the top. There is no per-command progress marker, so a command that keeps failing re-issues the ones before it every time. For a receiver backed by an `ApplicationService` that costs nothing, because it re-reads the stream and the target rejects a command it has already applied. For something external and not idempotent, such as sending an email or charging a card, that repeated prefix is the thing to watch.
+
+Every dispatcher from [`CommandDispatchers`](#convenience-factories) already overrides `dispatchAll`, so you get the batching without asking for it. A run of consecutive commands aimed at the same stream, or at the same DCB boundary, becomes one append, and a failure anywhere in that run leaves none of it written. The one exception is `DcbCommandDispatchers.invocation(...)`, because two invocations sharing a boundary can each carry their own `TagGenerator` and a single append can only be tagged one way. Write your own override when the target is something Occurrent knows nothing about and you can write a batch together, for example inside one transaction.
+
+Runs are consecutive only, since dispatch stays in order. A reaction that issues one command to order A, one to order B, then another to order A is three appends rather than two.
 
 Overriding it does not make dispatch exactly-once, and Occurrent does not promise that. It closes the window for the one dispatcher that can, and the contract stays at-least-once either way.
 
@@ -1754,6 +1758,8 @@ val dispatcher: CommandDispatcher<EnrollStudent> = DcbCommandDispatchers.decider
 dispatcher.dispatch(EnrollStudent(courseId, studentId))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+There is a third factory for the case where you have no command types at all, `CommandDispatchers.invocation(applicationService)`, with `DcbCommandDispatchers.invocation(...)` beside it. Those take an `Invocation`, a command that carries the domain function to run instead of naming one. See [sagas without command types](#sagas-without-command-types).
 
 ### Deriving the Stream Id From Annotations
 
@@ -4960,6 +4966,78 @@ The store's type parameter follows the saga's state, so it is `SagaStateStore<Or
 
 Building a `SpringMongoSagaStateStore` by hand for a flow saga needs its four-argument constructor, with the application's `CloudEventConverter` passed alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using the three-argument constructor, throws `IllegalArgumentException` rather than silently losing that package independence. A core saga's state carries no such requirement, since it serializes with the application's own `MongoConverter`.
 
+### Sagas Without Command Types {#sagas-without-command-types}
+
+Everything above assumes you have command types. You do not need them. Occurrent's [command philosophy](#command-philosophy) says a command can be a plain function, and a saga can issue one.
+
+Say the domain is written the way that section recommends, as pure functions from events to events, with no command records and no handler that switches over them:
+
+{% capture kotlin %}
+fun reservePayment(events: List<OrderEvent>, amount: Double): List<OrderEvent> = ...
+fun ship(events: List<OrderEvent>): List<OrderEvent> = ...
+{% endcapture %}
+{% capture java %}
+static List<OrderEvent> reservePayment(List<OrderEvent> events, double amount) { ... }
+static List<OrderEvent> ship(List<OrderEvent> events) { ... }
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A saga can command those directly. Its command type becomes `Invocation<E>`, which pairs the stream to write to with the function to run against that stream's events:
+
+{% capture kotlin %}
+react<OrderPlaced> { _, e ->
+    issue(e.orderId) { events -> reservePayment(events, e.amount) }
+    startTimeout("payment", Duration.ofMinutes(30))
+}
+react<PaymentReserved> { _, e ->
+    issue(e.orderId) { events -> ship(events) }
+    cancelTimeout("payment")
+}
+{% endcapture %}
+{% capture java %}
+.react(OrderPlaced.class, (state, e) -> List.of(
+        SagaEffect.issue(Invocation.to(e.orderId(), events -> reservePayment(events, e.amount()))),
+        SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
+.react(PaymentReserved.class, (state, e) -> List.of(
+        SagaEffect.issue(Invocation.to(e.orderId(), OrderDomain::ship)),
+        SagaEffect.cancelTimeout("payment")))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The Kotlin two-argument `issue(streamId) { events -> ... }` is available in every core and flow reaction and comes from `occurrent-saga-dsl-blocking`. Wire the runner with `CommandDispatchers.invocation(applicationService)` instead of a decider dispatcher, and the saga is typed `Saga<OrderEvent, S, Invocation<OrderEvent>>`:
+
+{% capture kotlin %}
+val dispatcher = CommandDispatchers.invocation(applicationService)
+{% endcapture %}
+{% capture java %}
+CommandDispatcher<Invocation<OrderEvent>> dispatcher = CommandDispatchers.invocation(applicationService);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Nothing about the saga machinery changes. An invocation is an ordinary command, so it goes through the same `CommandDispatcher`, gets the same at-least-once delivery, and is safe for the same reason a decider is: the application service re-reads the stream before your function decides, so a duplicate decides nothing.
+
+For [DCB](#dynamic-consistency-boundary) the type is `DcbInvocation`, which takes a `DcbCriteria` read boundary in place of the stream id, and optionally its own `TagGenerator`. Dispatch it with `DcbCommandDispatchers.invocation(applicationService)`.
+
+`E` here is the event type of the stream being written to, which is not necessarily the type the saga subscribes to. `Saga.adapt` cannot widen an `Invocation<Narrow>` into an `Invocation<Wide>`, because Java generics are invariant, so type a feature saga on the module-wide event type from the start.
+
+The cost is in the tests, and it is worth knowing before you choose this. A lambda has no value equality, so `assertThat(step.issuedCommands()).containsExactly(ShipOrder(orderId))` has no equivalent. Two replacements, both of which say more than the command's name did:
+
+{% capture kotlin %}
+// Check what the command does, by running its decision over the events you care about
+assertThat(step.issuedCommands().single().decision().apply(listOf(placed)))
+    .containsExactly(OrderShipped(orderId))
+{% endcapture %}
+{% capture java %}
+// Check what the command does, by running its decision over the events you care about
+assertThat(step.issuedCommands().get(0).decision().apply(List.of(placed)))
+        .containsExactly(new OrderShipped(orderId));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Or run the saga against an in-memory event store and check the events it wrote, which asserts the outcome rather than the message. Command types remain the better choice when you want the fast, pure assertion on `issuedCommands()`, or when the saga's intent is a thing you want to name, log, and read back later.
+
+[ADR 81](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0081-function-shaped-saga-commands.md) records why this is a command type rather than a new kind of saga effect.
+
 ### The `@Saga` Annotation {#the-saga-annotation}
 
 On the [Spring Boot starter](#spring-boot-starter) you do not wire a `SagaRunner` yourself. Annotate a no-arg factory method returning a `Saga` with `org.occurrent.annotation.Saga` and the framework registers it as a managed saga, subscribing through the same catch-up, durable-resume, and [competing-consumer](#competing-consumer-subscription-blocking) machinery as [`@Subscription`](#spring-boot-annotations):
@@ -5089,7 +5167,7 @@ Gating removes the redundant queries. It does not change the residual cross-node
 
 ### Side Effects and Compensation {#saga-side-effects}
 
-A saga affects the outside world in exactly one way: it issues commands. There is no "call this API" effect, and that is deliberate, because it keeps `react` a pure function you can test with equality assertions. So a third-party call, whether it runs mid-process or as the last thing a completed saga does, is a command like any other. Write a reaction that issues, say, `NotifyWarehouse(orderId)`, and point that command at a dispatcher that makes the call. The terminal reaction, the one whose `Continuation` is `end`, is where a "now that the whole thing is done" effect belongs.
+A saga affects the outside world in exactly one way: it issues commands. There is no "call this API" effect, and that is deliberate, because it keeps `react` a pure function whose output is data. With ordinary command types you can test that output with equality assertions, and with [`Invocation`](#sagas-without-command-types) you check what the command does instead, since a lambda has no value equality. Either way the reaction performs nothing itself. So a third-party call, whether it runs mid-process or as the last thing a completed saga does, is a command like any other. Write a reaction that issues, say, `NotifyWarehouse(orderId)`, and point that command at a dispatcher that makes the call. The terminal reaction, the one whose `Continuation` is `end`, is where a "now that the whole thing is done" effect belongs.
 
 Compensation works the same way. A saga does not roll back, it moves forward, so an "undo" is just another command you issue on the branch or timeout that detected the failure. The order-fulfillment saga above already does this. When payment fails or the timeout fires it issues `CancelOrder`, which is the compensation for the `ReservePayment` it issued earlier. You decide which command undoes which, there is no automatic inverse:
 
