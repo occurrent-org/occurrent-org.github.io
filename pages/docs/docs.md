@@ -2857,6 +2857,8 @@ ProjectionRunner.agnostic(pushModel, cloudEventConverter)
         .project("order-status", orderStatusProjection(), repository);
 ```
 
+One model feeds one consumer. Registering a second projection or saga on the same `PushSubscriptionModel` fails at startup, naming both. A broker message carries one acknowledgement decision, so consumers sharing a model would share it too: one that kept failing would hold up every consumer behind it on every redelivery, and once the broker gave up and dead-lettered the message none of them would see it. Declare one model per projection, and give each its own queue on the broker, so that a message one projection cannot handle stops only that projection. A subscription model reading an event store is unaffected and still serves any number of subscriptions, since each has its own cursor and checkpoint.
+
 On the producer side, forward the stored `CloudEvent` to the broker as CloudEvents JSON, unchanged. On the listener side, reconstruct it from that CloudEvents JSON payload before handing it to the model, for example in a Spring `@RabbitListener`:
 
 ```java
@@ -2869,7 +2871,7 @@ public void onMessage(byte[] body) {
 }
 ```
 
-`accept(CloudEvent)` runs every matching handler synchronously, on the calling thread, in registration order. A handler's exception propagates back to the caller, which is what lets the listener decide whether to acknowledge the message or trigger a redelivery. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
+`accept(CloudEvent)` runs the registered handler synchronously, on the calling thread, when the event matches its filter. The handler's exception propagates back to the caller, which is what lets the listener decide whether to acknowledge the message or trigger a redelivery. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
 
 Occurrent stays transport-neutral here. No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
@@ -2903,7 +2905,32 @@ Set one and the other keeps its default. A zero or negative value fails startup 
 
 Live-resume stays the broker's job. The model persists no live position watermark, it only records a one-shot catch-up marker (in the `checkpointStorage` you pass, or none if you pass `null`) that the catch-up finished, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so keep the fold idempotent. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
 
-Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Push source is rejected together with `mode = Mode.SYNCHRONOUS`, the catch-up start knobs, and a `DcbProjection`.
+Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`.
+
+A push source is rejected together with `mode = Mode.SYNCHRONOUS`, with `startAt`, `startAtGlobalPosition` and `resumeBehavior`, and with a `DcbProjection`. Those three attributes all answer "where in the log do I begin", and a broker queue is not a log you can seek in, so there is nothing for them to mean.
+
+`startupMode` is the exception, and it is honoured. `BACKGROUND` starts the application while the replay is still running, which is worth reaching for when a projection's history takes long enough to make startup uncomfortable:
+
+```java
+@Projection(id = "order-status", source = Source.PUSH,
+            subscriptionModelName = "ordersFeed", startupMode = StartupMode.BACKGROUND)
+Projection<OrderStatus, OrderEvent, String> orderStatus() { ... }
+```
+
+`DEFAULT` waits for the replay to finish before the application finishes starting. That is deliberately not the same rule as an event-store subscription, where `DEFAULT` decides from the start position: a push projection that is still replaying is not receiving live events either, so returning from startup with the read model both empty and disconnected would be the more surprising answer.
+
+Because nothing joins a background replay, a failure in one has no caller to reach. The starters record it on a `BackgroundCatchupFailures` bean instead, which you can inject to check:
+
+```java
+@Autowired
+BackgroundCatchupFailures failures;
+
+boolean healthy() {
+    return failures.isEmpty();
+}
+```
+
+`failureFor(subscriptionId)` returns the failure for one projection, and `all()` returns every recorded failure. A health indicator is the obvious use, since a background replay that died leaves an application that started successfully and a read model that will never fill.
 
 ##### Feeding domain events instead of CloudEvents
 
@@ -2931,11 +2958,15 @@ CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
 feed.catchUp();
 ```
 
-Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and runs its catch-up. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor.
+`stopCatchUp()` asks a running replay to stop, which is what a shutdown wants: without it an application closing mid-replay would wait for the whole history to finish folding. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
+
+Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor.
 
 A replayed event always has a real `CloudEvent` behind it, so the catch-up always folds with real metadata. A live event does not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
-The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent.
+The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent. `startupMode = BACKGROUND` works here too, and a failed background replay lands on the same `BackgroundCatchupFailures` bean.
+
+If you are upgrading from 0.31.0 and shared one sink between several projections, [upgrading to 0.32.0](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) shows the before and after.
 
 #### Durable Subscriptions (Blocking)
 
@@ -3319,11 +3350,15 @@ Mono<Void> onMessage(byte[] body) {
 }
 ```
 
-`accept(CloudEvent)` returns a `Mono<Void>` and runs the matching handlers one after another. A handler error propagates through that `Mono`, so the caller decides whether to acknowledge, retry, or dead-letter the message. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
+`accept(CloudEvent)` returns a `Mono<Void>` and runs the registered handler when the event matches its filter. A handler error propagates through that `Mono`, so the caller decides whether to acknowledge, retry, or dead-letter the message.
+
+As on the blocking side, one model feeds one consumer, and a second projection registering on it fails at startup. The reasoning is in the [blocking section](#push-subscription-blocking): a broker message carries one acknowledgement, so sharing a model would let one failing consumer strand the others. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
 
 The same limits apply as on the blocking side. A push subscription only ever sees the live tail, and a broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first (see [EventStore Queries](#eventstore-queries) or the [catch-up subscription](#catch-up-subscription-blocking) pattern), then attach the push feed to keep it current.
 
 The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records a one-shot catch-up marker so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so keep the fold idempotent, and rebuild the projection if the consumer is offline longer than the broker retains the backlog.
+
+`startupMode` behaves the same as on the blocking stack: `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background failure is recorded on `BackgroundCatchupFailures`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to fold.
 ## Synchronous Subscriptions
 
 The subscriptions described so far are asynchronous. They run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
