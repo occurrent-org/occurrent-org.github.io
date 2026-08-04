@@ -136,6 +136,7 @@ permalink: /documentation
 * * * [Effects Are Data](#saga-effects)
 * * * [Running a Saga](#running-a-saga)
 * * * [The `@Saga` Annotation](#the-saga-annotation)
+* * * * [Fed from a broker](#saga-push-source)
 * * * [Delivery Contract](#saga-delivery-contract)
 * * * [Running Across Multiple Instances](#saga-multi-instance)
 * * * [Side Effects and Compensation](#saga-side-effects)
@@ -5025,8 +5026,119 @@ The annotation and the DSL class share the name `Saga`, so a Java factory method
 | `capability` | `AGNOSTIC` (both stream and DCB events) or `STREAM` (stream events only). |
 | `store` / `storeName` | Select the `SagaStateStore` bean by type or name. With both unset the store resolves by convention, the unique `SagaStateStore` bean, otherwise a zero-config MongoDB store in a `saga-<id>` collection. |
 | `commandDispatcher` / `commandDispatcherName` | Select the `CommandDispatcher` bean by type or name, otherwise the unique `CommandDispatcher` bean. There is no default dispatcher, since it is usually a lambda over your `ApplicationService`. |
+| `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the saga from a `PushSubscriptionModel` bean instead, see [Fed from a broker](#saga-push-source). |
+| `catchup` | For a push saga only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
+| `subscriptionModel` / `subscriptionModelName` | Select the `PushSubscriptionModel` bean by type or name when `source = PUSH`. |
 
 `@Saga` is blocking-only in this first version, the reactive starter does not register it.
+
+#### Fed from a broker {#saga-push-source}
+
+A saga does not have to read the event store. Set `source = Source.PUSH` and point it at a [`PushSubscriptionModel`](#push-subscription-blocking) bean, and it reacts to whatever your listener hands that model, from RabbitMQ, Kafka, an HTTP endpoint or anything else:
+
+{% capture kotlin %}
+import org.occurrent.annotation.Saga
+import org.occurrent.annotation.Source
+
+@Component
+class OrderFulfillmentSaga {
+
+    @Saga(id = "order-fulfillment", source = Source.PUSH, subscriptionModelName = "orderEvents")
+    fun orderFulfillment() = saga {
+        correlateAll { it.orderId }
+        startsOn<OrderPlaced> { order ->
+            issue(ReservePayment(order.orderId, order.amount))
+        }
+        step("awaiting-payment") {
+            on<PaymentReserved>(then = end) { payment -> issue(ShipOrder(payment.orderId)) }
+        }
+    }
+}
+
+@Bean("orderEvents")
+fun orderEvents() = PushSubscriptionModel()
+{% endcapture %}
+{% capture java %}
+import org.occurrent.annotation.Saga;
+import org.occurrent.annotation.Source;
+
+@Component
+class OrderFulfillmentSaga {
+
+    @Saga(id = "order-fulfillment", source = Source.PUSH, subscriptionModelName = "orderEvents")
+    org.occurrent.dsl.saga.Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> orderFulfillment() {
+        return FlowSaga.<OrderEvent, OrderCommand>builder()
+                .correlateAll(OrderEvent::orderId)
+                .startsOn(OrderPlaced.class,
+                        order -> List.of(new ReservePayment(order.orderId(), order.amount())))
+                .step("awaiting-payment", step -> step
+                        .on(PaymentReserved.class, Continuation.end(),
+                                payment -> List.of(new ShipOrder(payment.orderId()))))
+                .build();
+    }
+}
+
+@Bean("orderEvents")
+PushSubscriptionModel orderEvents() {
+    return new PushSubscriptionModel();
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Your listener calls `accept(cloudEvent)` on that bean and the saga takes it from there. Nothing else changes: the same `correlateAll`, the same steps, the same timeouts, the same state store.
+
+By default the starter puts a [replay in front of the feed](#push-subscription-blocking), so a saga that has never run works through the event store's history first and only then starts taking live events. That is what you want when this application wrote the events and the broker is only how they reach the saga.
+
+##### When the events are not in your event store
+
+If another application writes the events, your event store does not hold them, so there is nothing to replay. A replay would either find nothing or, worse, apply unrelated events that happen to live in the same store. Say so with `catchup = Catchup.NONE`:
+
+{% capture kotlin %}
+@Saga(id = "shipment-tracking", source = Source.PUSH, subscriptionModelName = "warehouseEvents",
+      catchup = Catchup.NONE)
+fun shipmentTracking() = saga { /* ... */ }
+{% endcapture %}
+{% capture java %}
+@Saga(id = "shipment-tracking", source = Source.PUSH, subscriptionModelName = "warehouseEvents",
+      catchup = Catchup.NONE)
+org.occurrent.dsl.saga.Saga<ShipmentEvent, FlowState<ShipmentEvent>, ShipmentCommand> shipmentTracking() {
+    return /* ... */;
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+This takes live events only and touches no event store at all, so the application needs neither a `PositionOrderedReader` nor a `CheckpointStorage` bean. Leave the default in place without those beans and startup fails with a message telling you to set `catchup = Catchup.NONE`, rather than a bare missing-bean error.
+
+A saga that has run before picks up where it left off either way, because its per-instance state lives in its `SagaStateStore` and not in the feed. The difference shows on a first run against an existing history. With the default the saga is brought up to date from the event store before it reacts. With `Catchup.NONE` it starts from nothing and reacts only to what arrives from here on.
+
+##### Forward the Occurrent extensions
+
+A saga recognises a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. A broker delivers at least once, so an event that arrives without any of those is reacted to a second time and its commands are issued again. Occurrent's own stored events always carry them, so this is about what your listener forwards, not about the event store. The saga logs a warning the first time it sees an event without them, naming the saga so you can find it.
+
+This is also why a `@Saga` accepts only a `PushSubscriptionModel` and not a [`DomainEventFeed`](#feeding-domain-events-instead-of-cloudevents), which a `@Projection` does accept. A domain event feed carries no stream metadata, so a saga bound to one would lose its redelivery protection without saying anything.
+
+##### What a push saga cannot set
+
+`startAt`, `startAtGlobalPosition` and `resumeBehavior` are rejected rather than quietly ignored. A replay always starts at the beginning, and where the live feed resumes after a restart is the broker's business. Occurrent records only a one-shot marker that the catch-up finished, so a restart skips the replay and lets the broker redeliver whatever the consumer had not acknowledged.
+
+`startupMode` does apply, under the default `catchup`, because that replay is real work on the startup path. Use `StartupMode.BACKGROUND` to keep a long history from holding up startup. It is rejected together with `Catchup.NONE`, where there is no replay to wait for. Setting `catchup` on an event-store saga is rejected too, since ignoring it would leave the saga reading the whole history it was asked to skip.
+
+##### Starting it yourself
+
+A push feed is a bean you supply, so `occurrent.subscription.mode=manual` cannot withhold it the way it withholds a subscription Occurrent owns. Inject `ManualStartPushSources` and start the saga when the application is ready, which is what you want for a saga behind a leader election, where every node would otherwise react to the same event:
+
+```java
+@Autowired
+ManualStartPushSources pushSources;
+
+void becameLeader() {
+    pushSources.start("order-fulfillment");
+}
+```
+
+`startAll()` starts every withheld push source, projections and sagas alike, and `pendingIds()` says what is still waiting. The saga's instances are readable through [`SagaInstances`](#observing-saga-instances) while it waits, since that reads the state store rather than a running subscription, so you can look at what is in flight before deciding to start it.
+
+The design rationale, including why a domain event feed is refused and why the timers wait for the handover, is in [ADR 0096](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0096-a-push-fed-saga-may-have-no-history-to-replay.md).
 
 ### Delivery Contract {#saga-delivery-contract}
 
