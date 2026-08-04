@@ -2639,10 +2639,11 @@ public interface CheckpointStorage {
     Checkpoint read(String subscriptionId);
     Checkpoint save(String subscriptionId, Checkpoint checkpoint);
     void delete(String subscriptionId);
+    boolean exists(String subscriptionId);
 }
 ```
 
-I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships with three pre-defined implementations:
+I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. Occurrent ships with four pre-defined implementations:
 
 1\. **NativeMongoCheckpointStorage**<br>
     Uses the vanilla MongoDB Java (sync) driver to store `Checkpoint`'s in MongoDB.
@@ -2653,12 +2654,31 @@ I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. 
 3\. **SpringRedisCheckpointStorage**<br>
     Uses the Spring RedisTemplate to store `Checkpoint`'s in Redis.    
     {% include macros/subscription/blocking/redis/spring/storage/maven.md %} 
+4\. **InMemoryCheckpointStorage**<br>
+    Keeps `Checkpoint`'s in a `ConcurrentHashMap`, so they are gone when the process is. Useful in tests, and in an application that can replay from the start after a restart.
+    {% include macros/subscription/blocking/inmemory/impl/maven.md %}
 
-
+Note that the two MongoDB implementations recognize their own checkpoint types (a change stream resume token and an operation time) and give them back as the same type, while every other type is stored as the string it reports and read back as a `StringBasedCheckpoint`. The Redis implementation does that to everything, including the two MongoDB types. So if you write code that reads a checkpoint back out of storage, rely on `Checkpoint.asString()` rather than casting to the type you saved.
 
 If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "blocking subscription API" which contains the `CheckpointStorage` interface:
 
 {% include macros/subscription/blocking/api/maven.md %}
+
+You can also have Occurrent's own conformance suite check it for you. `occurrent-tck-subscription-blocking` contains `CheckpointStorageConformance`, an abstract JUnit 5 test class that all four implementations above run against. Extend it, supply a `CheckpointStorageFixture` that hands back a storage holding no checkpoints, and you get the whole contract asserted:
+
+```java
+class MyCheckpointStorageTest extends CheckpointStorageConformance {
+
+    @Override
+    protected CheckpointStorageFixture createFixture() {
+        return new MyCheckpointStorageFixture();
+    }
+}
+```
+
+The fixture also declares whether your storage gives back a checkpoint of the same type it was handed, since both answers are legitimate and nothing on `CheckpointStorage` reports which way an implementation goes.
+
+{% include macros/tck/subscription/blocking/maven.md %}
 
 ### Blocking Subscription Implementations
 
