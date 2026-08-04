@@ -2680,6 +2680,24 @@ The fixture also declares whether your storage gives back a checkpoint of the sa
 
 {% include macros/tck/subscription/blocking/maven.md %}
 
+The same artifact holds the suites for a subscription model, so if you write your own you can have Occurrent check it against the same contract its five models are held to. `SubscriptionModelConformance` covers delivery and filtering, the whole life cycle, and cancelling. `IntrospectableSubscriptionModelConformance` covers `subscriptionIds()`, for a model that can list its subscriptions. `InProcessDeliveryConformance` is for a model that calls the handler on the publishing thread, the way the synchronous and push models do.
+
+You supply a `SubscriptionModelFixture`. Because a subscription model has no single way of being fed an event (a MongoDB model watches a change stream, an in-process one is handed the event directly), the fixture is what publishes:
+
+```java
+class MySubscriptionModelTest extends SubscriptionModelConformance {
+
+    @Override
+    protected SubscriptionModelFixture createFixture() {
+        return new MySubscriptionModelFixture();
+    }
+}
+```
+
+The fixture also declares three things the API cannot be asked: whether a paused subscription's events are held for it or dropped, whether a throwing handler is retried or the exception reaches whoever published the event, and whether the model accepts more than one subscription at a time. Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
+
+Worth knowing if you read a checkpoint back after pausing: the two MongoDB models differ here. The native driver's model resumes gap-free, so an event written while a subscription was paused arrives once it resumes, while the Spring model resumes at the present and does not deliver it. Both are deliberate, and which one the contract should require is still open.
+
 ### Blocking Subscription Implementations
 
 These are the _non-durable_ [blocking subscription implementations](#blocking-subscriptions): 
