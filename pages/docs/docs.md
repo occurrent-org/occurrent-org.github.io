@@ -5760,12 +5760,12 @@ Two more worth knowing. `waitUntilStarted()` closes the race between subscribing
 
 Pausing the subscriptions a test does not want works until somebody adds a subscription to the application. The new one then runs in every test that never mentioned it, and a test that used to pass can start failing for a reason nowhere in its own code.
 
-Turning the default around removes that whole class of problem. Stop the entire subscription model before each test, and let each test name what it needs. `occurrent-testing-junit-jupiter` is the JUnit 5 extension that does it:
+Turning the default around removes that whole class of problem. Stop the entire subscription model before each test, and let each test name what it needs. `occurrent-testing-junit-jupiter-blocking` is the JUnit 5 extension that does it:
 
 ```xml
 <dependency>
     <groupId>org.occurrent</groupId>
-    <artifactId>occurrent-testing-junit-jupiter</artifactId>
+    <artifactId>occurrent-testing-junit-jupiter-blocking</artifactId>
     <version>{{site.occurrentversion}}</version>
     <scope>test</scope>
 </dependency>
