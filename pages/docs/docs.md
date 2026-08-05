@@ -5771,7 +5771,18 @@ Turning the default around removes that whole class of problem. Stop the entire 
 </dependency>
 ```
 
-It depends on JUnit and the blocking subscription API and nothing else, so it works without Spring and without a container:
+It depends on JUnit and the blocking subscription API and nothing else, so it works without Spring and without a container. If your application is reactive, `occurrent-testing-junit-jupiter-reactor` is the twin, same class name, same methods, depending on the reactive subscription API instead:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-junit-jupiter-reactor</artifactId>
+    <version>{{site.occurrentversion}}</version>
+    <scope>test</scope>
+</dependency>
+```
+
+The two differences are both about waiting. Resuming a subscription and clearing a checkpoint each return a `Mono` on the reactive stack rather than blocking, and the extension blocks on them for you, so your test still calls `start(id)` and moves straight on to writing an event.
 
 {% capture java %}
 @RegisterExtension
@@ -5879,6 +5890,8 @@ class OrderProjectionTest {
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 The extension bean is all `@EnableOccurrentTesting` adds. Your event store and subscription model are left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
+
+`@EnableOccurrentTesting` wires whichever leaf you added as a test dependency, and both if you added both, which matters for an application using both stacks at once: it gets two extension beans, one per stack, autowired by type. Either way, the extension stops every subscription model in the context rather than one, since some applications have more than one that needs stopping, a durable model and a `SynchronousSubscriptionModel` side by side is the ordinary case on the reactive stack. Outside Spring the same rule applies to `stoppedByDefault`, pass every model it needs to stop: `stoppedByDefault(durableModel, synchronousModel)`.
 
 Your application registers its subscriptions at startup through its annotations, so a test never registers them itself. Outside Spring, register them once in `@BeforeAll`. Doing it in `@BeforeEach` fails on the second test with `Subscription <id> is already defined`, and would not work anyway, because JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped.
 
