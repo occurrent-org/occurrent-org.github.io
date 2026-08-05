@@ -3117,6 +3117,24 @@ If the above code is executed on multiple nodes/processes, then only *one* subsc
 Note that you can make several tweaks to the `CompetingConsumerStrategy` using the `Builder`, (`new NativeMongoLeaseCompetingConsumerStrategy.Builder()` or `new SpringMongoLeaseCompetingConsumerStrategy.Builder()`). 
 You can, for example, tweak how long the lease time should be for the lock (default is 20 seconds), the name of lease collection in MongoDB, as well as the retry strategy and other things. 
 
+If you write your own `CompetingConsumerStrategy`, the same `occurrent-tck-subscription-blocking` artifact used for [checkpoint storage and subscription model conformance](#blocking-subscription-checkpoint-storage) also holds `CompetingConsumerStrategyConformance`. Extend it and supply a `CompetingConsumerStrategyFixture`:
+
+```java
+class MyCompetingConsumerStrategyTest extends CompetingConsumerStrategyConformance {
+
+    @Override
+    protected CompetingConsumerStrategyFixture createFixture() {
+        return new MyCompetingConsumerStrategyFixture();
+    }
+}
+```
+
+Two things the fixture supplies that nothing on the interface can. First, a `newCompetingConsumerStrategy()` factory that hands back a rival strategy contending over the *same* storage as the one under test. The suite needs a rival to register against, and in places a third instance that outlives a rival it deliberately shuts down. Constructing several strategies over one shared storage is therefore an explicit constraint on your implementation, since nothing on `CompetingConsumerStrategy` lets one instance reach another. Second, `timeToConverge()`, the longest the suite waits for the strategy's own coordination to settle who holds a lock when nothing told it directly. This is a bound rather than a delay. The suite stops waiting the moment the condition holds, so a generous value costs a passing run nothing and is only paid in full by a run that was going to fail anyway.
+
+The suite takes no position on *how* a strategy coordinates. Nothing in it knows a lease exists, waits one out, or asserts when one expires, and Occurrent's own two MongoDB-backed strategies assert that timing separately, in deterministic tests against the MongoDB support class with a clock the test moves itself. What the suite asserts instead is the property a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
+
+It also asserts the contract both ways Occurrent relies on it. `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock. `SagaRunner` registers a consumer, never adds a listener at all, and asks `hasLock(subscriptionId, subscriberId)` on every poll instead. A strategy that reports changes only through a listener, or only answers correctly when asked directly, fails half of what the suite checks.
+
 #### Subscription Life-cycle & Testing (Blocking)
 
 Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implements this). These subscription models supports canceling, pausing and  resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`).
@@ -3246,16 +3264,89 @@ public interface CheckpointStorage {
 }
 ```
 
-I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships one pre-defined reactive implementation (please contribute!):
+I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships two pre-defined reactive implementations:
 
 1\. **ReactorCheckpointStorage**<br>
     Uses the [project reactor](https://projectreactor.io/) driver to store `Checkpoint`'s in MongoDB.
     {% include macros/subscription/reactor/mongodb/spring/storage/maven.md %}   
-
+2\. **InMemoryCheckpointStorage**<br>
+    Keeps `Checkpoint`'s in a `ConcurrentHashMap`, in the `org.occurrent.subscription.inmemory.reactor` package. It's the reactive twin of the [blocking `InMemoryCheckpointStorage`](#blocking-subscription-checkpoint-storage) and ships from the very same `occurrent-subscription-inmemory` artifact, as an optional class. The artifact declares `occurrent-subscription-api-reactor` (and with it reactor-core) as an `optional` dependency, so a blocking-only consumer never pulls in the reactive stack. Depend on both to use it:
+    {% include macros/subscription/blocking/inmemory/impl/maven.md %}
+    {% include macros/subscription/reactor/api/maven.md %}
 
 If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "reactive subscription API" which contains the `CheckpointStorage` interface:
 
 {% include macros/subscription/reactor/api/maven.md %}
+
+Occurrent's own reactive subscription models, and any you write yourself, are checked against a leaf built on top of the blocking suites rather than a second copy of them. `BlockingSubscriptionOverReactive`, in `occurrent-tck-subscription-reactor`, wraps a reactor `SubscriptionModel` (plus `IntrospectableSubscriptionModel`, and optionally `CheckpointAwareSubscriptionModel`) as a blocking one. Every blocking conformance suite (`SubscriptionModelConformance`, `IntrospectableSubscriptionModelConformance`, `CheckpointAwareSubscriptionModelConformance`) then runs against a reactor model unchanged, instead of being described a second time in terms of `Mono` and `Flux`. This bridge is test-only. Every wait blocks the calling thread, exactly what a reactive model exists to avoid, so it has no place outside a test.
+
+A bridge that blocks on a result cannot see what happens before that block, so `ReactiveSubscriptionModelConformance` covers what is left. It asserts that the model actually subscribes to the `Mono<Void>` an action returns rather than assembling and dropping it. A handler written the idiomatic way, `ce -> repository.save(ce)`, silently does nothing under a model that gets this wrong. It asserts that an action whose `Mono` errors fails through the model's own error path instead of detonating somewhere unrelated or killing the model outright. And it asserts that `Subscription#waitUntilStarted()` answers more than once, and still after an earlier, abandoned wait was disposed of.
+
+To wire an out-of-tree reactor model into both suites, supply a blocking fixture that wraps it in the bridge, and a reactive-only fixture that hands it over directly:
+
+```java
+class MySubscriptionModelFixture implements SubscriptionModelFixture {
+
+    private final MySubscriptionModel model = new MySubscriptionModel();
+
+    @Override
+    public SubscriptionModel subscriptionModel() {
+        return BlockingSubscriptionOverReactive.of(model);
+    }
+
+    @Override
+    public void publish(List<CloudEvent> events) {
+        // however the model is fed, e.g. a change stream write or an in-process dispatch
+    }
+
+    @Override
+    public boolean deliversEventsPublishedWhilePaused() {
+        return false;
+    }
+
+    @Override
+    public boolean retriesAFailingHandler() {
+        return false;
+    }
+}
+
+class MySubscriptionModelConformanceTest extends SubscriptionModelConformance {
+
+    @Override
+    protected SubscriptionModelFixture createFixture() {
+        return new MySubscriptionModelFixture();
+    }
+}
+
+class MyReactiveSubscriptionModelFixture implements ReactiveSubscriptionModelFixture {
+
+    private final MySubscriptionModel model = new MySubscriptionModel();
+
+    @Override
+    public SubscriptionModel subscriptionModel() {
+        return model;
+    }
+
+    @Override
+    public void publish(List<CloudEvent> events) {
+        // the same feed as above, handed to the model directly rather than through the blocking bridge
+    }
+}
+
+class MyReactiveSubscriptionModelConformanceTest extends ReactiveSubscriptionModelConformance {
+
+    @Override
+    protected ReactiveSubscriptionModelFixture createFixture() {
+        return new MyReactiveSubscriptionModelFixture();
+    }
+}
+```
+
+`BlockingSubscriptionOverReactive.of(...)` needs a model that implements both the reactor `SubscriptionModel` and `IntrospectableSubscriptionModel`. Every reactive model shipping with Occurrent is both, and an out-of-tree one is likely to be too. Reach for `BlockingSubscriptionOverReactive.ofCheckpointAware(...)` instead when the model also implements `CheckpointAwareSubscriptionModel`, to additionally run `CheckpointAwareSubscriptionModelConformance` against it.
+
+A single dependency covers both suites, since `occurrent-tck-subscription-reactor` depends on `occurrent-tck-subscription-blocking` itself:
+
+{% include macros/tck/subscription/reactor/maven.md %}
 
 ### Reactive Subscription Implementations
 
