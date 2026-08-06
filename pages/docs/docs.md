@@ -675,7 +675,7 @@ The blocking API is callback based, which is fine if you're working with individ
 If you want to work with streams of data, the reactor `FluxSubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
 publisher from [project reactor](https://projectreactor.io/).
 
-Note that it's fine to use reactive `SubscriptionModel`, even though the event store is implemented using the blocking api, and vice versa.
+Note that it's fine to use reactive `FluxSubscriptionModel`, even though the event store is implemented using the blocking api, and vice versa.
 If the datastore allows it, you can also run subscriptions in a different process than the processes reading and writing to the event store.   
 
 To get started with subscriptions refer to [Using Subscriptions](#using-subscriptions).
@@ -3097,8 +3097,8 @@ of data. This is arguably a bit more complex for the typical Java developer, and
 if high throughput, low CPU and memory-consumption is not critical. 
  
 To create a reactive subscription you first need to choose which "subscription model" to use. Then you create a subscription instance from this subscription model. 
-All reactive subscriptions implements the `org.occurrent.subscription.api.reactor.FluxSubscriptionModel` interface which uses 
-components from [project reactor](https://projectreactor.io). This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
+All reactive subscriptions implement the `org.occurrent.subscription.api.reactor.FluxSubscriptionModel` interface which uses 
+components from [project reactor](https://projectreactor.io). This interface provides means to subscribe to new events from an `EventStore` as they are written. For example:
 
 {% capture java %}
 subscriptionModel.subscribe("mySubscriptionId").doOnNext(System.out::println).subscribe();
@@ -3131,8 +3131,8 @@ public interface FluxSubscriptionModel {
 
 It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
 the checkpoint (if the datastore doesn't maintain the checkpoint on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this checkpoint 
-for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `FluxSubscriptionModel` implementation that also implement the 
-`org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface. The `CheckpointAwareSubscriptionModel`  is an example of a `FluxSubscriptionModel` that returns a wrapper around 
+for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `FluxSubscriptionModel` implementation that also implements the 
+`org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface. The `CheckpointAwareSubscriptionModel` interface extends `FluxSubscriptionModel` and returns a wrapper around 
 `io.cloudevents.CloudEvent` called `org.occurrent.subscription.CheckpointAwareCloudEvent` which adds an additional method, `Checkpoint getCheckpoint()`, that you can use to get  
 the current checkpoint. You can check if a cloud event contains a checkpoint by calling `CheckpointAwareCloudEvent.hasCheckpoint(cloudEvent)`
 and then get the checkpoint by using `CheckpointAwareCloudEvent.getCheckpointOrThrowIAE(cloudEvent)`. 
@@ -5822,7 +5822,7 @@ Two shortcuts for the cases where naming one id per test is the wrong shape.
 `alwaysStart` names subscriptions that every test in the class needs, resumed in `beforeEach` right after the stop, so individual tests do not repeat themselves:
 
 ```java
-OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection")
+OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection");
 ```
 
 `startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
@@ -5877,8 +5877,6 @@ While flushing, delete the documents instead of dropping the collections or the 
 Flush the checkpoint collection along with the events, `subscriptions` unless you changed `occurrent.subscription.collection`. Resuming a subscription continues from its stored checkpoint, so a subscription left behind by an earlier test picks up whatever that test wrote while it was stopped, and the second test then sees events it never wrote. Clearing the events alone does not prevent this, because the checkpoint is what decides where the resume starts.
 
 The in-memory subscription model does not have this problem. Events written while a subscription is stopped are dropped rather than queued, so there is nothing to catch up on when a later test starts it again.
-
-Register your subscriptions once, not per test. A second `subscribe` call with an id that already exists fails with `Subscription <id> is already defined`, and the ids stay registered because stopping a subscription is not the same as cancelling it. Under Spring the application registers them at startup and a test never touches that. Without Spring, register them in `@BeforeAll`. Registering in `@BeforeEach` fails on the second test, and it would not work anyway: JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped and runs in every test.
 
 Then keep at least one test with everything running. Deny-by-default means nothing checks two subscriptions reacting to the same event unless you ask it to.
 
