@@ -564,14 +564,14 @@ To get started with an event store refer to [Choosing An EventStore](#choosing-a
 `Filter.data(name, condition)` filters on a field inside an event's `data` payload. It's statically imported from `org.occurrent.filter.Filter`, next to `subject`, `type` and `time`, and resolves to `filter("data." + name, condition)`, so it composes with `.and()` and `.or()` like any other `Filter`. It works the same way whether you're querying an `EventStore` or filtering a subscription:
 
 {% capture java %}
-Stream<CloudEvent> events = eventStore.query(Filter.data("amount", gt(100)));
+Stream<CloudEvent> events = eventStore.query(data("amount", gt(100)));
 
-subscriptionModel.subscribe("large-orders", filter(Filter.data("amount", gt(100))), System.out::println);
+subscriptionModel.subscribe("large-orders", filter(data("amount", gt(100))), System.out::println);
 {% endcapture %}
 {% capture kotlin %}
-val events : Stream<CloudEvent> = eventStore.query(Filter.data("amount", gt(100)))
+val events : Stream<CloudEvent> = eventStore.query(data("amount", gt(100)))
 
-subscriptionModel.subscribe("large-orders", filter(Filter.data("amount", gt(100)))) { println(it) }
+subscriptionModel.subscribe("large-orders", filter(data("amount", gt(100)))) { println(it) }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
