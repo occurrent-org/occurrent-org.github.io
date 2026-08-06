@@ -3105,9 +3105,9 @@ You can, for example, tweak how long the lease time should be for the lock (defa
 
 #### Subscription Life-cycle & Testing (Blocking)
 
-Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implements this). These subscription models supports canceling, pausing and  resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`). That "all" includes the once-exception cases. A [synchronous subscription](#synchronous-subscription-life-cycle) and a [push subscription](#push-subscription-blocking-life-cycle) can be stopped, paused and shut down exactly like a MongoDB-backed one.
+Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implement this). These subscription models support cancelling, pausing and resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`). That "all" includes the once-exception cases. A [synchronous subscription](#synchronous-subscription-life-cycle) and a [push subscription](#push-subscription-blocking-life-cycle) can be stopped, paused and shut down exactly like a MongoDB-backed one.
 
-Note the difference between canceling and pausing a subscription. Canceling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
+Note the difference between cancelling and pausing a subscription. Cancelling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
 
 Many of the methods in the `SubscriptionLifeCycle` are good to have when you write integration tests.
