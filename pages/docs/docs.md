@@ -2335,7 +2335,7 @@ when instantiating an EventStore implementation. This is done by passing a value
 | <br>`DATE` | <br>Persist the time attribute as a MongoDB [Date](https://docs.mongodb.com/manual/reference/method/Date/#behavior). The benefit of using this approach is that you can do range queries etc on the "time" field on the cloud event. This can be really useful for certain types on analytics or projections (such as show the 10 latest number of started games) without writing any custom code. |
 
 Note that if you choose to go with `RFC_3339_STRING` you always have the option of adding a custom attribute, named for example "date", in which you represent the "time" attribute as a `Date` when writing the events to an `EventStore`.
-This way you have the ability to use the "time" attribute to re-construct the CloudEvent time attribute exactly as well as the ability to do _custom_ time-queries on the "date" attribute.
+This way you have the ability to use the "time" attribute to reconstruct the CloudEvent time attribute exactly as well as the ability to do _custom_ time-queries on the "date" attribute.
 
 #### Time queries with RFC_3339_STRING
 
