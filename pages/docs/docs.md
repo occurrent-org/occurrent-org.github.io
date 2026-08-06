@@ -2761,7 +2761,7 @@ I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription, 
     Uses the Spring RedisTemplate to store `Checkpoint`'s in Redis.    
     {% include macros/subscription/blocking/redis/spring/storage/maven.md %} 
 4\. **InMemoryCheckpointStorage**<br>
-    Keeps `Checkpoint`'s in a `ConcurrentHashMap`, so they are gone when the process is. Useful in tests, and in an application that can replay from the start after a restart.
+    Keeps `Checkpoint` instances in a `ConcurrentHashMap`, so they are gone once the process stops. Useful in tests, and in an application that can replay from the start after a restart.
     {% include macros/subscription/blocking/inmemory/impl/maven.md %}
 
 Note that the two MongoDB implementations recognize their own checkpoint types (a change stream resume token and an operation time) and give them back as the same type, while every other type is stored as the string it reports and read back as a `StringBasedCheckpoint`. The Redis implementation does that to everything, including the two MongoDB types. So if you write code that reads a checkpoint back out of storage, rely on `Checkpoint.asString()` rather than casting to the type you saved.
@@ -3376,7 +3376,7 @@ I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. 
     Uses the [project reactor](https://projectreactor.io/) driver to store `Checkpoint`'s in MongoDB.
     {% include macros/subscription/reactor/mongodb/spring/storage/maven.md %}   
 2\. **InMemoryCheckpointStorage**<br>
-    Keeps `Checkpoint`'s in a `ConcurrentHashMap`, in the `org.occurrent.subscription.inmemory.reactor` package. It's the reactive twin of the [blocking `InMemoryCheckpointStorage`](#blocking-subscription-checkpoint-storage) and ships from the very same `occurrent-subscription-inmemory` artifact, as an optional class. The artifact declares `occurrent-subscription-api-reactor` (and with it reactor-core) as an `optional` dependency, so a blocking-only consumer never pulls in the reactive stack. Depend on both to use it:
+    Keeps `Checkpoint` instances in a `ConcurrentHashMap`, in the `org.occurrent.subscription.inmemory.reactor` package. It's the reactive twin of the [blocking `InMemoryCheckpointStorage`](#blocking-subscription-checkpoint-storage) and ships from the very same `occurrent-subscription-inmemory` artifact, as an optional class. The artifact declares `occurrent-subscription-api-reactor` (and with it reactor-core) as an `optional` dependency, so a blocking-only consumer never pulls in the reactive stack. Depend on both to use it:
     {% include macros/subscription/blocking/inmemory/impl/maven.md %}
     {% include macros/subscription/reactor/api/maven.md %}
 
