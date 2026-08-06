@@ -141,6 +141,7 @@ permalink: /documentation
 * * * [Side Effects and Compensation](#saga-side-effects)
 * * * [Observing Saga Instances](#observing-saga-instances)
 * [Spring Boot Starter](#spring-boot-starter)
+* * [Deferring Subscription Startup](#deferring-subscription-startup)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
 * * * [Start Position](#subscription-start-position)
