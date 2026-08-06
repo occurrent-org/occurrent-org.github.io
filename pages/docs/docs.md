@@ -5782,7 +5782,7 @@ It depends on JUnit and the blocking subscription API and nothing else, so it wo
 </dependency>
 ```
 
-The two differences are both about waiting. Resuming a subscription and clearing a checkpoint each return a `Mono` on the reactive stack rather than blocking, and the extension blocks on them for you, so your test still calls `start(id)` and moves straight on to writing an event.
+The two differences are both about waiting. Resuming a subscription and clearing a checkpoint each returns a `Mono` on the reactive stack rather than blocking, and the extension blocks on them for you, so your test still calls `start(id)` and moves straight on to writing an event.
 
 {% capture java %}
 @RegisterExtension
