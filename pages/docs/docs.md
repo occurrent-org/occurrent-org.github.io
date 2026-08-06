@@ -1694,7 +1694,7 @@ Every dispatcher from [`CommandDispatchers`](#convenience-factories) already ove
 
 Runs are consecutive only, since dispatch stays in order. A reaction that issues one command to order A, one to order B, then another to order A is three appends rather than two.
 
-Overriding it does not make dispatch exactly-once, and Occurrent does not promise that. It closes the window for the one dispatcher that can, and the contract stays at-least-once either way.
+Overriding it does not make dispatch exactly-once, and Occurrent does not promise that. It closes the partial-write window only for the dispatcher whose `dispatchAll` you overrode, and the contract stays at-least-once either way.
 
 {% include macros/command-dispatch/core/maven.md %}
 
