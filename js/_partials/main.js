@@ -82,7 +82,14 @@ if (document.location.pathname.includes("/documentation")) {
         "synchronous-subscriptions" : "0.31.0",
         "dcb-read-options" : "0.31.0",
         "change-stream-tuning" : "0.31.0",
-        "retry-and-transactions" : "0.31.0"
+        "retry-and-transactions" : "0.31.0",
+        "spring-mongo-subscription-defer-startup" : "0.32.0",
+        "push-subscription-blocking-life-cycle" : "0.32.0",
+        "catch-up-subscription-blocking-stop" : "0.32.0",
+        "durable-subscription-reactive-life-cycle" : "0.32.0",
+        "durable-subscription-reactive-delegation" : "0.32.0",
+        "push-subscription-reactive-life-cycle" : "0.32.0",
+        "synchronous-subscription-life-cycle" : "0.32.0"
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
