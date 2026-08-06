@@ -69,6 +69,13 @@ permalink: /documentation
 * * * * [Spring (Blocking)](#eventstore-with-spring-mongotemplate-blocking) 
 * * * * [Spring (Reactive)](#eventstore-with-spring-reactivemongotemplate-reactive) 
 * * [In-Memory](#in-memory-eventstore)
+* [Testing Your Own EventStore](#testing-your-own-eventstore)
+* * [Capabilities](#capabilities)
+* * [Refusing what you weren't built for](#refusing-what-you-werent-built-for)
+* * [Positions are monotonic, with permanent gaps](#positions-are-monotonic-with-permanent-gaps)
+* * [DCB](#dcb)
+* * [Time precision](#time-precision)
+* * [The reactive bridge](#the-reactive-bridge)
 * [Using Subscriptions](#using-subscriptions)
 * * [Blocking](#blocking-subscriptions)
 * * * [Filters](#blocking-subscription-filters)
@@ -2512,6 +2519,105 @@ This implementation also supports filtered stream reads via `org.occurrent.event
 Now you can start reading and writing events to the EventStore:
 
 {% include macros/eventstore/in-memory/read-and-write-events.md %}
+
+# Testing Your Own EventStore
+
+Occurrent's own MongoDB and in-memory `EventStore` implementations are all checked against a shared conformance suite, and if you write your own you can hold it to the same contract. `occurrent-tck-eventstore-blocking` contains the suite for a blocking store:
+
+{% include macros/tck/eventstore/blocking/maven.md %}
+
+Depend on it in test scope. The suite classes themselves live in the artifact's `src/main`, not `src/test`, because that's the only way their JUnit 5 base classes end up on a consumer's compile path at all, so they appear as ordinary compile-scope classes even though you'll only ever extend them from a test.
+
+You extend one of the concrete suites, once per capability your store supports, and hand it an `EventStoreFixture` that builds a store holding no events:
+
+```java
+class MyEventStoreTest extends StreamEventStoreConformance {
+
+    @Override
+    protected EventStoreFixture createFixture() {
+        return new MyEventStoreFixture();
+    }
+}
+```
+
+## Capabilities
+
+An `EventStore` can be built to support two independent things, described by `EventStoreCapability`: `STREAM` (stream-based reads, writes, queries, and operations) and `DCB` ([Dynamic Consistency Boundary](#dynamic-consistency-boundary) reads and appends). A store can enable one or both, and the fixture declares which by overriding `capabilities()`. That declaration is what a suite checks before it runs a single test, in a shared `@BeforeEach` on `EventStoreConformance`, the base every concrete suite extends. Extend a suite whose required capability you haven't declared, and it fails immediately with the missing capability named, rather than failing confusingly deep inside a test.
+
+Each concrete suite requires one capability, or both:
+
+| Suite | Requires |
+|:----|:-----|
+| `StreamEventStoreConformance`, `EventStoreQueriesConformance`, `EventStoreOperationsConformance`, `EventStoreTimePrecisionConformance`, `StreamPositionConformance`, `StreamPositionDisabledConformance` | `STREAM` |
+| `DcbEventStoreConformance`, `DcbConcurrencyConformance` | `DCB` |
+| `CapabilityGuardConformance`, `DcbStreamInteropConformance` | `STREAM` and `DCB` |
+
+Every accessor on `EventStoreFixture` you don't override throws `UnsupportedOperationException` the moment a suite reaches for it, so a fixture that declares `DCB` but forgets to override `dcbEventStore()` (or `appendConditionModel()`, which has no default answer at all) fails right away, naming the capability and the method it's missing, instead of failing deep inside an unrelated test.
+
+## Refusing what you weren't built for
+
+If your store only supports one capability, calling into the other has to fail loudly. Refuse with `UnsupportedOperationException` (a subclass is fine too, choosing a more specific type isn't a contract violation) whose message names the capability, the way Occurrent's own MongoDB stores word it: "DCB capability is not enabled for this MongoEventStore." Never answer with an empty result or a silent no-op. An empty DCB read from a stream-only store looks identical to a correct query for events nobody wrote, and `CapabilityGuardConformance` exists specifically to catch that shortcut.
+
+That suite needs a store built with only `STREAM` and one built with only `DCB` to check each refusal against, so it only runs once you declare both capabilities. Those two limited stores come from `storeWithoutStream()` and `storeWithoutDcb()` on the fixture, returning `Optional<StoreWithoutStream>` and `Optional<StoreWithoutDcb>`, records that bundle exactly the views a capability-limited store still exposes. Leave either `Optional.empty()` and the corresponding half of the suite has nothing to check.
+
+## Positions are monotonic, with permanent gaps
+
+A global sequence position, whether it's what `PositionOrderedReader` hands back or the token a DCB append returns, is positive, unique, and strictly increasing, but never asserted to be contiguous. `StreamPositionConformance` and `DcbEventStoreConformance` both derive every bound they read from a position they got back from an earlier write, never from a literal like `1` or `2`. That's deliberate. A store is allowed to reserve a block of positions before it knows whether the write will succeed, and a rejected write can leave that block permanently unclaimed (see the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0084-what-a-position-guarantees.md) on what a position guarantees). Write your own assertions the same way if you extend these suites yourself, compare positions to each other, never to what you expect the next one to literally be.
+
+A store that hands out no global position at all is a legitimate design too. Declare it by returning a value from `storeWithoutPosition()`, and extend `StreamPositionDisabledConformance` in place of `StreamPositionConformance`. It asserts the opposite contract, that `currentPosition()` and `readInPositionOrder()` both refuse by name, and that a written event carries no position extension at all. Extending this suite while leaving `storeWithoutPosition()` empty is treated as a test failure, not a skip, since the suite exists to prove a position-disabled store still behaves correctly rather than to be quietly opted out of.
+
+## DCB
+
+`DcbEventStoreConformance` covers reading by criteria (event types, tags, exclusions, and combinations of them), read-range options, `exists`/`count`, append results, and append-condition semantics, but stays silent on how your store actually enforces a condition under contention. `DcbConcurrencyConformance` covers that instead, by driving real concurrent writers into a barrier-synchronized collision (`ConcurrentRendezvous`, from `occurrent-tck-common`) against overlapping and disjoint consistency boundaries, and asserting exactly one winner where boundaries overlap and no false conflicts where they don't. A loser must surface `DcbAppendConditionNotFulfilledException`, not a raw duplicate-key or write-conflict error leaking up from the underlying storage.
+
+The fixture also declares `appendConditionModel()`, one of two ways a store can evaluate a token-qualified append condition: `EXACT_CRITERIA`, comparing the condition against the exact query criteria (the in-memory store's approach), or `TAG_MARKER`, comparing by tag (the approach all three MongoDB stores take, see [ADR 21](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0021-dcb-write-path-query-scoped-concurrency.md)). A few edge-case assertions in `DcbEventStoreConformance` branch on this, so declare whichever your store actually implements.
+
+If your store supports both `STREAM` and `DCB` against the same underlying storage, add `DcbStreamInteropConformance`. It checks that the two views stay logically separate over one physical store. A DCB read never sees a stream-written event, a stream write refuses an event carrying DCB tags, and both still share a single global position sequence.
+
+## Time precision
+
+`EventStoreTimePrecisionConformance` exists because the fixed-instant events every other suite writes carry no sub-second digits, so a store that silently truncates nanoseconds would otherwise pass unnoticed. Declare `timePrecision()` (`ChronoUnit.NANOS` by default) and `preservesTimeOffset()` (`true` by default) on the fixture, and the suite checks accordingly, expecting `IllegalArgumentException` from a write it knows your declared precision or offset handling can't satisfy, rather than a silent truncation.
+
+## The reactive bridge
+
+Occurrent's reactive event stores, and any you write yourself, are checked against the same blocking suites through a bridge, rather than a second copy of them described a second time in terms of `Mono` and `Flux`, the same approach used for [reactive subscription models](#reactive-subscription-checkpoint-storage). `BlockingEventStoreOverReactive`, in `occurrent-tck-eventstore-reactor`, wraps a reactive store as a blocking one, provided that store implements all six reactive interfaces its accessors need: `EventStore`, `EventStoreQueries`, `EventStoreOperations`, `ReadEventStreamWithFilter`, `PositionOrderedReader`, and `DcbEventStore`. It materializes reads eagerly, so a suite that reads, writes, then reads again always sees the snapshot it started with rather than one a concurrent write changed underneath it.
+
+```java
+class MyReactiveEventStoreFixture implements EventStoreFixture {
+
+    private final EventStore bridge = BlockingEventStoreOverReactive.of(new MyReactiveEventStore());
+
+    @Override
+    public Set<EventStoreCapability> capabilities() {
+        return Set.of(EventStoreCapability.STREAM);
+    }
+
+    @Override
+    public EventStore eventStore() {
+        return bridge;
+    }
+
+    // queries(), operations(), filteredReader() and positionOrderedReader() all return the same bridge
+}
+```
+
+`BlockingEventStoreOverReactive.of(store)` takes one object implementing all six interfaces at once. Reach for the overload taking six separate arguments instead when your capabilities live on different objects.
+
+This bridge is test-only. Every wait blocks the calling thread, exactly what a reactive store exists to avoid, so it has no place outside a test. And a bridge that blocks on a result can't see what happens before that block, so `ReactiveEventStoreConformance` covers what's left. It asserts that a write, a delete, or an update only does anything once its publisher is actually subscribed to, that a write-condition violation or a duplicate event fails through the publisher rather than being thrown when you assemble the call, that a `Mono` documented to always emit never completes empty, and that cancelling a read early (`.take(1)`) leaves the store still readable afterwards. It takes a smaller `ReactiveEventStoreFixture`, just `eventStore()`, `queries()`, `operations()`, `positionOrderedReader()`, and `close()`, with no capability declaration, since these are properties of how the publisher is built rather than of what the store supports:
+
+```java
+class MyReactiveEventStoreConformanceTest extends ReactiveEventStoreConformance {
+
+    @Override
+    protected ReactiveEventStoreFixture createFixture() {
+        return new MyReactiveEventStoreFixture();
+    }
+}
+```
+
+A single dependency covers both suites, since `occurrent-tck-eventstore-reactor` depends on `occurrent-tck-eventstore-blocking` itself:
+
+{% include macros/tck/eventstore/reactor/maven.md %}
 
 # Using Subscriptions
 <div class="comment">Before you start using subscriptions you should read up on what they are <a href="#subscriptions">here</a>.</div>
