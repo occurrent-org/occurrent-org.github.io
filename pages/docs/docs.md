@@ -710,7 +710,7 @@ Where `filter` is imported `from org.occurrent.subscription.StreamSubscriptionFi
 
 While this is a trivial example it shouldn't be difficult to create a view that is backed by a JPA entity in a relational database based on a subscription.
 
-When the fold gets more involved, or you want to unit-test it in isolation and reuse it across an asynchronous subscription, a synchronous write, and an on-demand query, reach for Occurrent's [View DSL](#view-dsl) (`org.occurrent:occurrent-view-dsl`). It is the read-side counterpart of a [decider](#decider): a decider folds events and decides new ones, a `View` folds events into state you read. It is blocking-only, and it is the primitive the higher-level [Projection DSL](#projection-dsl) builds on.
+When the fold gets more involved, or you want to unit-test it in isolation and reuse it across an asynchronous subscription, a synchronous write, and an on-demand query, reach for Occurrent's [View DSL](#view-dsl) (`org.occurrent:occurrent-view-dsl`). It is the read-side counterpart of a [decider](#decider): a decider applies events to decide new ones, a `View` applies events to state you read. It is blocking-only, and it is the primitive the higher-level [Projection DSL](#projection-dsl) builds on.
 
 So there are three levels for a read model, and you should pick the lowest one that does the job. A plain [subscription](#subscriptions) that writes to your store, as at the top of this section, when the fold is trivial. The [View DSL](#view-dsl), when you want a fold you can unit-test on its own and store wherever you like. The [Projection DSL](#projection-dsl), when you want the fold, the event types it handles, the view-instance id, and the delivery mode declared together in one place.
 
@@ -1827,13 +1827,13 @@ In some cases, for example if you have a simple website and you want views to be
 provided by Occurrent allows for this through a synchronous `SideEffect` that runs as part of executing the command, please see the [application service documentation](#application-service-side-effects) for an example.    
 
 ## Snapshots
-<div class="comment">Snapshots are an opt-in optimization. Reach for them only when folding a stream to its current state has genuinely become too slow.</div>
+<div class="comment">Snapshots are an opt-in optimization. Reach for them only when rebuilding a stream's current state has genuinely become too slow.</div>
 
-A snapshot caches the folded state of a stream at a known version, so a later command replays only the events written after it instead of the whole history. Occurrent ships first-class support for this, from a [Decider](#decider) (the decision state) and from a plain [View](#views), across stream and DCB and both the blocking and reactor stacks.
+A snapshot caches a stream's state at a known version, so a later command replays only the events written after it instead of the whole history. Occurrent ships first-class support for this, from a [Decider](#decider) (the decision state) and from a plain [View](#views), across stream and DCB and both the blocking and reactor stacks.
 
 A snapshot is a discardable, schema-versioned cache, never a source of truth. If the stored schema version does not match the one you declare, or no snapshot exists, Occurrent falls back to a full replay. Enabling a snapshot costs one snapshot load and one tail read per command that snapshots, and nothing at all when you do not use it. The rationale is recorded in [ADR 61](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0061-first-class-snapshot-support.md).
 
-A snapshot whose version is ahead of the stream's true head is now discarded rather than trusted, and folding restarts from the initial state. This happens when a stream is reset or truncated below the snapshot, for example [archiving a stream](#eventstore-operations) with `deleteEventStream` after a "closing the books" cutover. The version check is a safety net, not the primary defense, so pair a stream reset with `SnapshotStore.delete(key)` to drop the stale snapshot up front. The maintained `@Snapshot` path applies the same guard: a reset below the snapshot makes it rebuild and self-heal instead of freezing on stale state. DCB snapshots are immune to this, because a DCB snapshot is versioned by the global DCB position, which is monotonic and never resets.
+A snapshot whose version is ahead of the stream's true head is now discarded rather than trusted, and the rebuild restarts from the initial state. This happens when a stream is reset or truncated below the snapshot, for example [archiving a stream](#eventstore-operations) with `deleteEventStream` after a "closing the books" cutover. The version check is a safety net, not the primary defense, so pair a stream reset with `SnapshotStore.delete(key)` to drop the stale snapshot up front. The maintained `@Snapshot` path applies the same guard: a reset below the snapshot makes it rebuild and self-heal instead of freezing on stale state. DCB snapshots are immune to this, because a DCB snapshot is versioned by the global DCB position, which is monotonic and never resets.
 
 ### Snapshotting a decider
 
@@ -1843,7 +1843,7 @@ Build a `SnapshotDeciderApplicationService` once, around the application service
 var snapshots = new SnapshotDeciderApplicationService<>(applicationService);
 SnapshotStore<AccountState> store = SnapshotStore.inMemory();
 
-// Reads the snapshot, folds only the events after it, decides, writes, and
+// Reads the snapshot, applies only the events after it, decides, writes, and
 // saves a new snapshot every 100 events. The first argument is the schema version.
 var account = SnapshotDecider.from(accountDecider, store, SnapshotOptions.everyNEvents(1, 100));
 WriteResult result = snapshots.execute(accountId, new Deposit(100), account);
@@ -1852,7 +1852,7 @@ WriteResult result = snapshots.execute(accountId, new Deposit(100), account);
 val snapshots = SnapshotDeciderApplicationService(applicationService)
 val store = SnapshotStore.inMemory<AccountState>()
 
-// Reads the snapshot, folds only the events after it, decides, writes, and
+// Reads the snapshot, applies only the events after it, decides, writes, and
 // saves a new snapshot every 100 events. The first argument is the schema version.
 val account = SnapshotDecider.from(accountDecider, store, SnapshotOptions.everyNEvents(1, 100))
 snapshots.execute(accountId, Deposit(100), account)
@@ -1888,7 +1888,7 @@ Snapshot persistence is best-effort. The snapshot is saved after the write has c
 
 ### Snapshots without a decider
 
-If you only need the folded state and no command handling, describe the fold with a `SnapshotView`, then build a `SnapshotViews` facade once over the event store and the converter. For each view, bundle it with its `SnapshotStore` in a `SnapshotViewSource`, created with `SnapshotViewSource.from(view, store)`, and pass that per call. Calling `readState(id, source)` loads the latest snapshot, folds the events written since, and returns the current state. It is a plain read that never writes. To persist a fresh snapshot for a deciders-free view on demand, call `snapshots.refresh(accountId, source)`, which folds to the current head and saves a snapshot. There is no automatic write on the read path.
+If you only need the state and no command handling, describe the fold with a `SnapshotView`, then build a `SnapshotViews` facade once over the event store and the converter. For each view, bundle it with its `SnapshotStore` in a `SnapshotViewSource`, created with `SnapshotViewSource.from(view, store)`, and pass that per call. Calling `readState(id, source)` loads the latest snapshot, applies the events written since, and returns the current state. It is a plain read that never writes. To persist a fresh snapshot for a deciders-free view on demand, call `snapshots.refresh(accountId, source)`, which applies the events up to the current head and saves a snapshot. There is no automatic write on the read path.
 
 {% capture java %}
 SnapshotView<AccountState, AccountEvent> view = SnapshotView.<AccountState, AccountEvent>builder(AccountState.EMPTY)
@@ -2909,7 +2909,7 @@ Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH
 
 If your listener already hands you domain events (for example a broker message converter deserializes them for you), pushing them through the CloudEvent model means `domainEvent` to `CloudEvent` and back, a full serialize and deserialize per event. Feed the projection in domain space instead and the live path does no conversion at all.
 
-`Projections.domainEventFeed(projection, repository)` is the live-only feed. On the blocking stack it returns a `MaterializedView<E>`, call `update(event)` or `update(metadata, event)`. On the reactor stack it returns a `BiFunction<EventMetadata, E, Mono<Void>>`. Either way it folds a domain event straight into the read model:
+`Projections.domainEventFeed(projection, repository)` is the live-only feed. On the blocking stack it returns a `MaterializedView<E>`, call `update(event)` or `update(metadata, event)`. On the reactor stack it returns a `BiFunction<EventMetadata, E, Mono<Void>>`. Either way it applies a domain event straight into the read model:
 
 ```java
 MaterializedView<OrderEvent> feed = Projections.domainEventFeed(orderStatusProjection(), repository);
@@ -2920,7 +2920,7 @@ public void onMessage(OrderEvent event) {
 }
 ```
 
-For a new or rebuilt projection that also needs to catch up, use `CatchupProjectionFeed`. Its live path still folds domain events directly, and only the one-time catch-up reads the event store and decodes each replayed event once. It de-duplicates the replay-to-live overlap by an id you extract from the domain event, so the de-dup does not depend on the CloudEvent id:
+For a new or rebuilt projection that also needs to catch up, use `CatchupProjectionFeed`. Its live path still applies domain events directly, and only the one-time catch-up reads the event store and decodes each replayed event once. It de-duplicates the replay-to-live overlap by an id you extract from the domain event, so the de-dup does not depend on the CloudEvent id:
 
 ```java
 CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
@@ -2931,9 +2931,9 @@ CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
 feed.catchUp();
 ```
 
-Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and runs its catch-up. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor.
+Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor.
 
-A replayed event always has a real `CloudEvent` behind it, so the catch-up always folds with real metadata. A live event does not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
+A replayed event always has a real `CloudEvent` behind it, so the catch-up always applies events with real metadata. A live event does not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
 The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent.
 
@@ -3439,13 +3439,13 @@ Because the starter wires a Spring-backed `TransactionExecutor` by default, the 
 As of version 0.17.0, Occurrent has basic support for [Deciders](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider). 
 A decider is a model that can be used as a structured way of implementing decision logic for a business entity (typically aggregate) or use case/command.
 Some benefits of using deciders are:
-1. You don't need to implement any folding of events to state yourself.
+1. You don't need to implement turning events into state yourself.
 2. You get a good structure for defining your aggregate/use case.
 3. A decider can return either the new events, the new state, or both events and state (called `Decision` in Occurrent), for a specific command.
 4. Occurrent's decider implementation supports sending multiple commands to a decider atomically.
 5. Deciders are combinable. You can widen a decider to broader command and event types with `adapt`, and combine several feature deciders into one with `compose` (see [Combining Deciders](#combining-deciders)).
 
-The decider folds the stream to its current state on every command. When that stream grows long enough that the fold becomes too slow, you can accelerate it with a [snapshot](#snapshots), which folds only the events written since a saved state.
+The decider works through the stream to its current state on every command. When that stream grows long enough that the fold becomes too slow, you can accelerate it with a [snapshot](#snapshots), which applies only the events written since a saved state.
 
 To use a decider, you need to model your commands as explicit data structures instead of functions.
 
@@ -3793,7 +3793,7 @@ try {
 
 The position window is what a catch-up or a resumed subscription uses. `DcbReadOptions.afterPosition(p)` reads only what was appended after DCB sequence position `p`, `upToPosition(p)` stops at `p` inclusive, and `between(after, upTo)` does both. Without options you get `fromBeginning()`, everything up to the store's DCB head at read time.
 
-Direction decides which end of the match selection starts from. `FORWARD` starts with the oldest matching event, while `BACKWARD` starts with the newest. The store skips from that end and then applies the limit. `DcbReadOptions.fromBeginning().backwards().limit(1)` reads the single newest event in a boundary, while adding `skip(4)` reads the fifth newest. This is how a gapless sequence finds its last entry without folding the whole boundary.
+Direction decides which end of the match selection starts from. `FORWARD` starts with the oldest matching event, while `BACKWARD` starts with the newest. The store skips from that end and then applies the limit. `DcbReadOptions.fromBeginning().backwards().limit(1)` reads the single newest event in a boundary, while adding `skip(4)` reads the fifth newest. This is how a gapless sequence finds its last entry without working through the whole boundary.
 
 {% capture java %}
 DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("invoice-sequence", "2026"));
@@ -3831,7 +3831,7 @@ Running that cycle by hand for every command gets repetitive, and it is easy to 
 
 The Java signature returns `Optional<DcbAppendResult>`, empty when your function decided there was nothing to do. The Kotlin extension `executeOrNull` returns a nullable `DcbAppendResult` instead, so a no-op command reads as `null` rather than an `Optional`.
 
-When a boundary matches many events and folding them on every command becomes too slow, you can accelerate it with a [DCB snapshot](#dcb-snapshots).
+When a boundary matches many events and working through them on every command becomes too slow, you can accelerate it with a [DCB snapshot](#dcb-snapshots).
 
 {% capture java %}
 DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId));
@@ -4225,7 +4225,7 @@ Use `DcbReadOptions` (`fromBeginning`, `afterPosition`, `upToPosition`, `between
 
 ## The View DSL {#view-dsl}
 
-A `View<S, E>` is a pure fold, an initial state and an `evolve` that folds one event into state. It has no I/O, no storage, and no subscription, so it unit-tests with plain equality assertions, the same way a decider or a saga does. Here is a view that folds a person's name events into their current name:
+A `View<S, E>` is a pure fold, an initial state and an `evolve` that applies one event to state. It has no I/O, no storage, and no subscription, so it unit-tests with plain equality assertions, the same way a decider or a saga does. Here is a view that applies a person's name events to their current name:
 
 {% capture java %}
 record NameState(String userId, String name) {}
@@ -4236,7 +4236,7 @@ View<NameState, DomainEvent> view = View.create(null, (state, event) -> switch (
     default               -> state;
 });
 
-// Folding a list of events gives the current state, which is all a unit test needs
+// Applying a list of events gives the current state, which is all a unit test needs
 NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
 {% endcapture %}
 {% capture kotlin %}
@@ -4249,16 +4249,16 @@ val view: View<NameState?, DomainEvent> = view(initialState = null) { state, eve
     }
 }
 
-// Folding a list of events gives the current state
+// Applying a list of events gives the current state
 val current: NameState? = view.evolveAll(nameDefined, nameWasChanged)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A view can also fold with the delivering event's metadata, its stream id and version, global position, and CloudEvent extensions, through the metadata-carrying `evolve(state, metadata, event)` (`View.create(initialState, (state, metadata, event) -> ...)` in Java, `view(initialState) { state, metadata, event -> ... }` in Kotlin). The event-only form folds with empty metadata. That lets a view key on the stream id or fold on the global position without carrying either in the event payload. Metadata folding was added in 0.31.0.
+A view can also handle the delivering event's metadata, its stream id and version, global position, and CloudEvent extensions, through the metadata-carrying `evolve(state, metadata, event)` (`View.create(initialState, (state, metadata, event) -> ...)` in Java, `view(initialState) { state, metadata, event -> ... }` in Kotlin). The event-only form applies the event with empty metadata. That lets a view key on the stream id or the global position without carrying either in the event payload. Metadata support was added in 0.31.0.
 
 ### Storing a view {#materialized-view}
 
-A `View` on its own does not know where its state lives or which instance an event updates. A `MaterializedView<E>` binds a `View` to a `ViewStateRepository` and a function that derives the view-instance id from the event, so a single `update(event)` loads the current state, folds the event in, and saves it back. `ViewStateRepository<S, ID>` is storage-neutral, just `findById` and `save`, so you can back it with any store by passing a pair of functions:
+A `View` on its own does not know where its state lives or which instance an event updates. A `MaterializedView<E>` binds a `View` to a `ViewStateRepository` and a function that derives the view-instance id from the event, so a single `update(event)` loads the current state, applies the event, and saves it back. `ViewStateRepository<S, ID>` is storage-neutral, just `findById` and `save`, so you can back it with any store by passing a pair of functions:
 
 {% capture java %}
 // A storage-neutral repository, here over a plain map. Back it with JPA, Mongo, or anything else in production.
@@ -4316,11 +4316,11 @@ The id function can take the event's [metadata](#event-metadata) as well, so a M
 val names: MaterializedView<DomainEvent> = view.materialized(mongoOperations) { metadata, _ -> metadata.streamId }
 ```
 
-One rule to know about, because getting it wrong used to produce a view that quietly stayed empty. The document you store must carry the same id the function resolves, as its `@Id`. Reads look the document up by the resolved id, while writes let Spring Data take the document id from the object you save, so if the two disagree every update reads nothing back, folds from the initial state, and writes a fresh document. Occurrent now fails with a message naming both ids instead of letting that happen. Types that Spring Data converts for you are fine, so a hex `String` resolved against an `ObjectId` id, or an `Int` against a `Long`, are not mismatches.
+One rule to know about, because getting it wrong used to produce a view that quietly stayed empty. The document you store must carry the same id the function resolves, as its `@Id`. Reads look the document up by the resolved id, while writes let Spring Data take the document id from the object you save, so if the two disagree every update reads nothing back, rebuilds from the initial state, and writes a fresh document. Occurrent now fails with a message naming both ids instead of letting that happen. Types that Spring Data converts for you are fine, so a hex `String` resolved against an `ObjectId` id, or an `Int` against a `Long`, are not mismatches.
 
 ## Projection DSL
 
-A read model is the read side's counterpart to a decider. A [decider](#decider) folds events into state and decides new events. A projection folds events into state that you read. Occurrent already gives you a [`View`](#views) for the pure fold, but a `View` on its own doesn't know which events feed it, which view instance an event updates, or where its state is stored. The projection DSL couples those together, so a feature describes its read model right next to its fold, the same way [`DcbDecider`](#coupling-a-decider-to-a-boundary) couples a decider with its boundary and tags on the write side.
+A read model is the read side's counterpart to a decider. A [decider](#decider) applies events to state and decides new events. A projection applies events to state that you read. Occurrent already gives you a [`View`](#views) for the pure fold, but a `View` on its own doesn't know which events feed it, which view instance an event updates, or where its state is stored. The projection DSL couples those together, so a feature describes its read model right next to its fold, the same way [`DcbDecider`](#coupling-a-decider-to-a-boundary) couples a decider with its boundary and tags on the write side.
 
 A `Projection<S, E, ID>` is a `View` plus either an `id` function (which view instance an event updates) or, for a single-instance read model, no `id` at all (see [Single-instance projections](#single-instance-projections) below), plus the event types the fold handles. You build one with a type-safe handler builder, registering a fold per event type:
 
@@ -4345,9 +4345,9 @@ The builder both assembles the `View` and records the event types you registered
 
 ### Single-instance projections
 
-Whether a projection needs an `id` comes down to how many views it maintains. A leaderboard folded from every player's events is one view over the whole stream, so it is single-instance and needs no `id`. A per-player profile is one view per player, keyed by player id, so it needs an `id` to pick out which profile each event updates. Rule of thumb: a single view over all events is single-instance and takes no `id`, one view per subject is keyed and takes an `id`.
+Whether a projection needs an `id` comes down to how many views it maintains. A leaderboard built from every player's events is one view over the whole stream, so it is single-instance and needs no `id`. A per-player profile is one view per player, keyed by player id, so it needs an `id` to pick out which profile each event updates. Rule of thumb: a single view over all events is single-instance and takes no `id`, one view per subject is keyed and takes an `id`.
 
-A single-instance projection folds into one slot rather than one per key, so it has no per-event key to derive and no `id` function to write. Build it with `singletonBuilder(...)` instead of `builder(...)` in Java, or reach for the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
+A single-instance projection updates one slot rather than one per key, so it has no per-event key to derive and no `id` function to write. Build it with `singletonBuilder(...)` instead of `builder(...)` in Java, or reach for the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
 
 {% capture java %}
 Projection<Integer, CourseEvent, String> totalEnrolledStudents =
@@ -4385,7 +4385,7 @@ The runner comes in the same three flavours as the [subscription DSL](#subscript
 
 DCB has its own pair rather than an option on these, because a `DcbProjection` is scoped by tags rather than by event type. `DcbProjectionRunner` and the Kotlin `dcbSubscriptions { }` take a `DcbProjection` and subscribe to its `DcbCriteria`, covered under [DCB projections](#dcb-projections).
 
-`project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, folds the event in, and saves the result.
+`project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, applies the event, and saves the result.
 
 ### Event metadata {#projection-event-metadata}
 
@@ -4410,11 +4410,11 @@ val enrolledStudentsByStream = projection<Int, CourseEvent, String>(initialState
 
 Every event-only `on(...)` and `id(...)` keeps working unchanged, plain code never has to opt in to metadata. A `DcbProjection` gets the same fold and `id` overloads, and `DcbProjectionRunner` builds the metadata from the delivered event the same way the stream runner does, so a DCB fold can also read the position, or wrap the metadata with `DcbEventMetadata.from(metadata)` for the event's tags.
 
-The [on-demand](#reading-on-demand) query path has no originating CloudEvent, so it folds with `EventMetadata.empty()`: reading the stream id or version throws, and `getPosition()` (`.position` in Kotlin) is `null`. That path genuinely has no metadata to give. A live domain-event feed is different: the application can supply real metadata itself with `accept(metadata, event)` on `DomainEventFeed` and `CatchupProjectionFeed` (see [Feeding domain events instead of CloudEvents](#feeding-domain-events-instead-of-cloudevents)). A projection keyed by metadata is therefore no longer limited to a subscription runner, only the on-demand query still has no metadata to key on.
+The [on-demand](#reading-on-demand) query path has no originating CloudEvent, so it applies events with `EventMetadata.empty()`: reading the stream id or version throws, and `getPosition()` (`.position` in Kotlin) is `null`. That path genuinely has no metadata to give. A live domain-event feed is different: the application can supply real metadata itself with `accept(metadata, event)` on `DomainEventFeed` and `CatchupProjectionFeed` (see [Feeding domain events instead of CloudEvents](#feeding-domain-events-instead-of-cloudevents)). A projection keyed by metadata is therefore no longer limited to a subscription runner, only the on-demand query still has no metadata to key on.
 
 ### DCB projections
 
-On a DCB store a projection reads inside a consistency boundary rather than by event type alone. A `DcbProjection` adds a `DcbCriteria`, a tag filter, to a `Projection`. This is the read-side answer to a question such as "is this username already claimed?", scoped to the events tagged for that one username. There's one flag per username, and the tag boundary already pins the projection to a single username, so it folds into a single slot with no `id` function:
+On a DCB store a projection reads inside a consistency boundary rather than by event type alone. A `DcbProjection` adds a `DcbCriteria`, a tag filter, to a `Projection`. This is the read-side answer to a question such as "is this username already claimed?", scoped to the events tagged for that one username. There's one flag per username, and the tag boundary already pins the projection to a single username, so it updates a single slot with no `id` function:
 
 {% capture kotlin %}
 fun isUsernameClaimed(username: String) =
@@ -4442,7 +4442,7 @@ Feed it with a DCB subscription the same way you feed a stream projection: `dcbS
 
 ### Reading on demand
 
-When you want a strongly consistent answer at the moment you ask, skip the subscription and fold a query straight into the projection. This reads the events in the boundary and returns the folded state, with no stored read model to keep in sync:
+When you want a strongly consistent answer at the moment you ask, skip the subscription and apply the projection directly to a query. This reads the events in the boundary and returns the state, with no stored read model to keep in sync:
 
 {% capture kotlin %}
 val claimed: Boolean = dcbQueries.project(isUsernameClaimed("alice"))
@@ -4452,7 +4452,7 @@ boolean claimed = Projections.project(isUsernameClaimed("alice"), dcbQueries);
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The same projection definition works both ways. Subscribe to keep a read model eventually consistent, or fold a query on demand for a strongly consistent read. The plain, non-DCB `DomainEventQueries` has the same `project` method.
+The same projection definition works both ways. Subscribe to keep a read model eventually consistent, or run a query on demand for a strongly consistent read. The plain, non-DCB `DomainEventQueries` has the same `project` method.
 
 In Java, the on-demand fold is also a static entry point, `Projections.project(projection, queries)`, the counterpart to the Kotlin `project` extension above:
 
@@ -4460,7 +4460,7 @@ In Java, the on-demand fold is also a static entry point, `Projections.project(p
 int total = Projections.project(totalEnrolledStudents, domainEventQueries);
 ```
 
-It's only valid for a single-instance (singleton) projection, since folding every instance of a keyed projection into one blended state on demand would be nonsense; use `Projections.project(projection, queries, instanceId)` to scope a keyed projection to one instance instead. `Projections.project(dcbProjection, dcbQueries)` is the DCB counterpart to both; a DCB projection's criteria already scopes the read to one instance, so there's no keyed/singleton distinction to make.
+It's only valid for a single-instance (singleton) projection, since combining every instance of a keyed projection into one blended state on demand would be nonsense; use `Projections.project(projection, queries, instanceId)` to scope a keyed projection to one instance instead. `Projections.project(dcbProjection, dcbQueries)` is the DCB counterpart to both; a DCB projection's criteria already scopes the read to one instance, so there's no keyed/singleton distinction to make.
 
 Three guards keep a projection from silently doing the wrong thing. `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, since the durable checkpoint key it derives from `id` must be unique across every registered projection, on both the blocking and reactor feeds. A `DcbProjection` rejects a wrapped `Projection` that carries its own explicit `filter()`, because that filter would otherwise be silently ignored, a `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter. And a projection keyed by metadata that is fed through the metadata-less `accept(event)` on a `DomainEventFeed` or `CatchupProjectionFeed` throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event, feed it with `accept(metadata, event)` instead.
 
@@ -4666,7 +4666,7 @@ There are two ways to write a saga, and both produce the same `Saga<E, S, C>`, s
 
 ### The Core DSL {#saga-core-dsl}
 
-The core DSL is `Saga.builder(initialState)` in Java and `saga(initialState) { }` in Kotlin. You register, per event type, an `evolve` that folds the event into state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+The core DSL is `Saga.builder(initialState)` in Java and `saga(initialState) { }` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
 
 Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
 
@@ -4887,7 +4887,7 @@ on<PaymentReserved>(then = end) { metadata, payment ->
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Every event-only `evolve`, `react`, `onStart`, and flow `on(...)` keeps working unchanged, plain code never has to opt in to metadata. A saga does not persist metadata itself, only the events it folds into its own state, so if a reaction needs to remember something from the metadata beyond the current step, keep that slice in the saga's own state rather than relying on it being there later.
+Every event-only `evolve`, `react`, `onStart`, and flow `on(...)` keeps working unchanged, plain code never has to opt in to metadata. A saga does not persist metadata itself, only the events it applies to its own state, so if a reaction needs to remember something from the metadata beyond the current step, keep that slice in the saga's own state rather than relying on it being there later.
 
 ### Effects Are Data {#saga-effects}
 
@@ -4924,7 +4924,7 @@ react<PaymentReserved> { _, e ->
 
 ### Running a Saga {#running-a-saga}
 
-Programmatically, `SagaRunner` is the write-side mirror of the read-side [`ProjectionRunner`](#views). It subscribes to the saga's events, folds and persists per-instance state, dispatches the commands each reaction issues, and polls the state store to fire timers. Pick the capability with the factory. `agnostic(...)` delivers both stream-written and DCB-appended events, `stream(...)` only stream-written ones. There is no reactive `SagaRunner`, sagas run on the blocking stack only:
+Programmatically, `SagaRunner` is the write-side mirror of the read-side [`ProjectionRunner`](#views). It subscribes to the saga's events, applies and persists per-instance state, dispatches the commands each reaction issues, and polls the state store to fire timers. Pick the capability with the factory. `agnostic(...)` delivers both stream-written and DCB-appended events, `stream(...)` only stream-written ones. There is no reactive `SagaRunner`, sagas run on the blocking stack only:
 
 {% capture kotlin %}
 val stateStore: SagaStateStore<OrderSagaState> = SagaStateStore.inMemory()
@@ -5030,16 +5030,16 @@ The annotation and the DSL class share the name `Saga`, so a Java factory method
 
 ### Delivery Contract {#saga-delivery-contract}
 
-Command dispatch is at-least-once. The runner dispatches a reaction's commands before it saves the resulting state, so a crash between the two, or a compare-and-set retry after a concurrent write, can dispatch the same command twice, but never lose one. This is safe when the receiver is idempotent, which an `ApplicationService`-backed dispatcher is by construction. It re-folds the authoritative event stream on every call, so the target's own invariants reject a stale or already-applied command and a duplicate becomes a no-op:
+Command dispatch is at-least-once. The runner dispatches a reaction's commands before it saves the resulting state, so a crash between the two, or a compare-and-set retry after a concurrent write, can dispatch the same command twice, but never lose one. This is safe when the receiver is idempotent, which an `ApplicationService`-backed dispatcher is by construction. It replays the authoritative event stream on every call, so the target's own invariants reject a stale or already-applied command and a duplicate becomes a no-op:
 
 {% capture kotlin %}
 val dispatcher = CommandDispatchers.decider(deciderApplicationService, orderCommandDecider) { it.orderId }
-// A duplicate ReservePayment re-folds the stream and is rejected by the decider's own invariants, so it is a no-op.
+// A duplicate ReservePayment replays the stream and is rejected by the decider's own invariants, so it is a no-op.
 {% endcapture %}
 {% capture java %}
 CommandDispatcher<OrderCommand> dispatcher =
         CommandDispatchers.decider(deciderApplicationService, orderCommandDecider, OrderCommand::orderId);
-// A duplicate ReservePayment re-folds the stream and is rejected by the decider's own invariants, so it is a no-op.
+// A duplicate ReservePayment replays the stream and is rejected by the decider's own invariants, so it is a no-op.
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -5109,7 +5109,7 @@ timeout(after = Duration.ofMinutes(30), then = end) { received ->
 
 Both branches issue the same forward-moving `CancelOrder` compensation for the `ReservePayment` issued when the step started, whichever failure mode gets there first.
 
-The one thing to watch is idempotency, and it follows directly from the [delivery contract](#saga-delivery-contract). Command dispatch is at-least-once, so a compensating or external command can arrive twice. An `ApplicationService`-backed target handles that for free, because it re-folds the stream and the target's own invariants reject the duplicate. A raw third-party call does not. When a command triggers a non-idempotent external effect such as an email, a payment capture, or a partner request, give it a stable id derived from the saga and the triggering event, and dedupe at that boundary. The deferred document-local outbox described in [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md) would make dispatch exactly-once and remove this caveat, but it is not built yet.
+The one thing to watch is idempotency, and it follows directly from the [delivery contract](#saga-delivery-contract). Command dispatch is at-least-once, so a compensating or external command can arrive twice. An `ApplicationService`-backed target handles that for free, because it replays the stream and the target's own invariants reject the duplicate. A raw third-party call does not. When a command triggers a non-idempotent external effect such as an email, a payment capture, or a partner request, give it a stable id derived from the saga and the triggering event, and dedupe at that boundary. The deferred document-local outbox described in [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md) would make dispatch exactly-once and remove this caveat, but it is not built yet.
 
 ### Observing Saga Instances {#observing-saga-instances}
 
@@ -5140,7 +5140,7 @@ List<SagaInstance> stalled = instances.findByStatus(SagaStatus.ACTIVE, Instant.n
 
 A `SagaInstance` carries the id, the `SagaStatus` (`ACTIVE` or `COMPLETED`), the created, updated, and completed timestamps, when the next pending timer is due, and which step a flow saga is waiting in. `currentStep()` is `null` for a core saga, which names its states in your own state type rather than in a step the executor knows about.
 
-It leaves out the saga's own state and the executor's delivery bookkeeping on purpose. A read model shaped for querying belongs in the [Projection DSL](#views), and folding over a saga's private state from outside ties your code to how that process happens to be written.
+It leaves out the saga's own state and the executor's delivery bookkeeping on purpose. A read model shaped for querying belongs in the [Projection DSL](#views), and reaching into a saga's private state from outside ties your code to how that process happens to be written.
 
 There is no way to write through this. Nothing here starts, advances, completes, or deletes an instance, because the executor owns those transitions and a compare-and-set save from outside would race the subscription and the timer poller. Retention tooling that really has to remove an instance calls `SagaStateStore.delete(...)`.
 
@@ -5371,13 +5371,13 @@ Here's a summary of the different startup modes:
 
 # Testing
 
-A saga and a projection are pure data folded by pure functions, so most of what you want to assert needs no store, no subscription, no Docker and no waiting. That is the first level, and it should carry nearly all of your coverage. The second level runs the real executor over an in-memory event store, and one test at that level is usually enough to prove the wiring.
+A saga and a projection are pure data transformed by pure functions, so most of what you want to assert needs no store, no subscription, no Docker and no waiting. That is the first level, and it should carry nearly all of your coverage. The second level runs the real executor over an in-memory event store, and one test at that level is usually enough to prove the wiring.
 
 Everything below uses JUnit Jupiter and AssertJ. The API used is the same on JUnit 5 and 6, so the snippets work on either.
 
 ## Testing a Saga {#testing-a-saga}
 
-`Saga.step(state, input)` folds `evolve` and then `react`, and returns the new state together with the effects that transition produced. It is what the executor runs per input, which is why it is also what a test drives. No clock, no scheduler, no store.
+`Saga.step(state, input)` runs `evolve` and then `react`, and returns the new state together with the effects that transition produced. It is what the executor runs per input, which is why it is also what a test drives. No clock, no scheduler, no store.
 
 The sagas below are the ones from [the Flow DSL](#saga-flow-dsl), and they are kept compiling as real tests in `dsl/saga-dsl/common/src/test`, so what you read here is what runs.
 
@@ -5657,7 +5657,7 @@ The catch-up in front of a push feed is worth its own test, because that is wher
 
 ### The push and pull agreement {#testing-projection-agreement}
 
-This one is a property rather than a snippet, and it is the strongest test in the set. The same projection descriptor can be run two ways, pushed through a subscription into a stored read model, or folded over a query on demand. Both should give the same answer, so assert that instead of hand-writing the expected value twice:
+This one is a property rather than a snippet, and it is the strongest test in the set. The same projection descriptor can be run two ways, pushed through a subscription into a stored read model, or run over a query on demand. Both should give the same answer, so assert that instead of hand-writing the expected value twice:
 
 {% capture kotlin %}
 // Push: subscription-fed into a store
@@ -5668,7 +5668,7 @@ write("johan", nameDefined("johan", "Johan"), nameWasChanged("johan", "Johan Hal
 write("eve", nameDefined("eve", "Eve"))
 await untilAsserted { assertThat(store["johan"]).isEqualTo("Johan Haleby") }
 
-// Pull: the same descriptor folded over a query, right now
+// Pull: the same descriptor run over a query, right now
 val queries = DomainEventQueries(eventStore, converter)
 assertThat(queries.project(currentName(), "johan")).isEqualTo(store["johan"])
 {% endcapture %}
@@ -5681,7 +5681,7 @@ write("johan", nameDefined("johan", "Johan"), nameWasChanged("johan", "Johan Hal
 write("eve", nameDefined("eve", "Eve"));
 await().untilAsserted(() -> assertThat(store.get("johan")).isEqualTo("Johan Haleby"));
 
-// Pull: the same descriptor folded over a query, right now
+// Pull: the same descriptor run over a query, right now
 DomainEventQueries<DomainEvent> queries = new DomainEventQueries<>(eventStore, converter);
 assertThat(Projections.project(currentName(), queries, "johan")).isEqualTo(store.get("johan"));
 {% endcapture %}
@@ -5689,7 +5689,7 @@ assertThat(Projections.project(currentName(), queries, "johan")).isEqualTo(store
 
 A disagreement is a bug in one of the two paths, and this catches classes of mistake a single expected value never will, a filter that selects different events on replay than live, or an id derivation that only works when metadata is present.
 
-Write a second instance, as above. With only one instance in the store the pull side's scoping is a no-op, so the test cannot tell a correctly scoped fold from one that folds everything and happens to agree.
+Write a second instance, as above. With only one instance in the store the pull side's scoping is a no-op, so the test cannot tell a correctly scoped fold from one that applies everything and happens to agree.
 
 One thing to know. In Kotlin the on-demand fold is an extension, so it needs `import org.occurrent.dsl.projection.blocking.project` unless your test happens to sit in that package. From Java it's the static `Projections.project(projection, queries, instanceId)`, described under [Reading on demand](#reading-on-demand).
 
@@ -5857,7 +5857,7 @@ The [`example`](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.o
 | [Hotel booking](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/hotel-booking) | The reactive twin of course enrollment: no double-booking a room, a per-guest active-booking limit, and a live SSE activity feed. | Reactive DCB, reactive `DcbApplicationService`, DCB subscription DSL (SSE feed), reactive Spring Boot starter, cross-boundary deciders |
 | [Appointment scheduling](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/appointment-scheduling) | A clinic scheduler that books a clinician, patient and time slot under one consistency boundary, in plain Java with no Spring. | DCB on the native MongoDB store, plain Java `Decider`s with a hand-built `DcbCriteria`, `@DcbTag` annotation tags (`AnnotationTagGenerator`), Javalin and j2html web |
 | [DCB patterns catalog](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/dcb-patterns) | Five self-contained vignettes covering the [dcb.events](https://dcb.events/examples/) patterns the other examples do not show: unique username with a retention period, idempotency, a price change grace period, a consume-once opt-in token, and a gapless invoice number. Kotlin, no Spring, no Docker. | DCB, `DcbDecider`, `GenericDcbApplicationService`, in-memory DCB event store, uniqueness and idempotency as a scoped append condition, `DcbReadOptions.fromBeginning().backwards().limit(1)` |
-| [Projection DSL](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/projection-dsl) | Four vignettes on the [Projection DSL](#projection-dsl), in Java and Kotlin, stream and DCB. Each projection is run two ways, pushed through a subscription into a stored read model and folded over a query on demand, and the two are asserted to agree. | `Projection`, `DcbProjection`, the Java handler builder and the Kotlin `projection { }` DSL, `MaterializedView`, an explicit `Filter` selecting on subject, tag-scoped single-instance read models, in-memory event store and subscription model |
+| [Projection DSL](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/projection-dsl) | Four vignettes on the [Projection DSL](#projection-dsl), in Java and Kotlin, stream and DCB. Each projection is run two ways, pushed through a subscription into a stored read model and run over a query on demand, and the two are asserted to agree. | `Projection`, `DcbProjection`, the Java handler builder and the Kotlin `projection { }` DSL, `MaterializedView`, an explicit `Filter` selecting on subject, tag-scoped single-instance read models, in-memory event store and subscription model |
 | [Global position catch-up](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/global-position-catchup) | The global `position` assigned to every event, and rebuilding a projection by replaying across streams in write order. | Global position, catch-up projections, `DomainEventQueries.readInPositionOrder`, in-memory event store, `withoutStreamPosition()` opt-out |
 | [Subscription-based projections](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-subscription-based-mongodb-projections) | Building a MongoDB read model by subscribing to the event stream. | Blocking subscriptions, MongoDB read models, `CloudEventConverter` |
 | [Transactional projection (blocking)](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-transactional-projection-mongodb) | Updating a projection in the same MongoDB transaction as the event append. | Blocking Spring MongoDB event store, same-transaction projections |
