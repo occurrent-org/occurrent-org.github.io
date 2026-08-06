@@ -5429,18 +5429,18 @@ val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
 
 // The branch issues nothing, but leaving the step still cancels its timeout
 assertThat(step.issuedCommands()).isEmpty()
-assertThat(step.effects).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"))
+assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"))
 {% endcapture %}
 {% capture java %}
 Saga.Step<FlowState<GameEvent>, CloseGame> step = lobby.step(started.state(), SagaInput.event(new PlayerJoined("game-1")));
 
 // The branch issues nothing, but leaving the step still cancels its timeout
 assertThat(step.issuedCommands()).isEmpty();
-assertThat(step.effects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"));
+assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The timers get no accessor of their own, because a timer effect is already a value you can compare against `effects` directly, the way the snippet above does. A command arrives wrapped in an `IssueCommand`, which is the part worth unwrapping for you. Note that Kotlin calls `issuedCommands()` with the parentheses, since it is a derived accessor rather than one of the record's components.
+Timers get the same split treatment as commands. `timerEffects()` reads the started, re-armed, and cancelled timers back out of `effects`, in the order `effects` holds them, so a reaction that only issues commands is empty there even when `effects` is not. `effects()` stays the single ordered log of everything a reaction produced, and `issuedCommands()` and `timerEffects()` are two derived readings of it, the command half and the timer half, that together account for every effect a step can produce. Reach for whichever half the assertion is about, and fall back to `effects` itself when a test needs commands and timers in the order they were produced. Note that Kotlin calls both accessors with the parentheses, since they are derived methods rather than record components.
 
 ### Firing a timeout without waiting {#testing-saga-timeouts}
 
