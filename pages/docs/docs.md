@@ -2455,14 +2455,47 @@ For more thoughts on this, refer to the [architecture decision record](https://g
 
 ### MongoDB Indexes
 
-Each MongoDB `EventStore` [implementation](#mongodb-eventstore-implementations) creates a few indexes for the "events collection" the first time they're instantiated. These are:
+Each MongoDB `EventStore` [implementation](#mongodb-eventstore-implementations) creates a set of indexes on the events collection the first time it starts up. `MongoEventStore`, `SpringMongoEventStore`, and `ReactorMongoEventStore` all create the same indexes. Which ones get created depends on which capabilities the store has, `STREAM` or `DCB`, and whether the store writes a `position`. The groups below follow that split.
 
-|  Name | Properties | Description |
-|:----|:------|:-----|
-| `id` + `source` | ascending `id`,<br>descending&nbsp;`source`,&nbsp;&nbsp;<br>unique<br><br> | Compound index of `id` and `source` to comply with the [specification]({{cloudevents_spec}}) that the `id`+`source` combination must be unique. |     
-| `streamid` + `streamversion`&nbsp;&nbsp;| ascending `streamid`,<br>descending `streamversion`,<br>unique | Compound index of `streamid` and `streamversion` (Occurrent CloudEvent extension) used for fast retrieval of the latest cloud event in a stream. |
+#### Always created
+
+|  Name | Fields | Unique | Sparse | Purpose |
+|:----|:------|:----|:----|:-----|
+| `id` + `source` | ascending `id`, ascending `source` | yes | no | The [CloudEvents spec]({{cloudevents_spec}}) requires `id` and `source` to be unique together. Without this index, two events with the same `id` and `source` could both get stored. |
+
+#### Stream capability
+
+This index is created for a store with the `STREAM` capability, and also for a `DCB`-only store, because the DCB append path looks up the current stream version per partition too.
+
+|  Name | Fields | Unique | Sparse | Purpose |
+|:----|:------|:----|:----|:-----|
+| `streamid` + `streamversion` | ascending `streamid`, ascending `streamversion` | yes | no | Enforces one version per stream slot and gives a fast lookup of the latest version on append. Without it, every append needs a collection scan to find the latest version, and duplicate versions become possible. |
 
 <div class="comment">Prior to version 0.7.3, a <code>streamid</code> index was also automatically created, but it was removed in 0.7.3 since this index is covered by the <code>streamid+streamversion</code> index.</div>
+
+If this index already exists with different options than the ones above, the store fails to start rather than run without the uniqueness guarantee that stream and DCB writes depend on. Drop and recreate the index as unique out of band, then restart the store.
+
+#### Global position
+
+This index is created whenever the store writes a `position`. That is every `DCB` store, and every `STREAM` store unless `position` writing is turned off.
+
+|  Name | Fields | Unique | Sparse | Purpose |
+|:----|:------|:----|:----|:-----|
+| `position` | ascending `position` | yes | yes, only events that carry a `position` field are indexed | Backs position-ordered reads and catch-up subscriptions. Without it, those reads fall back to a collection scan. |
+
+If you are upgrading an existing store to start writing `position`, see the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) for how to build this index up front instead of at startup.
+
+#### DCB capability
+
+These three indexes are created for a store with the `DCB` capability, in addition to the `streamid`+`streamversion` and `position` indexes above.
+
+|  Name | Fields | Unique | Sparse | Purpose |
+|:----|:------|:----|:----|:-----|
+| `dcbTags` | ascending `dcbTags` | no | yes | Backs a DCB boundary query that filters by tag. Without it, a tag-only query scans the whole collection. |
+| `type` + `position` | ascending `type`, ascending `position` | no | yes | Backs a DCB query that has a type but no tags to match. Without it, the query falls back to the `position` index and checks `type` on every DCB event in the position range as a leftover filter. A test on a 50k-event, 50-match skewed dataset examined all 50,050 documents to return 50 without this index. |
+| `dcbTags` + `position` | ascending `dcbTags`, ascending `position` | no | yes | Backs a DCB tag-boundary query that also needs results in position order. Without it, the results are sorted in memory, or spilled to disk on MongoDB 6.0 and later, after every matching document is fetched. A test on a 305,000-event dataset with a 5,000-event popular tag used an in-memory sort stage instead of reading the index in order, without this index. |
+
+All indexes above are created automatically. You do not need to create them yourself, except when following the position-backfill runbook for an existing store.
 
 To allow for fast queries, for example when using [EventStoreQueries](#eventstore-queries), it's recommended to create additional indexes tailored to the querying behavior of 
 your application. See [MongoDB indexes](https://docs.mongodb.com/manual/indexes/) for more information on how to do this. If you have many adhoc queries it's also worth 
