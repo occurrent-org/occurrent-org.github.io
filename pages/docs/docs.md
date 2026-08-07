@@ -2046,16 +2046,6 @@ The period is the stream, not the account. A closed period is a stream that has 
 {% capture java %}
 SnapshotOptions<AccountState, AccountEvent> onClose =
         SnapshotOptions.of(1, SnapshotPolicies.whenTerminal(accountDecider));
-var accounts = new SnapshotDeciderApplicationService<>(applicationService, store, onClose);
-
-// Q1 is its own stream. Closing it makes the decider terminal, which triggers the snapshot.
-accounts.execute("account-42:2026-Q1", new Deposit(100), accountDecider);
-accounts.execute("account-42:2026-Q1", new Withdraw(30), accountDecider);
-accounts.execute("account-42:2026-Q1", new CloseBooks("2026-Q1"), accountDecider);
-long closingBalance = store.findLatest("account-42:2026-Q1").orElseThrow().state().balance(); // 70
-
-// Q2 is a new stream. The opening balance is a real event, so it survives archiving Q1.
-accounts.execute("account-42:2026-Q2", new SetOpeningBalance(closingBalance), accountDecider);
 var account = SnapshotDecider.from(accountDecider, store, onClose);
 var accounts = new SnapshotDeciderApplicationService<>(applicationService);
 
@@ -2071,16 +2061,6 @@ eventStore.deleteEventStream("account-42:2026-Q1");
 {% endcapture %}
 {% capture kotlin %}
 val onClose = SnapshotOptions.of(1, SnapshotPolicies.whenTerminal(accountDecider))
-val accounts = SnapshotDeciderApplicationService(applicationService, store, onClose)
-
-// Q1 is its own stream. Closing it makes the decider terminal, which triggers the snapshot.
-accounts.execute("account-42:2026-Q1", Deposit(100), accountDecider)
-accounts.execute("account-42:2026-Q1", Withdraw(30), accountDecider)
-accounts.execute("account-42:2026-Q1", CloseBooks("2026-Q1"), accountDecider)
-val closingBalance = store.findLatest("account-42:2026-Q1").orElseThrow().state().balance // 70
-
-// Q2 is a new stream. The opening balance is a real event, so it survives archiving Q1.
-accounts.execute("account-42:2026-Q2", SetOpeningBalance(closingBalance), accountDecider)
 val account = SnapshotDecider.from(accountDecider, store, onClose)
 val accounts = SnapshotDeciderApplicationService(applicationService)
 
@@ -3266,8 +3246,10 @@ CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
 feed.catchUp();
 ```
 
-Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor.
-`stopCatchUp()` asks a running replay to stop, which is what a shutdown wants: without it an application closing mid-replay would wait for the whole history to finish folding. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
+Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
+
+`stopCatchUp()` asks a running replay to stop, which is what a shutdown wants, since without it an application closing mid-replay would wait for the whole history to be applied. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
+
 When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still buffers every `accept(...)` until told to stop, so events pile up until the buffer's cap throws. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
 
 ```java
@@ -3276,15 +3258,11 @@ feed.goLive();
 
 It skips the replay and starts delivering the buffered and future live events directly, writing no completion marker, so a later real `catchUp()` on the same feed still replays the full history rather than treating it as already done.
 
-Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and runs its catch-up. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
-
-Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor.
-
 A replayed event always has a real `CloudEvent` behind it, so the catch-up always has real metadata to work with. A live event does not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
-The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
+The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so applying the same event twice must leave the read model unchanged. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
 
-If you are upgrading from 0.31.0 and shared one sink between several projections, [upgrading to 0.32.0](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) shows the before and after.
+If you are upgrading from 0.31.0 and shared one `PushSubscriptionModel` or `DomainEventFeed` between several projections, [upgrading to 0.32.0](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) shows the before and after.
 
 #### Durable Subscriptions (Blocking)
 
@@ -3824,7 +3802,8 @@ The same limits apply as on the blocking side. A push subscription only ever see
 
 The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records a one-shot catch-up marker so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so keep the fold idempotent, and rebuild the projection if the consumer is offline longer than the broker retains the backlog.
 
-`startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to fold.
+`startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to be applied.
+
 ##### Life-cycle {#push-subscription-reactive-life-cycle}
 
 Like its [blocking twin](#push-subscription-blocking-life-cycle), a reactive `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down, with the same *dropped, not deferred* contract for whatever is fed to it while stopped or paused, and the same one-way `shutdown()`.
@@ -5151,6 +5130,7 @@ dcbSubscriptions(dcbCatchupSubscriptionModel, cloudEventConverter) {
 `ResumeStartPositions.replayThenResume(...)` (package `org.occurrent.subscription.api.blocking`, with the `replayThenResumeDcb(...)` counterpart returning a `DcbStartAt`) checks `checkpointStorage` for an existing checkpoint. It replays from the given position only when there isn't one yet, then resumes from the stored checkpoint on every later run. `@Projection` and `@DcbSubscription` run this same check internally for `resumeBehavior = DEFAULT`. These helpers expose it as plain functions so non-Spring code gets the same catch-up-then-resume behavior.
 
 Whether `DcbProjectionRunner` catches up from history and resumes durably, or only sees live events, depends entirely on the subscription model you hand it. Given a plain live DCB model with no catch-up support it is live-only, the same as pulling a query on demand. Given a catch-up-capable model like `DcbCatchupSubscriptionModel` it catches up and resumes durably across restarts, exactly like the stream `ProjectionRunner`. The `@Projection` annotation gives you the catch-up-capable path automatically by subscribing through the Spring catch-up composite.
+
 ## Saga DSL
 
 A saga (more precisely a process manager) reacts to events, and to their absence over time, by issuing commands. Use one for a process that spans more than one stream and unfolds over real time, such as "cancel the order if payment is not reserved within 30 minutes". A `Saga<E, S, C>` is the mirror image of a [decider](#decider): a decider turns commands into events, a saga turns events (and its own timeouts) into commands. Like a decider it is only data and functions, with no I/O, so a test asserts equality on the effects it returns and needs no infrastructure at all.
