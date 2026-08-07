@@ -2800,9 +2800,38 @@ class MySubscriptionModelTest extends SubscriptionModelConformance {
 }
 ```
 
-The fixture also declares three things the API cannot be asked: whether a paused subscription's events are held for it or dropped, whether a throwing handler is retried or the exception reaches whoever published the event, and whether the model accepts more than one subscription at a time. Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
+The fixture also declares five things the API cannot be asked. Whether a paused subscription's events are held for it or dropped, whether a throwing handler is retried or the exception reaches whoever published the event, whether the model accepts more than one subscription at a time, which of the four ways of saying where a subscription starts it accepts, and whether a subscription id it has not seen before is replayed the whole history first. Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
 
-Worth knowing if you read a checkpoint back after pausing: the two MongoDB models differ here. The native driver's model resumes gap-free, so an event written while a subscription was paused arrives once it resumes, while the Spring model resumes at the present and does not deliver it. Both are deliberate, and which one the contract should require is still open.
+You also say how long the suites are allowed to wait for something to arrive. `deliveryTimeout()` defaults to ten seconds, which is what every model shipping with Occurrent runs on, so a model that has to reach a broker before it can deliver widens it rather than having no way to pass:
+
+```java
+class MySubscriptionModelFixture implements SubscriptionModelFixture {
+
+    @Override
+    public Duration deliveryTimeout() {
+        return Duration.ofSeconds(30);
+    }
+
+    // the rest of the fixture
+}
+```
+
+Nothing caps that number, but raising it has a consequence worth knowing. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
+
+```java
+@Timeout(400)
+class MySubscriptionModelTest extends SubscriptionModelConformance {
+    // ...
+}
+```
+
+One thing to know if you pause a subscription and resume it later. Both MongoDB models carry on from the position they had read to, so an event written while the subscription was paused still arrives once it resumes. The price is that the same event can arrive twice, because a model that resumes from the last position it stored, rather than from just after it, hands that event over a second time. A handler has to cope with that. `stop()` on the model pauses every subscription it holds, so a `stop()` followed by a `start()` is the same situation.
+
+The TCK carries the same version number as the rest of Occurrent, and a minor release may add suites and tighten what the existing ones assert. Upgrading can therefore turn a green build red. That is the suite doing what it is for, and there are two things to do about it, fix the implementation or stay on the Occurrent version you were on. Holding the TCK back on its own is not a third option, because each artifact is compiled against the runtime API of its own version.
+
+Your fixture keeps compiling either way. A new fixture member always arrives with a `default`, and where a default value would be a lie it arrives as a `default` that throws and names itself, so a minor upgrade never breaks compilation. Removing a member or a whole suite waits for a major release.
+
+There is no way to turn off one group of tests while you fix something. Declining a contract means not extending its suite, which anyone reading your test sources can see, and nothing inside the suites can skip.
 
 ### Blocking Subscription Implementations
 
