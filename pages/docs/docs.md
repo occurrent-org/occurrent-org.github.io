@@ -2495,7 +2495,13 @@ These three indexes are created for a store with the `DCB` capability, in additi
 | `type` + `position` | ascending `type`, ascending `position` | no | yes | Backs a DCB query that has a type but no tags to match. Without it, the query walks the `position` index instead and checks the `type` of every DCB event in the range, one document at a time. A test on a 50k-event, 50-match skewed dataset examined all 50,050 documents to return 50 without this index. |
 | `dcbTags` + `position` | ascending `dcbTags`, ascending `position` | no | yes | Backs a DCB tag-boundary query that also needs results in position order. Without it, the results are sorted in memory, or spilled to disk on MongoDB 6.0 and later, after every matching document is fetched. A test on a 305,000-event dataset with a 5,000-event popular tag used an in-memory sort stage instead of reading the index in order, without this index. |
 
-All indexes above are created automatically. You do not need to create them yourself, except when following the position-backfill runbook for an existing store.
+All indexes above are created automatically at startup. You do not need to create them yourself, except when following the position-backfill runbook for an existing store.
+
+#### Adding a capability to an existing store
+
+Declaring a new capability on a store that already holds events builds the new indexes when the application starts. Enabling `DCB` on a stream store adds `dcbTags`, `type` + `position` and `dcbTags` + `position`. The shared `streamid` + `streamversion` index is already there. Enabling `STREAM` on a DCB store adds nothing new for the same reason.
+
+On a large collection, do not let startup run those builds. Create the new indexes yourself before deploying the version that declares the capability, as a rolling build on MongoDB Atlas or any replica set, the same way [step 1 of the position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) pre-builds the `position` index. Startup then finds identical indexes and creates nothing. Only an index with the same fields but different options fails startup, which is the fail-fast check described above.
 
 To allow for fast queries, for example when using [EventStoreQueries](#eventstore-queries), it's recommended to create additional indexes tailored to the querying behavior of 
 your application. See [MongoDB indexes](https://docs.mongodb.com/manual/indexes/) for more information on how to do this. If you have many adhoc queries it's also worth 
