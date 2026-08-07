@@ -2314,11 +2314,16 @@ Here's an example of what you can expect to see in the "events" collection when 
 ### MongoDB Time Representation
 
 The CloudEvents specification says that the [time attribute]({{cloudevents_spec}}#time), if present, must adhere to the [RFC 3339 specification](https://tools.ietf.org/html/rfc3339).
-To accommodate this in MongoDB, the `time` attribute must be persisted as a `String`. This by itself is not a problem, a problem only arise 
-if you want to make time-based queries on the events persisted to a MongoDB-backed `EventStore` (using the [EventStoreQueries](#eventstore-queries) interface).
-This is, quite obviously, because time-based queries on `String`'s are suboptimal (to say the least) and may lead to surprising results.
+To accommodate this in MongoDB, the `time` attribute must be persisted as a `String`. That by itself is not a problem. It only becomes one when you
+make time-based queries on the events persisted to a MongoDB-backed `EventStore` (using the [EventStoreQueries](#eventstore-queries) interface), because
+MongoDB then compares those strings character by character rather than as points in time.
 What we _would_ like to do is to persist the `time` attribute as a `Date` in MongoDB, but MongoDB internally represents a Date with only millisecond resolution 
 (see [here](https://docs.mongodb.com/manual/reference/method/Date/#behavior)) and then the CloudEvent cannot be compliant with the RFC 3339 specification in _all_ circumstances.
+
+Occurrent makes the string comparison behave for the common case by writing every `time` in one canonical shape, always with seconds and always with nine
+fractional digits, for example `2026-07-28T12:00:00.000000000Z`. Because every stored value then has the same width, the character-by-character comparison
+follows chronological order. Two limits are worth knowing before you rely on it, and both are covered under
+[time queries with RFC_3339_STRING](#time-queries-with-rfc_3339_string) below.
 
 Because of the reasons described above, users of a MongoDB-backed EventStore implementation, must decide how the `time` attribute is to be represented in MongoDB
 when instantiating an EventStore implementation. This is done by passing a value from the `org.occurrent.mongodb.timerepresentation.TimeRepresentation` enum to an
@@ -2326,11 +2331,29 @@ when instantiating an EventStore implementation. This is done by passing a value
 
 | Value |  Description |
 |:----|:-----|
-| `RFC_3339_STRING`&nbsp;&nbsp;&nbsp;&nbsp;| Persist the time attribute as an RFC 3339 string. This string is able to represent both nanoseconds and a timezone so this is recommended for apps that need to store this information or if you are uncertain of whether this is required in the future. |
+| `RFC_3339_STRING`&nbsp;&nbsp;&nbsp;&nbsp;| Persist the time attribute as an RFC 3339 string. This string is able to represent both nanoseconds and a timezone so this is recommended for apps that need to store this information or if you are uncertain of whether this is required in the future. Time-based queries work, with the two caveats described in [time queries with RFC_3339_STRING](#time-queries-with-rfc_3339_string). |
 | <br>`DATE` | <br>Persist the time attribute as a MongoDB [Date](https://docs.mongodb.com/manual/reference/method/Date/#behavior). The benefit of using this approach is that you can do range queries etc on the "time" field on the cloud event. This can be really useful for certain types on analytics or projections (such as show the 10 latest number of started games) without writing any custom code. |
 
 Note that if you choose to go with `RFC_3339_STRING` you always have the option of adding a custom attribute, named for example "date", in which you represent the "time" attribute as a `Date` when writing the events to an `EventStore`.
-This way you have the ability to use the "time" attribute to re-construct the CloudEvent time attribute exactly as well as the ability to do _custom_ time-queries on the "date" attribute. However, you cannot use the methods involving time-based queries when using the [EventStoreQueries](#eventstore-queries) interface.
+This way you have the ability to use the "time" attribute to reconstruct the CloudEvent time attribute exactly as well as the ability to do _custom_ time-queries on the "date" attribute.
+
+#### Time queries with RFC_3339_STRING
+
+Time-based queries through the [EventStoreQueries](#eventstore-queries) interface work under `RFC_3339_STRING`, because Occurrent stores every `time` in the
+one canonical shape described above and renders a query's instant the same way. An exact match finds the event written at that instant, and a range condition
+orders correctly.
+
+There are two limits.
+
+Ordering relies on every stored value sharing the same UTC offset. `2026-07-28T14:00:00.000000000+02:00` and `2026-07-28T12:00:00.000000000Z` are the same
+instant, but as strings they do not sort the same way, so a collection whose events carry mixed offsets can order them wrongly. Occurrent deliberately does not
+normalise the offset away, because keeping the timezone is the reason to pick `RFC_3339_STRING` in the first place. If your events span several offsets and you
+need range queries over them, use `DATE`, or keep a separate custom attribute as described above.
+
+Events written by an older version of Occurrent were stored in a shorter shape, one that omitted trailing zeroes, so an exact match or a range boundary that
+lands precisely on such an event can miss it. Newly written events are unaffected. If you need exactness across that boundary, rewrite the `time` field of the
+existing documents into the canonical shape once, which is a one-off update over the event collection. Occurrent does not require it, because a query over
+events written by this version onward is already correct.
 
 **Important**: There's yet another option! If you don't need nanotime precision (i.e you're fine with millisecond precision) _and_ you're OK with always representing the "time" attribute in UTC, then you can use
 `TimeRepresentation.DATE` without loss of precision! This is why, if `DATE` is configured for the `EventStore`, Occurrent will refuse to store a `CloudEvent` that specifies nanotime 
