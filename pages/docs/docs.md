@@ -69,6 +69,13 @@ permalink: /documentation
 * * * * [Spring (Blocking)](#eventstore-with-spring-mongotemplate-blocking) 
 * * * * [Spring (Reactive)](#eventstore-with-spring-reactivemongotemplate-reactive) 
 * * [In-Memory](#in-memory-eventstore)
+* [Testing Your Own EventStore](#testing-your-own-eventstore)
+* * [Capabilities](#capabilities)
+* * [Refusing what you weren't built for](#refusing-what-you-werent-built-for)
+* * [Positions are monotonic, with permanent gaps](#positions-are-monotonic-with-permanent-gaps)
+* * [DCB](#dcb)
+* * [Time precision](#time-precision)
+* * [The reactive bridge](#the-reactive-bridge)
 * [Using Subscriptions](#using-subscriptions)
 * * [Blocking](#blocking-subscriptions)
 * * * [Filters](#blocking-subscription-filters)
@@ -2542,6 +2549,105 @@ Now you can start reading and writing events to the EventStore:
 
 {% include macros/eventstore/in-memory/read-and-write-events.md %}
 
+# Testing Your Own EventStore
+
+Occurrent's own MongoDB and in-memory `EventStore` implementations are all checked against a shared conformance suite, and if you write your own you can hold it to the same contract. `occurrent-tck-eventstore-blocking` contains the suite for a blocking store:
+
+{% include macros/tck/eventstore/blocking/maven.md %}
+
+Depend on it in test scope. The suite classes themselves live in the artifact's `src/main`, not `src/test`, because that's the only way their JUnit 5 base classes end up on a consumer's compile path at all, so they appear as ordinary compile-scope classes even though you'll only ever extend them from a test.
+
+You extend one of the concrete suites, once per capability your store supports, and hand it an `EventStoreFixture` that builds a store holding no events:
+
+```java
+class MyEventStoreTest extends StreamEventStoreConformance {
+
+    @Override
+    protected EventStoreFixture createFixture() {
+        return new MyEventStoreFixture();
+    }
+}
+```
+
+## Capabilities
+
+An `EventStore` can be built to support two independent things, described by `EventStoreCapability`: `STREAM` (stream-based reads, writes, queries, and operations) and `DCB` ([Dynamic Consistency Boundary](#dynamic-consistency-boundary) reads and appends). A store can enable one or both, and the fixture declares which by overriding `capabilities()`. That declaration is what a suite checks before it runs a single test, in a shared `@BeforeEach` on `EventStoreConformance`, the base every concrete suite extends. Extend a suite whose required capability you haven't declared, and it fails immediately with the missing capability named, rather than failing confusingly deep inside a test.
+
+Each concrete suite requires one capability, or both:
+
+| Suite | Requires |
+|:----|:-----|
+| `StreamEventStoreConformance`, `EventStoreQueriesConformance`, `EventStoreOperationsConformance`, `EventStoreTimePrecisionConformance`, `StreamPositionConformance`, `StreamPositionDisabledConformance` | `STREAM` |
+| `DcbEventStoreConformance`, `DcbConcurrencyConformance` | `DCB` |
+| `CapabilityGuardConformance`, `DcbStreamInteropConformance` | `STREAM` and `DCB` |
+
+Every accessor on `EventStoreFixture` you don't override throws `UnsupportedOperationException` the moment a suite reaches for it, so a fixture that declares `DCB` but forgets to override `dcbEventStore()` (or `appendConditionModel()`, which has no default answer at all) fails right away, naming the capability and the method it's missing, instead of failing deep inside an unrelated test.
+
+## Refusing what you weren't built for
+
+If your store only supports one capability, calling into the other has to fail loudly. Refuse with `UnsupportedOperationException` (a subclass is fine too, choosing a more specific type isn't a contract violation) whose message names the capability, the way Occurrent's own MongoDB stores word it: "DCB capability is not enabled for this MongoEventStore." Never answer with an empty result or a silent no-op. An empty DCB read from a stream-only store looks identical to a correct query for events nobody wrote, and `CapabilityGuardConformance` exists specifically to catch that shortcut.
+
+That suite needs a store built with only `STREAM` and one built with only `DCB` to check each refusal against, so it only runs once you declare both capabilities. Those two limited stores come from `storeWithoutStream()` and `storeWithoutDcb()` on the fixture, returning `Optional<StoreWithoutStream>` and `Optional<StoreWithoutDcb>`, records that bundle exactly the views a capability-limited store still exposes. Leave either `Optional.empty()` and the corresponding half of the suite has nothing to check.
+
+## Positions are monotonic, with permanent gaps
+
+A global sequence position, whether it's what `PositionOrderedReader` hands back or the token a DCB append returns, is positive, unique, and strictly increasing, but never asserted to be contiguous. `StreamPositionConformance` and `DcbEventStoreConformance` both derive every bound they read from a position they got back from an earlier write, never from a literal like `1` or `2`. That's deliberate. A store is allowed to reserve a block of positions before it knows whether the write will succeed, and a rejected write can leave that block permanently unclaimed (see the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0084-what-a-position-guarantees.md) on what a position guarantees). Write your own assertions the same way if you extend these suites yourself, compare positions to each other, never to what you expect the next one to literally be.
+
+A store that hands out no global position at all is a legitimate design too. Declare it by returning a value from `storeWithoutPosition()`, and extend `StreamPositionDisabledConformance` in place of `StreamPositionConformance`. It asserts the opposite contract, that `currentPosition()` and `readInPositionOrder()` both refuse by name, and that a written event carries no position extension at all. Extending this suite while leaving `storeWithoutPosition()` empty is treated as a test failure, not a skip, since the suite exists to prove a position-disabled store still behaves correctly rather than to be quietly opted out of.
+
+## DCB
+
+`DcbEventStoreConformance` covers reading by criteria (event types, tags, exclusions, and combinations of them), read-range options, `exists`/`count`, append results, and append-condition semantics, but stays silent on how your store actually enforces a condition under contention. `DcbConcurrencyConformance` covers that instead, by driving real concurrent writers into a barrier-synchronized collision (`ConcurrentRendezvous`, from `occurrent-tck-common`) against overlapping and disjoint consistency boundaries, and asserting exactly one winner where boundaries overlap and no false conflicts where they don't. A loser must surface `DcbAppendConditionNotFulfilledException`, not a raw duplicate-key or write-conflict error leaking up from the underlying storage.
+
+The fixture also declares `appendConditionModel()`, one of two ways a store can evaluate a token-qualified append condition: `EXACT_CRITERIA`, comparing the condition against the exact query criteria (the in-memory store's approach), or `TAG_MARKER`, comparing by tag (the approach all three MongoDB stores take, see [ADR 21](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0021-dcb-write-path-query-scoped-concurrency.md)). A few edge-case assertions in `DcbEventStoreConformance` branch on this, so declare whichever your store actually implements.
+
+If your store supports both `STREAM` and `DCB` against the same underlying storage, add `DcbStreamInteropConformance`. It checks that the two views stay logically separate over one physical store. A DCB read never sees a stream-written event, a stream write refuses an event carrying DCB tags, and both still share a single global position sequence.
+
+## Time precision
+
+`EventStoreTimePrecisionConformance` exists because the fixed-instant events every other suite writes carry no sub-second digits, so a store that silently truncates nanoseconds would otherwise pass unnoticed. Declare `timePrecision()` (`ChronoUnit.NANOS` by default) and `preservesTimeOffset()` (`true` by default) on the fixture, and the suite checks accordingly, expecting `IllegalArgumentException` from a write it knows your declared precision or offset handling can't satisfy, rather than a silent truncation.
+
+## The reactive bridge
+
+Occurrent's reactive event stores, and any you write yourself, are checked against the same blocking suites through a bridge, rather than a second copy of them described a second time in terms of `Mono` and `Flux`, the same approach used for [reactive subscription models](#reactive-subscription-checkpoint-storage). `BlockingEventStoreOverReactive`, in `occurrent-tck-eventstore-reactor`, wraps a reactive store as a blocking one, provided that store implements all six reactive interfaces its accessors need: `EventStore`, `EventStoreQueries`, `EventStoreOperations`, `ReadEventStreamWithFilter`, `PositionOrderedReader`, and `DcbEventStore`. It materializes reads eagerly, so a suite that reads, writes, then reads again always sees the snapshot it started with rather than one a concurrent write changed underneath it.
+
+```java
+class MyReactiveEventStoreFixture implements EventStoreFixture {
+
+    private final EventStore bridge = BlockingEventStoreOverReactive.of(new MyReactiveEventStore());
+
+    @Override
+    public Set<EventStoreCapability> capabilities() {
+        return Set.of(EventStoreCapability.STREAM);
+    }
+
+    @Override
+    public EventStore eventStore() {
+        return bridge;
+    }
+
+    // queries(), operations(), filteredReader() and positionOrderedReader() all return the same bridge
+}
+```
+
+`BlockingEventStoreOverReactive.of(store)` takes one object implementing all six interfaces at once. Reach for the overload taking six separate arguments instead when your capabilities live on different objects.
+
+This bridge is test-only. Every wait blocks the calling thread, exactly what a reactive store exists to avoid, so it has no place outside a test. And a bridge that blocks on a result can't see what happens before that block, so `ReactiveEventStoreConformance` covers what's left. It asserts that a write, a delete, or an update only does anything once its publisher is actually subscribed to, that a write-condition violation or a duplicate event fails through the publisher rather than being thrown when you assemble the call, that a `Mono` documented to always emit never completes empty, and that cancelling a read early (`.take(1)`) leaves the store still readable afterwards. It takes a smaller `ReactiveEventStoreFixture`, just `eventStore()`, `queries()`, `operations()`, `positionOrderedReader()`, and `close()`, with no capability declaration, since these are properties of how the publisher is built rather than of what the store supports:
+
+```java
+class MyReactiveEventStoreConformanceTest extends ReactiveEventStoreConformance {
+
+    @Override
+    protected ReactiveEventStoreFixture createFixture() {
+        return new MyReactiveEventStoreFixture();
+    }
+}
+```
+
+A single dependency covers both suites, since `occurrent-tck-eventstore-reactor` depends on `occurrent-tck-eventstore-blocking` itself:
+
+{% include macros/tck/eventstore/reactor/maven.md %}
+
 # Using Subscriptions
 <div class="comment">Before you start using subscriptions you should read up on what they are <a href="#subscriptions">here</a>.</div>
 
@@ -2668,10 +2774,11 @@ public interface CheckpointStorage {
     Checkpoint read(String subscriptionId);
     Checkpoint save(String subscriptionId, Checkpoint checkpoint);
     void delete(String subscriptionId);
+    boolean exists(String subscriptionId);
 }
 ```
 
-I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships with three pre-defined implementations:
+I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. Occurrent ships with four pre-defined implementations:
 
 1\. **NativeMongoCheckpointStorage**<br>
     Uses the vanilla MongoDB Java (sync) driver to store `Checkpoint`'s in MongoDB.
@@ -2682,12 +2789,78 @@ I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. 
 3\. **SpringRedisCheckpointStorage**<br>
     Uses the Spring RedisTemplate to store `Checkpoint`'s in Redis.    
     {% include macros/subscription/blocking/redis/spring/storage/maven.md %} 
+4\. **InMemoryCheckpointStorage**<br>
+    Keeps `Checkpoint` instances in a `ConcurrentHashMap`, so they are gone once the process stops. Useful in tests, and in an application that can replay from the start after a restart.
+    {% include macros/subscription/blocking/inmemory/impl/maven.md %}
 
-
+Note that the two MongoDB implementations recognize their own checkpoint types (a change stream resume token and an operation time) and give them back as the same type, while every other type is stored as the string it reports and read back as a `StringBasedCheckpoint`. The Redis implementation does that to everything, including the two MongoDB types. So if you write code that reads a checkpoint back out of storage, rely on `Checkpoint.asString()` rather than casting to the type you saved.
 
 If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "blocking subscription API" which contains the `CheckpointStorage` interface:
 
 {% include macros/subscription/blocking/api/maven.md %}
+
+You can also have Occurrent's own conformance suite check it for you. `occurrent-tck-subscription-blocking` contains `CheckpointStorageConformance`, an abstract JUnit 5 test class that all four implementations above run against. Extend it, supply a `CheckpointStorageFixture` that hands back a storage holding no checkpoints, and you get the whole contract asserted:
+
+```java
+class MyCheckpointStorageTest extends CheckpointStorageConformance {
+
+    @Override
+    protected CheckpointStorageFixture createFixture() {
+        return new MyCheckpointStorageFixture();
+    }
+}
+```
+
+The fixture also declares whether your storage gives back a checkpoint of the same type it was handed, since both answers are legitimate and nothing on `CheckpointStorage` reports which way an implementation goes.
+
+{% include macros/tck/subscription/blocking/maven.md %}
+
+The same artifact holds the suites for a subscription model, so if you write your own you can have Occurrent check it against the same contract its five models are held to. `SubscriptionModelConformance` covers delivery and filtering, the whole life cycle, and cancelling. `IntrospectableSubscriptionModelConformance` covers `subscriptionIds()`, for a model that can list its subscriptions. `InProcessDeliveryConformance` is for a model that calls the handler on the publishing thread, the way the synchronous and push models do.
+
+You supply a `SubscriptionModelFixture`. Because a subscription model has no single way of being fed an event (a MongoDB model watches a change stream, an in-process one is handed the event directly), the fixture is what publishes:
+
+```java
+class MySubscriptionModelTest extends SubscriptionModelConformance {
+
+    @Override
+    protected SubscriptionModelFixture createFixture() {
+        return new MySubscriptionModelFixture();
+    }
+}
+```
+
+The fixture also declares five things the API cannot be asked. Whether a paused subscription's events are held for it or dropped, whether a throwing handler is retried or the exception reaches whoever published the event, whether the model accepts more than one subscription at a time, which of the four ways of saying where a subscription starts it accepts, and whether a subscription id it has not seen before is replayed the whole history first. Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
+
+You also say how long the suites are allowed to wait for something to arrive. `deliveryTimeout()` defaults to ten seconds, which is what every model shipping with Occurrent runs on, so a model that has to reach a broker before it can deliver widens it rather than having no way to pass:
+
+```java
+class MySubscriptionModelFixture implements SubscriptionModelFixture {
+
+    @Override
+    public Duration deliveryTimeout() {
+        return Duration.ofSeconds(30);
+    }
+
+    // the rest of the fixture
+}
+```
+
+Nothing caps that number, but raising it has a consequence worth knowing. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
+
+```java
+@Timeout(400)
+class MySubscriptionModelTest extends SubscriptionModelConformance {
+    // ...
+}
+```
+
+One thing to know if you pause a subscription and resume it later. Both MongoDB models carry on from the position they had read to, so an event written while the subscription was paused still arrives once it resumes. The price is that the same event can arrive twice, because a model that resumes from the last position it stored, rather than from just after it, hands that event over a second time. A handler has to cope with that. `stop()` on the model pauses every subscription it holds, so a `stop()` followed by a `start()` is the same situation.
+
+The TCK carries the same version number as the rest of Occurrent, and a minor release may add suites and tighten what the existing ones assert. Upgrading can therefore turn a green build red. That is the suite doing what it is for, and there are two things to do about it, fix the implementation or stay on the Occurrent version you were on. Holding the TCK back on its own is not a third option, because each artifact is compiled against the runtime API of its own version.
+
+Your fixture keeps compiling either way. A new fixture member always arrives with a `default`, and where a default value would be a lie it arrives as a `default` that throws and names itself, so a minor upgrade never breaks compilation. Removing a member or a whole suite waits for a major release.
+
+There is no way to turn off one group of tests while you fix something. Declining a contract means not extending its suite, which anyone reading your test sources can see, and nothing inside the suites can skip.
 
 ### Blocking Subscription Implementations
 
@@ -3154,6 +3327,24 @@ If the above code is executed on multiple nodes/processes, then only *one* subsc
 Note that you can make several tweaks to the `CompetingConsumerStrategy` using the `Builder`, (`new NativeMongoLeaseCompetingConsumerStrategy.Builder()` or `new SpringMongoLeaseCompetingConsumerStrategy.Builder()`). 
 You can, for example, tweak how long the lease time should be for the lock (default is 20 seconds), the name of lease collection in MongoDB, as well as the retry strategy and other things. 
 
+If you write your own `CompetingConsumerStrategy`, the same `occurrent-tck-subscription-blocking` artifact used for [checkpoint storage and subscription model conformance](#blocking-subscription-checkpoint-storage) also holds `CompetingConsumerStrategyConformance`. Extend it and supply a `CompetingConsumerStrategyFixture`:
+
+```java
+class MyCompetingConsumerStrategyTest extends CompetingConsumerStrategyConformance {
+
+    @Override
+    protected CompetingConsumerStrategyFixture createFixture() {
+        return new MyCompetingConsumerStrategyFixture();
+    }
+}
+```
+
+Two things the fixture supplies that nothing on the interface can. First, a `newCompetingConsumerStrategy()` factory that hands back a rival strategy contending over the *same* storage as the one under test. The suite needs a rival to register against, and in places a third instance that outlives a rival it deliberately shuts down. Constructing several strategies over one shared storage is therefore an explicit constraint on your implementation, since nothing on `CompetingConsumerStrategy` lets one instance reach another. Second, `timeToConverge()`, the longest the suite waits for the strategy's own coordination to settle who holds a lock when nothing told it directly. This is a bound rather than a delay. The suite stops waiting the moment the condition holds, so a generous value costs a passing run nothing and is only paid in full by a run that was going to fail anyway.
+
+The suite takes no position on *how* a strategy coordinates. Nothing in it knows a lease exists, waits one out, or asserts when one expires, and Occurrent's own two MongoDB-backed strategies assert that timing separately, in deterministic tests against the MongoDB support class with a clock the test moves itself. What the suite asserts instead is the property a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
+
+It also asserts the contract both ways Occurrent relies on it. `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock. `SagaRunner` registers a consumer, never adds a listener at all, and asks `hasLock(subscriptionId, subscriberId)` on every poll instead. A strategy that reports changes only through a listener, or only answers correctly when asked directly, fails half of what the suite checks.
+
 #### Subscription Life-cycle & Testing (Blocking)
 
 Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implements this). These subscription models supports canceling, pausing and  resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`).
@@ -3283,16 +3474,89 @@ public interface CheckpointStorage {
 }
 ```
 
-I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships one pre-defined reactive implementation (please contribute!):
+I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships two pre-defined reactive implementations:
 
 1\. **ReactorCheckpointStorage**<br>
     Uses the [project reactor](https://projectreactor.io/) driver to store `Checkpoint`'s in MongoDB.
     {% include macros/subscription/reactor/mongodb/spring/storage/maven.md %}   
-
+2\. **InMemoryCheckpointStorage**<br>
+    Keeps `Checkpoint` instances in a `ConcurrentHashMap`, in the `org.occurrent.subscription.inmemory.reactor` package. It's the reactive twin of the [blocking `InMemoryCheckpointStorage`](#blocking-subscription-checkpoint-storage) and ships from the very same `occurrent-subscription-inmemory` artifact, as an optional class. The artifact declares `occurrent-subscription-api-reactor` (and with it reactor-core) as an `optional` dependency, so a blocking-only consumer never pulls in the reactive stack. Depend on both to use it:
+    {% include macros/subscription/blocking/inmemory/impl/maven.md %}
+    {% include macros/subscription/reactor/api/maven.md %}
 
 If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "reactive subscription API" which contains the `CheckpointStorage` interface:
 
 {% include macros/subscription/reactor/api/maven.md %}
+
+Occurrent's own reactive subscription models, and any you write yourself, are checked against a leaf built on top of the blocking suites rather than a second copy of them. `BlockingSubscriptionOverReactive`, in `occurrent-tck-subscription-reactor`, wraps a reactor `SubscriptionModel` (plus `IntrospectableSubscriptionModel`, and optionally `CheckpointAwareSubscriptionModel`) as a blocking one. Every blocking conformance suite (`SubscriptionModelConformance`, `IntrospectableSubscriptionModelConformance`, `CheckpointAwareSubscriptionModelConformance`) then runs against a reactor model unchanged, instead of being described a second time in terms of `Mono` and `Flux`. This bridge is test-only. Every wait blocks the calling thread, exactly what a reactive model exists to avoid, so it has no place outside a test.
+
+A bridge that blocks on a result cannot see what happens before that block, so `ReactiveSubscriptionModelConformance` covers what is left. It asserts that the model actually subscribes to the `Mono<Void>` an action returns rather than assembling and dropping it. A handler written the idiomatic way, `ce -> repository.save(ce)`, silently does nothing under a model that gets this wrong. It asserts that an action whose `Mono` errors fails through the model's own error path instead of detonating somewhere unrelated or killing the model outright. And it asserts that `Subscription#waitUntilStarted()` answers more than once, and still after an earlier, abandoned wait was disposed of.
+
+To wire an out-of-tree reactor model into both suites, supply a blocking fixture that wraps it in the bridge, and a reactive-only fixture that hands it over directly:
+
+```java
+class MySubscriptionModelFixture implements SubscriptionModelFixture {
+
+    private final MySubscriptionModel model = new MySubscriptionModel();
+
+    @Override
+    public SubscriptionModel subscriptionModel() {
+        return BlockingSubscriptionOverReactive.of(model);
+    }
+
+    @Override
+    public void publish(List<CloudEvent> events) {
+        // however the model is fed, e.g. a change stream write or an in-process dispatch
+    }
+
+    @Override
+    public boolean deliversEventsPublishedWhilePaused() {
+        return false;
+    }
+
+    @Override
+    public boolean retriesAFailingHandler() {
+        return false;
+    }
+}
+
+class MySubscriptionModelConformanceTest extends SubscriptionModelConformance {
+
+    @Override
+    protected SubscriptionModelFixture createFixture() {
+        return new MySubscriptionModelFixture();
+    }
+}
+
+class MyReactiveSubscriptionModelFixture implements ReactiveSubscriptionModelFixture {
+
+    private final MySubscriptionModel model = new MySubscriptionModel();
+
+    @Override
+    public SubscriptionModel subscriptionModel() {
+        return model;
+    }
+
+    @Override
+    public void publish(List<CloudEvent> events) {
+        // the same feed as above, handed to the model directly rather than through the blocking bridge
+    }
+}
+
+class MyReactiveSubscriptionModelConformanceTest extends ReactiveSubscriptionModelConformance {
+
+    @Override
+    protected ReactiveSubscriptionModelFixture createFixture() {
+        return new MyReactiveSubscriptionModelFixture();
+    }
+}
+```
+
+`BlockingSubscriptionOverReactive.of(...)` needs a model that implements both the reactor `SubscriptionModel` and `IntrospectableSubscriptionModel`. Every reactive model shipping with Occurrent is both, and an out-of-tree one is likely to be too. Reach for `BlockingSubscriptionOverReactive.ofCheckpointAware(...)` instead when the model also implements `CheckpointAwareSubscriptionModel`, to additionally run `CheckpointAwareSubscriptionModelConformance` against it.
+
+A single dependency covers both suites, since `occurrent-tck-subscription-reactor` depends on `occurrent-tck-subscription-blocking` itself:
+
+{% include macros/tck/subscription/reactor/maven.md %}
 
 ### Reactive Subscription Implementations
 
