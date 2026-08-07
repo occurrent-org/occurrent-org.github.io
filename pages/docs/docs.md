@@ -4790,6 +4790,8 @@ A `when` works the same way, as long as every branch ends on a command or on `no
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
+Those reified accessors are Kotlin extensions, so a file outside the `org.occurrent.dsl.saga.flow` package imports each one it uses, `import org.occurrent.dsl.saga.flow.initiating` for the example above. Worth knowing for `initiating` in particular, because `ReceivedEvents` also has a no-arg `initiating()` member and a member wins over an extension. Leave the import out and the compiler points at that member with "No type arguments expected" rather than telling you the extension is missing, which sends you looking in the wrong place.
+
 A step is either a set of `on(...)` branches or a single `join(...)`, never both. A join waits until every `Expectation` it lists is met, counted since the step was entered, then runs once and follows its `Continuation`. Here is a step that waits for both players in the lobby above to ready up before it advances. It needs no new correlation, because the lobby's `correlateAll` already covers `PlayerReady`, which is what that fallback buys you:
 
 {% capture kotlin %}
@@ -5420,21 +5422,25 @@ static <E, C> Saga.Step<FlowState<E>, C> start(Saga<E, FlowState<E>, C> saga, E 
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout`. Assert on the commands you care about rather than on the whole list:
+**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout`. That is what `issuedCommands()` is for. It reads the commands back out of the effects, so a reaction that issued nothing is empty there even when the effects list is not:
 
 {% capture kotlin %}
 val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
 
 // The branch issues nothing, but leaving the step still cancels its timeout
-assertThat(step.effects).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"))
+assertThat(step.issuedCommands()).isEmpty()
+assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"))
 {% endcapture %}
 {% capture java %}
 Saga.Step<FlowState<GameEvent>, CloseGame> step = lobby.step(started.state(), SagaInput.event(new PlayerJoined("game-1")));
 
 // The branch issues nothing, but leaving the step still cancels its timeout
-assertThat(step.effects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"));
+assertThat(step.issuedCommands()).isEmpty();
+assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Timers get the same split treatment as commands. `timerEffects()` reads the started, re-armed, and cancelled timers back out of `effects`, in the order `effects` holds them, so a reaction that only issues commands is empty there even when `effects` is not. `effects()` stays the single ordered log of everything a reaction produced, and `issuedCommands()` and `timerEffects()` are two derived readings of it, the command half and the timer half, that together account for every effect a step can produce. Reach for whichever half the assertion is about, and fall back to `effects` itself when a test needs commands and timers in the order they were produced. Note that Kotlin calls both accessors with the parentheses, since they are derived methods rather than record components.
 
 ### Firing a timeout without waiting {#testing-saga-timeouts}
 
@@ -5548,8 +5554,6 @@ await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 The [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) runs exactly this, in both languages, with no Docker.
-
-If you use `received.initiating<GameCreated>()` in a Kotlin reaction, import it by name with `import org.occurrent.dsl.saga.flow.initiating`. `ReceivedEvents` also has a no-arg `initiating()`, and a member wins over an extension, so without the import the reified form does not resolve.
 
 ## Testing a Projection {#testing-a-projection}
 
