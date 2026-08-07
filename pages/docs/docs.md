@@ -3452,6 +3452,31 @@ It also asserts the contract both ways Occurrent relies on it. `CompetingConsume
 
 Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implement this). These subscription models support cancelling, pausing and resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`). That "all" includes the once-exception cases. A [synchronous subscription](#synchronous-subscription-life-cycle) and a [push subscription](#push-subscription-blocking-life-cycle) can be stopped, paused and shut down exactly like a MongoDB-backed one.
 
+Calling `start()` on a model that's already running is allowed. Starting a model is a goal, not a one-time transition, so a second call brings up whatever is still down and leaves the rest exactly as it was, including a subscription you paused yourself with `pauseSubscription(id)`. That's what lets a leader election or a health check call `start()` without checking `isRunning()` first, which is what `occurrent.subscription.mode=manual` is for.
+
+```java
+// Fine to call on every tick, whether or not the model is already running
+subscriptionModel.start(true);
+```
+
+`CompetingConsumerSubscriptionModel` used to throw `IllegalStateException` here. Every other subscription model already accepted a repeated `start()`, and now this one does too.
+
+`Subscription.waitUntilStarted(..)` answers for the one `start()` the handle was created for. It's not a live status check.
+
+```java
+Subscription subscription = subscriptionModel.subscribe("orders", e -> handleOrderEvent(e));
+subscription.waitUntilStarted(Duration.ofSeconds(10)); // true
+
+subscriptionModel.pauseSubscription("orders");
+subscription.waitUntilStarted(Duration.ofSeconds(10)); // still true, "orders" is paused right now
+```
+
+Once a subscription has started, its handle keeps answering `true` even after you pause it, stop it, or it loses a competing consumer lock. Ask `isRunning(id)` and `isPaused(id)` when you want to know what's happening right now.
+
+A handle answers `false` only for a subscription you still have to start yourself. That covers a registration withheld under `occurrent.subscription.mode=manual`, one registered while a `PushSubscriptionModel` or a `SynchronousSubscriptionModel` is stopped, and a catch-up replay that `stop()` interrupted. A start that failed and won't be retried throws instead of answering.
+
+On the reactor stack, `waitUntilStarted()` returns a `Mono<Void>` instead of blocking. It completes once the subscription has started and errors if the start failed, so a subscription that hasn't started yet is a `Mono` that hasn't completed.
+
 Note the difference between cancelling and pausing a subscription. Cancelling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
 
@@ -6460,6 +6485,8 @@ subscriptionModel.resumeSubscription("orders");
 Resuming continues from the stored checkpoint rather than replaying from the beginning, so this is also how you test that resume behaviour is what you think it is: pause, write, resume, and assert the handler saw exactly what was written while it was away.
 
 Two more worth knowing. `waitUntilStarted()` closes the race between subscribing and writing, and it is why the examples call it before their first write. `cancelSubscription(id)` drops a subscription entirely and frees its id, which is useful when one test class exercises several subscriptions in turn. The in-memory subscription model supports all of these, so most of this can be tested with no container at all.
+
+Running under `occurrent.subscription.mode=manual`, the handle that `subscribe(..)` returns answers `false` for as long as the registration is withheld. `resumeSubscription(id)` hands back a different handle, the one for the start that actually runs, and that's the one to wait on.
 
 ### Stopping every subscription, then opting in {#testing-subscription-deny-by-default}
 
