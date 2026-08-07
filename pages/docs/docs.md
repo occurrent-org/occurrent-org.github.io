@@ -2919,18 +2919,29 @@ Projection<OrderStatus, OrderEvent, String> orderStatus() { ... }
 
 `DEFAULT` waits for the replay to finish before the application finishes starting. That is deliberately not the same rule as an event-store subscription, where `DEFAULT` decides from the start position: a push projection that is still replaying is not receiving live events either, so returning from startup with the read model both empty and disconnected would be the more surprising answer.
 
-Because nothing joins a background replay, a failure in one has no caller to reach. The starters record it on a `BackgroundCatchupFailures` bean instead, which you can inject to check:
+Because nothing joins a background replay, neither its progress nor a failure in it has a caller to reach. The starters record both on a `PushCatchupStatus` bean instead, which you can inject and ask about one projection at a time:
 
 ```java
 @Autowired
-BackgroundCatchupFailures failures;
+PushCatchupStatus status;
 
-boolean healthy() {
-    return failures.isEmpty();
+boolean readyToServe(String projectionId) {
+    return switch (status.of(projectionId)) {
+        case CatchingUp ignored -> false;
+        case Live ignored -> true;
+        case Failed failed -> throw new IllegalStateException("Catch-up failed", failed.cause());
+        case Unknown ignored -> false;
+    };
 }
 ```
 
-`failureFor(subscriptionId)` returns the failure for one projection, and `all()` returns every recorded failure. A health indicator is the obvious use, since a background replay that died leaves an application that started successfully and a read model that will never fill.
+There are four states and only `Failed` carries a cause, so you cannot ask for one on a projection that is fine. `isCaughtUp(id)` is the shortcut when all you want is the boolean, and `all()` returns every push projection and saga this application registered, in registration order.
+
+A readiness probe is the obvious use, and the four states are what one actually needs. A background replay that died leaves an application that started successfully and a read model that will never fill. A replay that is still running leaves one that is filling but is not ready yet. Those two look identical if all you can see is a list of failures.
+
+`Unknown` means nothing here registered that id, usually a typo. It answers `false` rather than `true`, because a probe asking about a name Occurrent does not recognise has not been told yes.
+
+Where the id is fed by a `PushSubscriptionModel`, `CatchingUp` and `Live` are read from the subscription model each time you ask rather than recorded once, so stopping and starting the model, which replays the history again, reports `CatchingUp` again. A projection with `catchup = NONE` has no history to work through and reports `Live` from the start. A `@Saga(source = PUSH)` is covered the same way.
 
 ##### Feeding domain events instead of CloudEvents
 
@@ -2964,7 +2975,7 @@ Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying th
 
 A replayed event always has a real `CloudEvent` behind it, so the catch-up always folds with real metadata. A live event does not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
-The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent. `startupMode = BACKGROUND` works here too, and a failed background replay lands on the same `BackgroundCatchupFailures` bean.
+The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so keep the fold idempotent. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
 
 If you are upgrading from 0.31.0 and shared one sink between several projections, [upgrading to 0.32.0](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) shows the before and after.
 
@@ -3358,7 +3369,7 @@ The same limits apply as on the blocking side. A push subscription only ever see
 
 The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records a one-shot catch-up marker so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so keep the fold idempotent, and rebuild the projection if the consumer is offline longer than the broker retains the backlog.
 
-`startupMode` behaves the same as on the blocking stack: `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background failure is recorded on `BackgroundCatchupFailures`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to fold.
+`startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to fold.
 ## Synchronous Subscriptions
 
 The subscriptions described so far are asynchronous. They run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
