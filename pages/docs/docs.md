@@ -2492,7 +2492,7 @@ These three indexes are created for a store with the `DCB` capability, in additi
 |  Name | Fields | Unique | Sparse | Purpose |
 |:----|:------|:----|:----|:-----|
 | `dcbTags` | ascending `dcbTags` | no | yes | Backs a DCB boundary query that filters by tag. Without it, a tag-only query scans the whole collection. |
-| `type` + `position` | ascending `type`, ascending `position` | no | yes | Backs a DCB query that has a type but no tags to match. Without it, the query falls back to the `position` index and checks `type` on every DCB event in the position range as a leftover filter. A test on a 50k-event, 50-match skewed dataset examined all 50,050 documents to return 50 without this index. |
+| `type` + `position` | ascending `type`, ascending `position` | no | yes | Backs a DCB query that has a type but no tags to match. Without it, the query walks the `position` index instead and checks the `type` of every DCB event in the range, one document at a time. A test on a 50k-event, 50-match skewed dataset examined all 50,050 documents to return 50 without this index. |
 | `dcbTags` + `position` | ascending `dcbTags`, ascending `position` | no | yes | Backs a DCB tag-boundary query that also needs results in position order. Without it, the results are sorted in memory, or spilled to disk on MongoDB 6.0 and later, after every matching document is fetched. A test on a 305,000-event dataset with a 5,000-event popular tag used an in-memory sort stage instead of reading the index in order, without this index. |
 
 All indexes above are created automatically. You do not need to create them yourself, except when following the position-backfill runbook for an existing store.
