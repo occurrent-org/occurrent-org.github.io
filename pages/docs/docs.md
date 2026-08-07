@@ -2929,19 +2929,22 @@ boolean readyToServe(String projectionId) {
     return switch (status.of(projectionId)) {
         case CatchingUp ignored -> false;
         case Live ignored -> true;
+        case NotStarted ignored -> false;
         case Failed failed -> throw new IllegalStateException("Catch-up failed", failed.cause());
         case Unknown ignored -> false;
     };
 }
 ```
 
-There are four states and only `Failed` carries a cause, so you cannot ask for one on a projection that is fine. `isCaughtUp(id)` is the shortcut when all you want is the boolean, and `all()` returns every push projection and saga this application registered, in registration order.
+There are five states and only `Failed` carries a cause, so you cannot ask for one on a projection that is fine. `isCaughtUp(id)` is the shortcut when all you want is the boolean, and `all()` returns every push projection and saga this application registered, in registration order.
 
-A readiness probe is the obvious use, and the four states are what one actually needs. A background replay that died leaves an application that started successfully and a read model that will never fill. A replay that is still running leaves one that is filling but is not ready yet. Those two look identical if all you can see is a list of failures.
+A readiness probe is the obvious use, and the five states are what one actually needs. A background replay that died leaves an application that started successfully and a read model that will never fill. A replay that is still running leaves one that is filling but is not ready yet. Those two look identical if all you can see is a list of failures.
+
+`NotStarted` means the projection is registered but its subscription has not been started, which is what `occurrent.subscription.mode = manual` leaves it as until you start it, and what a stopped subscription model leaves it as. It will not become ready on its own, unlike `CatchingUp`.
 
 `Unknown` means nothing here registered that id, usually a typo. It answers `false` rather than `true`, because a probe asking about a name Occurrent does not recognise has not been told yes.
 
-Where the id is fed by a `PushSubscriptionModel`, `CatchingUp` and `Live` are read from the subscription model each time you ask rather than recorded once, so stopping and starting the model, which replays the history again, reports `CatchingUp` again. A projection with `catchup = NONE` has no history to work through and reports `Live` from the start. A `@Saga(source = PUSH)` is covered the same way.
+Where the id is fed by a `PushSubscriptionModel`, those three states are read from the subscription model each time you ask rather than recorded once, so stopping and starting the model, which replays the history again, reports `CatchingUp` again. A projection with `catchup = NONE` has no history to work through, so it reports `Live` as soon as it is running. A `@Saga(source = PUSH)` is covered the same way.
 
 ##### Feeding domain events instead of CloudEvents
 
