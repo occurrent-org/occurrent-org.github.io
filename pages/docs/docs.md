@@ -3062,6 +3062,20 @@ var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, SpringSu
 
 An alternative approach to restarting automatically is to use a [catch-up subscription](#catch-up-subscription-blocking) and restart the subscription from an earlier date.
 
+##### Deferring Startup {#spring-mongo-subscription-defer-startup}
+
+By default a `SpringMongoSubscriptionModel` starts itself as soon as it's constructed, and if you register it as a Spring bean, Spring starts it again on refresh (it implements `SmartLifecycle`). Set `autoStartup(false)` on the config to skip both:
+
+```java
+var config = SpringMongoSubscriptionModelConfig
+        .withConfig("events", TimeRepresentation.RFC_3339_STRING)
+        .autoStartup(false);
+
+var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, config);
+```
+
+A subscription registered on a model created this way comes back paused, the same as if you'd called `stop()` right after construction. Nothing runs and no change stream opens until you call `start()` or `resumeSubscription(id)` yourself. Use it to bring subscriptions up under your own control, behind a leader election or a health check for example, or in a test that wants to choose which subscriptions actually run before the context finishes starting.
+
 #### Tuning the MongoDB change stream {#change-stream-tuning}
 
 Both blocking MongoDB subscription models let you tune the change stream they read from. Both options are opt-in. Leave them unset and you get the driver and server defaults, which is what every subscription did before these existed, so upgrading changes nothing on its own.
@@ -3104,7 +3118,7 @@ By default this model refuses a subscription filter on the event `data` payload.
 
 #### Push Subscription (Blocking)
 
-Use this when events aren't read from a MongoDB change stream at all, but forwarded by the writing application to a message broker such as RabbitMQ or Kafka, and consumed by a separate listener. `org.occurrent.subscription.push.blocking.PushSubscriptionModel` is a register-only `Subscribable`. It has no lifecycle, start position, checkpoint, catch-up, or replay, and it never talks to an event store. You feed it events yourself, and it dispatches each one to whichever registered handlers match it.
+Use this when events aren't read from a MongoDB change stream at all, but forwarded by the writing application to a message broker such as RabbitMQ or Kafka, and consumed by a separate listener. `org.occurrent.subscription.push.blocking.PushSubscriptionModel` is a register-only `Subscribable`. It has no start position, checkpoint, catch-up, or replay of its own, and it never talks to an event store. You feed it events yourself, and it dispatches each one to whichever registered handlers match it.
 
 First include the dependency:
 
@@ -3218,6 +3232,10 @@ Where the id is fed by a `PushSubscriptionModel`, those three states are read fr
 
 Add `catchup = Catchup.NONE` when the feed carries events that are not in this application's event store, which is the case when another application writes them. The wrapper is skipped entirely and the bare `PushSubscriptionModel` is used instead, so no `PositionOrderedReader` or `CheckpointStorage` bean is needed. Left at the default `Catchup.FROM_EVENT_STORE`, a missing one of those beans now fails naming `catchup = Catchup.NONE` as the fix, rather than a bare missing-bean error. `startAt`, `startAtGlobalPosition` and `resumeBehavior` stay rejected either way. `startupMode` only applies under the default, since `Catchup.NONE` has no replay for `startupMode = BACKGROUND` to move off the startup path.
 
+##### Life-cycle {#push-subscription-blocking-life-cycle}
+
+Like every other subscription model, a `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. There's no feed behind it holding events back, so an event handed to `accept(..)` while the model is stopped, or a subscription is paused, never reaches that handler, and resuming does not replay it. That's dropped, not deferred. `shutdown()` is one-way. A model that's been shut down stays that way. This is the same contract [`SynchronousSubscriptionModel` runs on](#synchronous-subscription-life-cycle), and it's what lets a test [stop every subscription model in the application and opt back in per test](#testing-subscription-deny-by-default), a `PushSubscriptionModel` included.
+
 ##### Feeding domain events instead of CloudEvents
 
 If your listener already hands you domain events (for example a broker message converter deserializes them for you), pushing them through the CloudEvent model means `domainEvent` to `CloudEvent` and back, a full serialize and deserialize per event. Feed the projection in domain space instead and the live path does no conversion at all.
@@ -3326,6 +3344,12 @@ var catchupSubscriptionModel = CatchupSubscriptionModel(subscriptionModel, event
 
 By default, events are sorted by time and then stream version (if two or more events have the same time).
 
+##### Interrupting a Replay in Progress {#catch-up-subscription-blocking-stop}
+
+`stop()` now reaches a catch-up replay that's already running, not just the live subscription behind it. Before, stopping the model while a subscription was still replaying history left that replay running to completion regardless, since only the live delegate was told to stop. Now `stop()` interrupts it at the next event, so a shutdown or a deliberate stop no longer waits for the whole backlog to be delivered.
+
+An interrupted replay isn't resumed automatically. `start()` only allows the *next* `subscribe(..)` call to run a catch-up. It doesn't pick the interrupted one back up on its own, so bring the subscription back by subscribing again with the same id and `StartAt`. If you configured checkpoint persistence during replay (see above), that resumes from the last stored replay position rather than from the beginning, exactly as it would after a crash.
+
 ##### Catch-up Subscription Usage
 
 The subscription model will only stream historic events if started with a `StartAt` instance with a so called `TimeBasedCheckpoint`, for example:
@@ -3426,13 +3450,15 @@ It also asserts the contract both ways Occurrent relies on it. `CompetingConsume
 
 #### Subscription Life-cycle & Testing (Blocking)
 
-Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implements this). These subscription models supports canceling, pausing and  resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`).
+Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implement this). These subscription models support cancelling, pausing and resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`). That "all" includes the once-exception cases. A [synchronous subscription](#synchronous-subscription-life-cycle) and a [push subscription](#push-subscription-blocking-life-cycle) can be stopped, paused and shut down exactly like a MongoDB-backed one.
 
-Note the difference between canceling and pausing a subscription. Canceling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
+Note the difference between cancelling and pausing a subscription. Cancelling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
 
 Many of the methods in the `SubscriptionLifeCycle` are good to have when you write integration tests.
 It's often useful to e.g. write events to the event store _without_ triggering all subscriptions listening to the events. The life cycle methods allows you to selectively start/stop individual subscriptions so that you can (integration) test them in isolation.
+
+A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
 
 ## Reactive Subscriptions
 
@@ -3705,9 +3731,21 @@ that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionMod
 
 {% include macros/subscription/reactor/util/autopersistence/example.md %}  
 
+##### Life-cycle {#durable-subscription-reactive-life-cycle}
+
+`ReactorDurableSubscriptionModel` can be stopped, started, paused per subscription and shut down like any other reactor `SubscriptionModel`. A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`, so it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
+
+What differs is whether that captured position is written to the `CheckpointStorage` right away. When the wrapped model is itself a named reactor `SubscriptionModel`, which is what [delegation](#durable-subscription-reactive-delegation) below means and what every shipped composition does, the position is stored at registration, so a subscription that's registered and then never started still leaves a checkpoint behind, and resumes from there rather than from the beginning if it's ever started later. When the wrapped model offers only the cold `Flux` primitive, nothing is stored until the subscription actually starts, so one that never starts leaves nothing behind. Either way, no event written while a registered subscription waits to be started is lost, mirroring the guarantee the blocking stack's manual-start wrapper gives.
+
+##### Delegating to a Named Wrapped Model {#durable-subscription-reactive-delegation}
+
+When the model `ReactorDurableSubscriptionModel` wraps is itself a named reactor `SubscriptionModel`, rather than only the cold `Flux` primitive, the durable model hands the subscription straight to it instead of driving that primitive itself. Everything the wrapped model already does for a named subscription applies from there. An unsupported `SubscriptionFilter` is refused when you call `subscribe(..)`, instead of surfacing later once the change stream has already started, and a failing action is retried with the wrapped model's own configured backoff instead of ending the subscription. There's no separate retry configuration on `ReactorDurableSubscriptionModel` for this path. The wrapped model's is the only one that applies.
+
+This is the composition the reactive Spring Boot starter wires for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
+
 #### Push Subscription (Reactive)
 
-The reactive twin of the [blocking push subscription](#push-subscription-blocking). Use it when the writing application forwards events to a broker such as RabbitMQ or Kafka instead of a MongoDB change stream, and a reactive listener consumes them. `org.occurrent.subscription.push.reactor.PushSubscriptionModel` is a register-only `Subscribable` with no lifecycle, start position, checkpoint, catch-up, or replay.
+The reactive twin of the [blocking push subscription](#push-subscription-blocking). Use it when the writing application forwards events to a broker such as RabbitMQ or Kafka instead of a MongoDB change stream, and a reactive listener consumes them. `org.occurrent.subscription.push.reactor.PushSubscriptionModel` is a register-only `Subscribable` with no start position, checkpoint, catch-up, or replay of its own.
 
 First include the dependency:
 
@@ -3750,6 +3788,10 @@ The same limits apply as on the blocking side. A push subscription only ever see
 The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records a one-shot catch-up marker so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so keep the fold idempotent, and rebuild the projection if the consumer is offline longer than the broker retains the backlog.
 
 `startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to fold.
+##### Life-cycle {#push-subscription-reactive-life-cycle}
+
+Like its [blocking twin](#push-subscription-blocking-life-cycle), a reactive `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down, with the same *dropped, not deferred* contract for whatever is fed to it while stopped or paused, and the same one-way `shutdown()`.
+
 ## Synchronous Subscriptions
 
 The subscriptions described so far are asynchronous. They run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
@@ -3767,6 +3809,18 @@ Reach for a synchronous subscription when the reaction must be visible the momen
 * **Enriched events.** The handler receives the just-written events as the store recorded them, carrying `streamVersion` and the global `position`, so `EventMetadata` is fully populated and filters work on every attribute.
 * **No free lunch.** Enabling synchronous subscriptions adds one read per event-producing write, to recover the global `position` for the handler. You pay it only while at least one synchronous subscription is registered. An application that declares none does exactly what it did before, with no extra read.
 * **Reentrancy and latency.** The handler runs on the writer thread, inside the transaction when there is one, so a handler that calls `execute` again re-enters on the same thread, and a slow handler directly increases write latency and lock-hold time. Keep synchronous handlers small, and do not let one issue a command that re-triggers itself.
+
+### Life-cycle {#synchronous-subscription-life-cycle}
+
+Like every other subscription model, a `SynchronousSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. What makes that sharper here than on an asynchronous subscription is what stopping it actually costs.
+
+An asynchronous subscription reads a change stream or replays history, so pausing it only withholds delivery. The events stay in the event store, and resuming, or a catch-up, picks them up later. A synchronous subscription has no feed to fall behind on. It is a direct call on the writer's thread, so pausing or stopping it means an event written while it's paused is never handed to that handler at all. There is nothing holding it back to defer, and resuming does not replay what was missed.
+
+That's sharpest for a projection meant to update in the same transaction as the write. **The write still succeeds, the projection just doesn't run.** An application that stops its subscriptions and keeps accepting writes gets exactly that gap, and gets it silently. It's documented rather than prevented, because failing the write to protect the projection would break the reason a synchronous subscription exists in the first place.
+
+That same property is what makes the [subscription life cycle](#testing-subscription-lifecycle) worth reaching for in a test. Pausing a synchronous subscription, unlike an asynchronous one, guarantees the handler never sees the event you're about to write, rather than merely deferring it until you resume.
+
+`shutdown()` is one-way. Once a `SynchronousSubscriptionModel` is shut down, there's no `start()` back to a working state.
 
 ### The transaction model
 
