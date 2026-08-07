@@ -622,6 +622,51 @@ Which components need a reader, and which don't, comes down to whether they matc
 
 Worth knowing if you write a subscription model of your own. A catch-up wrapper assumes the model it wraps already applied a payload condition. If your model ignores one instead, the catch-up wrapper now over-delivers rather than throwing, since it has no store of its own to ask.
 
+##### Writing your own reader
+
+You only need one if Jackson is not on your classpath. The rules a reader must follow, so its answers match what MongoDB would say:
+
+* The path is a dotted path without the leading `data.`, the same one MongoDB resolves. `Filter.data("person.city", ..)` arrives as `person.city`.
+* Return the value as a plain Java value. A `String`, a `Number`, a `Boolean`, or a `List` when the field holds an array. Never as text. A payload holding `{"amount": 42}` answers with a number, because `Filter.data("amount", eq("42"))` does not match on MongoDB and must not match here either.
+* Return the whole `List` for an array rather than deciding the match yourself. The matcher asks whether any element satisfies the condition, the way MongoDB does, and it needs the elements to do that.
+* Return `Optional.empty()` when the path reaches nothing. An absent field, a payload that is not a JSON object, or a path that continues past a value with no fields.
+
+A minimal reader for events whose payload is already a `Map`, the shape a test often builds, shows the whole contract:
+
+{% capture java %}
+public final class MapDataFieldReader implements DataFieldReader {
+    @Override
+    public Optional<Object> read(CloudEvent event, String path) {
+        if (!(event.getData() instanceof PojoCloudEventData<?> pojo) || !(pojo.getValue() instanceof Map<?, ?> payload)) {
+            return Optional.empty();
+        }
+        Object current = payload;
+        for (String field : path.split("\\.")) {
+            if (!(current instanceof Map<?, ?> map)) {
+                return Optional.empty();
+            }
+            current = map.get(field);
+        }
+        return Optional.ofNullable(current);
+    }
+}
+{% endcapture %}
+{% capture kotlin %}
+class MapDataFieldReader : DataFieldReader {
+    override fun read(event: CloudEvent, path: String): Optional<Any> {
+        val payload = ((event.data as? PojoCloudEventData<*>)?.value as? Map<*, *>) ?: return Optional.empty()
+        var current: Any? = payload
+        for (field in path.split(".")) {
+            current = (current as? Map<*, *>)?.get(field) ?: return Optional.empty()
+        }
+        return Optional.ofNullable(current)
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The shipped Jackson reader already resolves `Map` payloads without parsing, so in practice this example earns its keep as a picture of the contract rather than as code you need. The interface also has `readAll(cloudEvent, paths)` for a filter with several `data` conditions. Its default loops over `read`, so ignore it until resolving every path in one pass over the payload is a measured win.
+
 #### With Spring Boot
 
 Add `occurrent-common-inmemory-filter-matching-jackson` to the classpath and the [Spring Boot starter](#spring-boot-starter) (both the blocking one and the [reactive](#reactive-spring-boot-starter) one) contributes a `DataFieldReader` bean backed by `JacksonDataFieldReader`. The auto-configured `SynchronousSubscriptionModel` bean picks it up automatically, so a `data` filter on a [synchronous subscription](#synchronous-subscriptions) works once the artifact is on the classpath. Define your own `DataFieldReader` bean instead to replace it. Without either, that same filter still refuses, naming the artifact to add. A hand-built `PushSubscriptionModel` isn't managed by the starter, so pass the reader to its constructor yourself if you need one there too.
