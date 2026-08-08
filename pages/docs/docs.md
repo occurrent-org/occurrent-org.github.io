@@ -5248,7 +5248,7 @@ A catch-up replay used to cost one store read and one store write per event. `Ca
 
 Batching only reaches a projection fed that way. `ProjectionRunner`, `DcbProjectionRunner`, and the default `@Projection(source = Source.EVENT_STORE)` path register the projection on a `SubscriptionModel` instead, and so does `@Projection(source = Source.PUSH)` bound to a `PushSubscriptionModel` rather than a `DomainEventFeed`. All of those still pay one read and one write per replayed event, because the subscription model owns that catch-up and doesn't yet tell the view where a replay begins or ends.
 
-`Projections.materializedView` (blocking) and `Projections.reactiveUpdateWithMetadata` (reactor), the two builders `CatchupProjectionFeed` and `DomainEventFeed` use internally, take a `MaterializedViewOptions` with a `batchSize`, 1000 events buffered across every view instance before a batch flushes:
+`Projections.materializedView` (blocking) and `Projections.reactiveUpdateWithMetadata` (reactor), the two builders `CatchupProjectionFeed` and `DomainEventFeed` use internally, take a `MaterializedViewOptions` with a `batchSize`, the number of buffered events, summed across every view instance rather than counted per instance, that triggers a flush. The default is 1000. The example below tunes it down to 200:
 
 ```java
 MaterializedView<OrderEvent> view = Projections.materializedView(
