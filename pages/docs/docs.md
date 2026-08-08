@@ -149,6 +149,7 @@ permalink: /documentation
 * * * [Side Effects and Compensation](#saga-side-effects)
 * * * [Observing Saga Instances](#observing-saga-instances)
 * [Spring Boot Starter](#spring-boot-starter)
+* * [Deferring Subscription Startup](#deferring-subscription-startup)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
 * * [Annotations](#spring-boot-annotations)
 * * * [Start Position](#subscription-start-position)
@@ -5881,9 +5882,35 @@ occurrent:
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java)
 to find which configuration properties that are supported.
 
+### Deferring Subscription Startup {#deferring-subscription-startup}
+
+By default the starter creates every subscription and starts it during context refresh, before your application is ready to receive requests. `occurrent.subscription.mode` controls whether that happens at all:
+
+```properties
+occurrent.subscription.mode=auto
+```
+
+| Mode       | What it means                                                                         |
+|------------|------------------------------------------------------------------------------------------|
+| `auto`     | The default. Every subscription is created and started during context refresh.         |
+| `manual`   | Every subscription is registered, but none of them runs until you start it yourself.    |
+| `disabled` | No subscription beans are created at all.                                                |
+
+`manual` registers a subscription rather than starting it. Nothing is subscribed, no competing-consumer lease is taken, and no change stream or catch-up replay begins until you start it yourself, by calling `resumeSubscription(id)` on the injected `SubscriptionModel`. This is the same mechanism the [subscription life cycle](#testing-subscription-lifecycle) uses to hold subscriptions back between tests, made available for production startup too, for an application that only wants its subscriptions running once, say, it has won a leader election.
+
+Withholding is not the same as never having registered. The position a subscription resumes from is fixed the moment it is registered, not the moment it is started, so a subscription that has never run before does not silently skip whatever is written while it waits. Once a subscription has run at least once, it resumes from its own stored checkpoint regardless of how long it was withheld this time around.
+
+`manual` reaches further than the `@Subscription`, `@StreamSubscription`, and `@DcbSubscription` annotations. A [`@Saga`](#the-saga-annotation)'s timer poller does not fire until its saga's subscription is started, and a [`@Projection(source = Source.PUSH)`](#the-projection-annotation) bound to a `DomainEventFeed` is not registered on the feed, and does not take part in the feed's `catchUpAll()`, until it is started. If a projection is started later than the rest of the feed, for example a `manual` subscription resumed after the feed has already caught up, `catchUpAll()` will not replay it, since it only re-runs projections that were already live. Replay it on its own with `catchUp(String)`, passing that projection's id.
+
+Boot no longer validates subscription wiring under `manual`. A bad filter or an unsupported start position used to fail during context refresh. Under `manual` it instead fails the first time the subscription is started, which for a leader-election deployment can be well after the application has already started serving traffic.
+
+`occurrent.subscription.mode` replaces the deprecated `occurrent.subscription.enabled` (`true` maps to `auto`, `false` to `disabled`). The deprecated property still works during the deprecation window, and setting both is fine as long as they agree, so a leftover environment variable does not break an otherwise-migrated configuration. Setting both to values that disagree fails startup, naming both values in the error. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) for the OpenRewrite recipe that renames the property for you.
+
 ## Reactive Spring Boot Starter
 
 If your application is reactive (Spring WebFlux with reactive MongoDB), use the reactive starter (`org.occurrent:occurrent-mongodb-reactive-spring-boot-starter`) and annotate your application with `@EnableOccurrentReactive` (package `org.occurrent.springboot.mongo.reactor`) instead of `@EnableOccurrent`. It auto-configures the reactive counterparts of everything the blocking starter sets up: a reactive `EventStore`, a reactive transaction manager, a reactive application service (both the stream and the DCB application service), the query DSLs, a reactive subscription model backed by `CheckpointStorage`, and the reactive `StreamSubscriptions` and `DcbSubscriptions` DSLs. The blocking and reactive starters are mutually exclusive, so pick the one that matches your stack.
+
+[Deferring subscription startup](#deferring-subscription-startup) with `occurrent.subscription.mode=manual` works the same way here, with one difference that follows from the reactive `SubscriptionModel` having no competing-consumer layer. There is nothing to wrap. The starter simply hands back a model that is already stopped, and you resume each subscription with `resumeSubscription(id)`. A `@Projection(source = Source.PUSH)` fed by a reactive `DomainEventFeed` is withheld by a registry rather than by the model itself, so starting it runs the work that registering it would otherwise have done immediately. The reactive `DomainEventFeed` has the same per-id `catchUp(String)` as the blocking one, for a projection started after the rest of the feed has already caught up.
 
 ## Spring Boot Annotations
 
