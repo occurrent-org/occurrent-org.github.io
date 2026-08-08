@@ -3140,7 +3140,9 @@ Note the difference between canceling and pausing a subscription. Canceling a su
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
 
 Many of the methods in the `SubscriptionLifeCycle` are good to have when you write integration tests.
-It's often useful to e.g. write events to the event store _without_ triggering all subscriptions listening to the events. The life cycle methods allows you to selectively start/stop individual subscriptions so that you can (integration) test them in isolation.
+It's often useful to e.g. write events to the event store _without_ triggering all subscriptions listening to the events. The life cycle methods allow you to selectively start/stop individual subscriptions so that you can (integration) test them in isolation.
+
+You don't have to drive this by hand in your tests though. The `occurrent-testing-junit-jupiter-blocking` extension stops every subscription model by default and lets each test opt subscriptions back in, as described in [Integration Testing](#integration-testing), including [using the subscription life cycle](#testing-subscription-lifecycle) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default).
 
 ## Reactive Subscriptions
 
