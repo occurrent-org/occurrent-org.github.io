@@ -6105,6 +6105,32 @@ Boot no longer validates subscription wiring under `manual`. A bad filter or an 
 
 Outside Spring, `ManualStartSubscriptionModel` in `occurrent-subscription-api-blocking` gives you the same thing. `ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel)` wraps any subscription model so that subscriptions register withheld and start only when you say so, with the same registration-fixes-the-position guarantee as above. It is also what the JUnit extension's [stopped-by-default testing](#testing-subscription-deny-by-default) is built on.
 
+{% capture java %}
+var manual = ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel);
+
+// Registered but withheld, nothing is delivered yet
+manual.subscribe("current-orders", System.out::println);
+
+// Start just this one once its dependencies are ready
+manual.resumeSubscription("current-orders");
+
+// Or bring up everything still withheld
+manual.start();
+{% endcapture %}
+{% capture kotlin %}
+val manual = ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel)
+
+// Registered but withheld, nothing is delivered yet
+manual.subscribe("current-orders") { println(it) }
+
+// Start just this one once its dependencies are ready
+manual.resumeSubscription("current-orders")
+
+// Or bring up everything still withheld
+manual.start()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
 `occurrent.subscription.mode` replaces the deprecated `occurrent.subscription.enabled` (`true` maps to `auto`, `false` to `disabled`). The deprecated property still works during the deprecation window, and setting both is fine as long as they agree, so a leftover environment variable does not break an otherwise-migrated configuration. Setting both to values that disagree fails startup, naming both values in the error. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) for the OpenRewrite recipe that renames the property for you.
 
 ## Reactive Spring Boot Starter
