@@ -5798,7 +5798,7 @@ class ProjectionAnnotationTest {
 }
 ```
 
-One trap. `MongoDBContainer.getReplicaSetUrl()` with no argument always targets the database named `test`, and you cannot append a suffix to the returned URL because MongoDB rejects dots in database names, so the name silently stays `test` and tests collide. When a test needs its own database, ask for it by name with `getReplicaSetUrl(String)`.
+One trap to watch out for is that `MongoDBContainer.getReplicaSetUrl()` with no argument always targets the database named `test`. You cannot append a suffix to the returned URL either, because MongoDB rejects dots in database names, so the name silently stays `test` and tests collide. When a test needs its own database, ask for it by name with `getReplicaSetUrl(String)`.
 
 ### Using the subscription life cycle {#testing-subscription-lifecycle}
 
@@ -5890,7 +5890,7 @@ Register your subscriptions once, not per test. A second `subscribe` call with a
 
 Then keep at least one test with everything running. Deny-by-default means nothing checks two subscriptions reacting to the same event unless you ask it to.
 
-One cost stays. Every subscription still starts once while the application context boots, and is stopped again before the first test, so on MongoDB you pay for a change stream opened and closed per subscription per context. A JUnit extension runs after the context is refreshed, so nothing in the test can prevent that.
+One cost stays whatever the tests do. Every subscription still starts once while the application context boots, and is stopped again before the first test, so on MongoDB you pay for a change stream opened and closed per subscription per context. A JUnit extension runs after the context is refreshed, so nothing in the test can prevent that.
 
 A subscription id that no longer exists throws `IllegalArgumentException` from `resumeSubscription`, so renaming one breaks the tests that named it instead of quietly leaving them asserting nothing.
 
