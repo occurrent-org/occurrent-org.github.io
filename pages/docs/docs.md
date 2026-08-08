@@ -585,6 +585,64 @@ val events : Stream<CloudEvent> = eventStore.all(42, 1024)
 
 To get started with an event store refer to [Choosing An EventStore](#choosing-an-eventstore).
 
+### Filtering on Payload Data {#filtering-on-payload-data}
+
+`Filter.data(name, condition)` filters on a field inside an event's `data` payload. It's statically imported from `org.occurrent.filter.Filter`, next to `subject`, `type` and `time`, and resolves to `filter("data." + name, condition)`, so it composes with `.and()` and `.or()` like any other `Filter`. It works the same way whether you're querying an `EventStore` or filtering a subscription:
+
+{% capture java %}
+Stream<CloudEvent> events = eventStore.query(data("amount", gt(100)));
+
+subscriptionModel.subscribe("large-orders", filter(data("amount", gt(100))), System.out::println);
+{% endcapture %}
+{% capture kotlin %}
+val events : Stream<CloudEvent> = eventStore.query(data("amount", gt(100)))
+
+subscriptionModel.subscribe("large-orders", filter(data("amount", gt(100)))) { println(it) }
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The path is a dotted path, the same one MongoDB resolves, and nothing more. There are no wildcards and no array-index predicates, because MongoDB can't answer those either. `Filter.data("person.city", eq("Malmo"))` reaches into a nested object, and a field holding an array matches when any element satisfies the condition, so `Filter.data("tags", eq("red"))` matches a payload holding `{"tags": ["red", "blue"]}`.
+
+A payload value keeps its type. `Filter.data("amount", eq("42"))` does not match a stored `42`, because MongoDB doesn't either. Anything the path can't resolve, an absent field, a path that continues past a value with no fields of its own, or a payload whose root isn't a JSON object, just doesn't match. None of that throws, because a single malformed event must not break a query or a subscription over the whole store.
+
+#### Plugging in a `DataFieldReader`
+
+On MongoDB, a `data.` condition resolves server-side, so there's nothing further to configure. Everywhere else, a store or subscription model that matches a payload in its own process needs to parse it first, and Occurrent has no opinion on which JSON library you use for that. Instead it asks for an `org.occurrent.inmemory.filtermatching.DataFieldReader`:
+
+```java
+public interface DataFieldReader {
+    Optional<Object> read(CloudEvent cloudEvent, String path);
+
+    static DataFieldReader refusing() { ... }
+}
+```
+
+Without one, `Filter.data(...)` refuses rather than silently matching nothing, and the refusal names the artifact to add. Occurrent ships a Jackson-backed implementation, `JacksonDataFieldReader`, in `occurrent-common-inmemory-filter-matching-jackson`:
+
+{% capture java %}
+InMemoryEventStore eventStore = new InMemoryEventStore().withDataFieldReader(new JacksonDataFieldReader());
+
+InMemorySubscriptionModel subscriptionModel = new InMemorySubscriptionModel(new JacksonDataFieldReader());
+{% endcapture %}
+{% capture kotlin %}
+val eventStore = InMemoryEventStore().withDataFieldReader(JacksonDataFieldReader())
+
+val subscriptionModel = InMemorySubscriptionModel(JacksonDataFieldReader())
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Which components need a reader, and which don't, comes down to whether they match a payload themselves or trust something else to have already matched it:
+
+* **`InMemoryEventStore` and `InMemorySubscriptionModel`** match entirely in memory, so both need a reader to answer a `data` filter at all. Without one, they refuse exactly as they did before this feature existed.
+* **Synchronous and push subscriptions** (`SynchronousSubscriptionModel`, `PushSubscriptionModel`) also match entirely in memory, regardless of which store or broker feeds them, so both take a `DataFieldReader` as a constructor argument the same way `InMemorySubscriptionModel` does.
+* **A catch-up subscription model needs nothing.** It wraps a store that already applied the filter server-side to deliver the event in the first place, and on the live tail it only re-checks attributes and extensions, trusting the store for a payload condition. If you're writing your own subscription model wrapper and want the same trust, `FilterMatcher.matcherIgnoringPayloadConditions(filter)` builds that predicate for you.
+
+Worth knowing if you write a subscription model of your own. A catch-up wrapper assumes the model it wraps already applied a payload condition. If your model ignores one instead, the catch-up wrapper now over-delivers rather than throwing, since it has no store of its own to ask.
+
+#### With Spring Boot
+
+Add `occurrent-common-inmemory-filter-matching-jackson` to the classpath and the [Spring Boot starter](#spring-boot-starter) (both the blocking one and the [reactive](#reactive-spring-boot-starter) one) contributes a `DataFieldReader` bean backed by `JacksonDataFieldReader`. The auto-configured `SynchronousSubscriptionModel` bean picks it up automatically, so a `data` filter on a [synchronous subscription](#synchronous-subscriptions) works once the artifact is on the classpath. Define your own `DataFieldReader` bean instead to replace it. Without either, that same filter still refuses, naming the artifact to add. A hand-built `PushSubscriptionModel` isn't managed by the starter, so pass the reader to its constructor yourself if you need one there too.
+
 ### EventStore Operations
 
 Occurrent event store implementations may optionally also implement the `EventStoreOperations` interface. It provides means to delete a specific event, or an entire 
@@ -2600,6 +2658,8 @@ Once you've imported the dependencies you create a new instance of `org.occurren
 
 This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering](#eventstore-stream-filtering) for when and how to use it.
 
+By default this store refuses a query that filters on the event `data` payload. Call `withDataFieldReader(...)` to give it one, see [Filtering on Payload Data](#filtering-on-payload-data).
+
 Now you can start reading and writing events to the EventStore:
 
 {% include macros/eventstore/in-memory/read-and-write-events.md %}
@@ -2797,6 +2857,8 @@ subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364
 Now `filter` is statically imported from `org.occurrent.subscription.mongodb.MongoDBFilterSpecification` and `Filters` is imported from 
 `com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with a `StreamSubscriptionFilter`
 and only pick a more specific implementation if you cannot express your filter using the capabilities of `StreamSubscriptionFilter`. 
+
+The `Filter` wrapped by a `StreamSubscriptionFilter` can also filter on a field inside the event's `data` payload with `Filter.data(...)`. See [Filtering on Payload Data](#filtering-on-payload-data) for what it matches and, on the in-memory and synchronous/push subscription models, what you need to configure for it to work.
 
 These filters also decide which event-store capability a subscription sees. `StreamSubscriptionFilter` (the one built above) scopes delivery to
 stream-written events. On a store that also has the DCB capability enabled, `AgnosticSubscriptionFilter.filter(...)` wraps the same kind of plain
@@ -3091,6 +3153,8 @@ Then you can use it like this:
 
 {% include macros/subscription/blocking/inmemory/impl/example.md %}
 
+By default this model refuses a subscription filter on the event `data` payload. Pass a `DataFieldReader` to its constructor to give it one, see [Filtering on Payload Data](#filtering-on-payload-data).
+
 #### Push Subscription (Blocking)
 
 Use this when events aren't read from a MongoDB change stream at all, but forwarded by the writing application to a message broker such as RabbitMQ or Kafka, and consumed by a separate listener. `org.occurrent.subscription.push.blocking.PushSubscriptionModel` is a register-only `Subscribable`. It has no lifecycle, start position, checkpoint, catch-up, or replay, and it never talks to an event store. You feed it events yourself, and it dispatches each one to whichever registered handlers match it.
@@ -3104,6 +3168,8 @@ First include the dependency:
     <version>{{site.occurrentversion}}</version>
 </dependency>
 ```
+
+Because it matches entirely in memory, `new PushSubscriptionModel()` refuses a subscription filter on the event `data` payload. Pass a `DataFieldReader` to its constructor to give it one, see [Filtering on Payload Data](#filtering-on-payload-data).
 
 Because `PushSubscriptionModel` implements the same `Subscribable` interface as every other subscription model, it plugs into the [Subscription DSL](#subscription-dsl), and into `ProjectionRunner` from Occurrent's `projection-dsl` module, unchanged:
 
@@ -3512,6 +3578,8 @@ Now `filter` is statically imported from `org.occurrent.subscription.mongodb.Mon
 `com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with a `StreamSubscriptionFilter`
 and only pick a more specific implementation if you cannot express your filter using the capabilities of `StreamSubscriptionFilter`. 
 
+The `Filter` wrapped by a `StreamSubscriptionFilter` can also filter on a field inside the event's `data` payload with `Filter.data(...)`. See [Filtering on Payload Data](#filtering-on-payload-data) for what it matches and, on the in-memory and synchronous/push subscription models, what you need to configure for it to work.
+
 The capability-scoped filters (`StreamSubscriptionFilter`, `AgnosticSubscriptionFilter`, and `DcbSubscriptionFilter`) work the same way here as on
 the [blocking side](#blocking-subscription-filters): the agnostic filter delivers events from every enabled capability, and the DCB filter narrows
 delivery to matching DCB events.
@@ -3706,6 +3774,8 @@ First include the dependency:
 </dependency>
 ```
 
+Because it matches entirely in memory, `new PushSubscriptionModel()` refuses a subscription filter on the event `data` payload. Pass a `DataFieldReader` to its constructor to give it one, see [Filtering on Payload Data](#filtering-on-payload-data).
+
 Register it like any other `Subscribable`, for example with `ReactiveProjectionRunner` from Occurrent's `projection-dsl` module:
 
 ```java
@@ -3813,9 +3883,13 @@ val applicationService = GenericApplicationService.builder(eventStore, cloudEven
 
 Leave the `transactionExecutor(...)` call off to run best-effort with no transaction. The same builder and DSL exist on the reactive stack (a `ReactiveTransactionExecutor` and the reactive `SynchronousSubscriptionModel`) and on the DCB application services.
 
+Because it matches entirely in memory, `new SynchronousSubscriptionModel()` refuses a subscription filter on the event `data` payload. Pass a `DataFieldReader` to its constructor to give it one, see [Filtering on Payload Data](#filtering-on-payload-data).
+
 ### With Spring Boot
 
 Annotate a handler method with `@SynchronousSubscription` (`org.occurrent.annotation.SynchronousSubscription`). It is the synchronous counterpart of [`@Subscription`](#spring-boot-annotations) and carries only an `id` and optional `eventTypes`, none of the asynchronous-only knobs (`startAt`, `resumeBehavior`, `startupMode`), which have no meaning for at-write-time dispatch.
+
+The starter's auto-configured `SynchronousSubscriptionModel` bean is wired with a `DataFieldReader` automatically when `occurrent-common-inmemory-filter-matching-jackson` is on the classpath, so a `@SynchronousSubscription` handler filtering on `Filter.data(...)` works without extra configuration. See [Filtering on Payload Data](#filtering-on-payload-data).
 
 {% capture java %}
 @Component

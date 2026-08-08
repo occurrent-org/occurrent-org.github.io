@@ -86,7 +86,8 @@ if (document.location.pathname.includes("/documentation")) {
         "sagas-without-command-types" : "0.32.0",
         "testing-your-own-eventstore" : "0.32.0",
         "saga-push-source" : "0.32.0",
-        "deferring-subscription-startup" : "0.32.0"
+        "deferring-subscription-startup" : "0.32.0",
+        "filtering-on-payload-data" : "0.32.0"
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
