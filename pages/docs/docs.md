@@ -2545,7 +2545,7 @@ db.events.updateMany(
 )
 ```
 
-The match stage skips a value whose fractional part already has more than three digits. `$dateFromString` parses into a BSON date, which only holds milliseconds, so touching a value that already carries more precision than that would throw the extra digits away. That protects two kinds of document from the same mistake. One is an event whose original timestamp genuinely had sub-millisecond precision. The other is an event 0.32.0 already wrote in the canonical nine-digit shape, which this script must not touch a second time either.
+The match stage skips a value whose fractional part already has more than three digits. `$dateFromString` parses into a BSON date, which only holds milliseconds, so touching a value that already carries more precision than that would throw the extra digits away. That protects two kinds of document from the same mistake. One is an event whose original timestamp genuinely had sub-millisecond precision. The other is an event that 0.32.0 already wrote in the canonical nine-digit shape, which this script must not touch a second time either.
 
 For an event the script does rewrite, it pads the three digits `$dateToString` produces out to nine with zeroes, so the result has the canonical fixed width and sorts correctly against the values 0.32.0 writes for new events. Those zeroes are filler, not real digits, so a rewritten value equals the canonical shape a filter checks only when the original event had no sub-millisecond precision to lose in the first place.
 
