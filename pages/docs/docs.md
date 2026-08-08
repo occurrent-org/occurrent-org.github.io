@@ -157,6 +157,17 @@ permalink: /documentation
 * * * [Selective Events](#selective-events)
 * * * [Event Metadata](#event-metadata)
 * * * [Startup Mode](#subscription-startup-mode)
+* [Testing Your Own EventStore](#testing-your-own-eventstore)
+* * [Capabilities](#capabilities)
+* * [Refusing what you weren't built for](#refusing-what-you-werent-built-for)
+* * [Positions are monotonic, with permanent gaps](#positions-are-monotonic-with-permanent-gaps)
+* * [DCB](#dcb)
+* * [Time precision](#time-precision)
+* * [The reactive bridge](#the-reactive-bridge)
+* [Testing Your Own Subscription Model](#testing-your-own-subscription-model)
+* * [Subscription Model Conformance](#subscription-model-conformance)
+* * [Competing Consumer Strategy Conformance](#competing-consumer-strategy-conformance)
+* * [The Reactive Bridge](#subscription-reactive-bridge)
 * [Testing](#testing)
 * * [Testing a Saga](#testing-a-saga)
 * * * [Two things to know before you write the first test](#two-things-to-know-before-you-write-the-first-test)
@@ -175,6 +186,9 @@ permalink: /documentation
 * * * [Using the subscription life cycle](#testing-subscription-lifecycle)
 * * * [Stopping every subscription, then opting in](#testing-subscription-deny-by-default)
 * [Upgrading](#upgrading)
+* * [Upgrading to 0.32.0](#upgrading-to-0-32-0)
+* * [Upgrading to 0.31.0](#upgrading-to-0-31-0)
+* * [Upgrading to 0.30.0](#upgrading-to-0-30-0)
 * [Examples](#examples)
 * [Blogs](#blogs)
 * [Contact & Support](#contact--support)
@@ -3004,6 +3018,7 @@ The fixture also declares whether your storage gives back a checkpoint of the sa
 
 {% include macros/tck/subscription/blocking/maven.md %}
 
+Implementing your own event store or subscription model against Occurrent's conformance suites is covered in [Testing Your Own EventStore](#testing-your-own-eventstore) and [Testing Your Own Subscription Model](#testing-your-own-subscription-model).
 The same artifact holds the suites for a subscription model, so if you write your own you can have Occurrent check it against the same contract its five models are held to. `SubscriptionModelConformance` covers delivery and filtering, the whole life cycle, and cancelling. `IntrospectableSubscriptionModelConformance` covers `subscriptionIds()`, for a model that can list its subscriptions. `InProcessDeliveryConformance` is for a model that calls the handler on the publishing thread, the way the synchronous and push models do.
 
 You supply a `SubscriptionModelFixture`. Because a subscription model has no single way of being fed an event (a MongoDB model watches a change stream, an in-process one is handed the event directly), the fixture is what publishes:
@@ -3324,6 +3339,7 @@ occurrent.subscription.catchup-then-live.max-buffered-events=200000
 
 Set one and the other keeps its default. A zero or negative value fails startup rather than falling back.
 
+Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass, or nowhere at all if you pass `null`, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
 Live-resume stays the broker's job. The model persists no live position watermark, it only records a one-shot catch-up marker (in the `checkpointStorage` you pass, or none if you pass `null`) that the catch-up finished, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
 
 Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`.
@@ -3605,6 +3621,7 @@ If the above code is executed on multiple nodes/processes, then only *one* subsc
 Note that you can make several tweaks to the `CompetingConsumerStrategy` using the `Builder`, (`new NativeMongoLeaseCompetingConsumerStrategy.Builder()` or `new SpringMongoLeaseCompetingConsumerStrategy.Builder()`). 
 You can, for example, tweak how long the lease time should be for the lock (default is 20 seconds), the name of lease collection in MongoDB, as well as the retry strategy and other things. 
 
+Checking your own `CompetingConsumerStrategy` against Occurrent's conformance suite is covered in [Testing Your Own Subscription Model](#testing-your-own-subscription-model).
 If you write your own `CompetingConsumerStrategy`, the same `occurrent-tck-subscription-blocking` artifact used for [checkpoint storage and subscription model conformance](#blocking-subscription-checkpoint-storage) also holds `CompetingConsumerStrategyConformance`. Extend it and supply a `CompetingConsumerStrategyFixture`:
 
 ```java
@@ -3703,6 +3720,12 @@ manual.resumeSubscription("current-orders")
 manual.start()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
+
+`ReplayAwareSubscriptionModel` is the same kind of capability interface, with one method. `isCatchingUp(subscriptionId)` answers whether a subscription is still replaying history or has handed over to live delivery, which `isRunning(subscriptionId)` cannot tell you, since it is true throughout a replay. The catch-up models on both stacks implement it, including `CatchupThenPushSubscriptionModel`, and `ReplayAwareSubscriptionModel.of(subscriptionModel)` unwraps a wrapping chain the same way as above, so a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` answers too. Use it in a readiness probe when you run a catch-up model directly, and note that a saga's timers ask exactly this question, they do not fire until the replay has finished.
+
+When a subscription model refuses a call, the exception names the reason as a type. `subscribe(..)` throws `DuplicateSubscriptionIdException` for an id this model instance already has, `UnsupportedSubscriptionFilterException` for a filter shape it cannot apply, and `UnsupportedStartAtException` for a start position it cannot resolve. The life-cycle methods throw `SubscriptionAlreadyRunningException`, `SubscriptionNotRunningException` and `UnknownSubscriptionException` the same way. All six are sealed under `SubscriptionRefusedException`, and each carries what it refused, the subscription id or the start position, as a typed accessor, so a catch can act on the specific refusal instead of parsing a message. This holds on every subscription model on both stacks, so the answer no longer depends on which model you happen to be running against.
 
 A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
 
@@ -3845,6 +3868,7 @@ If you want to roll your own implementation (feel free to contribute to the proj
 
 {% include macros/subscription/reactor/api/maven.md %}
 
+Checking your own reactive subscription model against Occurrent's conformance suites, including the blocking bridge the suites run through, is covered in [Testing Your Own Subscription Model](#testing-your-own-subscription-model).
 Occurrent's own reactive subscription models, and any you write yourself, are checked against a bridge module built on top of the blocking suites rather than a second copy of them. `BlockingSubscriptionOverReactive`, in `occurrent-tck-subscription-reactor`, wraps a reactor `SubscriptionModel` (plus `IntrospectableSubscriptionModel`, and optionally `CheckpointAwareSubscriptionModel`) as a blocking one. Every blocking conformance suite (`SubscriptionModelConformance`, `IntrospectableSubscriptionModelConformance`, `CheckpointAwareSubscriptionModelConformance`) then runs against a reactor model unchanged. It is the same test-only bridge approach as the [event-store TCK](#the-reactive-bridge), for the same reasons, and belongs outside a test just as little.
 
 A bridge that blocks on a result cannot see what happens before that block, so `ReactiveSubscriptionModelConformance` covers what is left. It asserts that the model actually subscribes to the `Mono<Void>` an action returns rather than assembling and dropping it. A handler written the idiomatic way, `ce -> repository.save(ce)`, silently does nothing under a model that gets this wrong. It asserts that an action whose `Mono` errors fails through the model's own error path instead of reaching an unrelated thread or terminating the whole model. And it asserts that `Subscription#waitUntilStarted()` answers more than once, and still after an earlier, abandoned wait was disposed of.
@@ -4045,6 +4069,10 @@ Mono<Void> onMessage(byte[] body) {
 As on the blocking side, one model feeds one consumer, and a second projection registering on it fails at startup. The reasoning is in the [blocking section](#push-subscription-blocking): a broker message carries one acknowledgement, so sharing a model would let one failing consumer strand the others. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
 
 The same limits apply as on the blocking side. A push subscription only ever sees the live tail, and a broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first (see [EventStore Queries](#eventstore-queries) or the [catch-up subscription](#catch-up-subscription-blocking) pattern), then attach the push feed to keep it current.
+
+The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records that the catch-up finished so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so the projection must tolerate seeing the same event twice, and rebuild the projection if the consumer is offline longer than the broker retains the backlog. The tunables and the handler-concurrency contract are documented on the [blocking one](#push-subscription-blocking) and apply the same way here.
+
+`startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to be applied.
 
 The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records a one-shot catch-up marker so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so the projection must tolerate seeing the same event twice, and rebuild the projection if the consumer is offline longer than the broker retains the backlog. The tunables and the handler-concurrency contract are documented on the [blocking one](#push-subscription-blocking) and apply the same way here.
 
@@ -5982,6 +6010,7 @@ This is also why a `@Saga` accepts only a `PushSubscriptionModel` and not a [`Do
 
 ##### What a push saga cannot set
 
+`startAt`, `startAtGlobalPosition` and `resumeBehavior` are rejected rather than quietly ignored. A replay always starts at the beginning, and where the live feed resumes after a restart is the broker's business. Occurrent only records that the catch-up finished, so a restart skips the replay and the broker redelivers whatever the consumer had not acknowledged.
 `startAt`, `startAtGlobalPosition` and `resumeBehavior` are rejected rather than quietly ignored. A replay always starts at the beginning, and where the live feed resumes after a restart is the broker's business. Occurrent records only a one-shot marker that the catch-up finished, so a restart skips the replay and lets the broker redeliver whatever the consumer had not acknowledged.
 
 `startupMode` does apply, under the default `catchup`, because that replay is real work on the startup path. Use `StartupMode.BACKGROUND` to keep a long history from holding up startup. It is rejected together with `Catchup.NONE`, where there is no replay to wait for. Setting `catchup` on an event-store saga is rejected too, since ignoring it would leave the saga reading the whole history it was asked to skip.
@@ -6862,6 +6891,9 @@ OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.
 ```
 
 `OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
+```
+
+`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
 @Order(1)
 OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
 
@@ -7020,17 +7052,281 @@ One cost stays whatever the tests do. Every subscription still starts once while
 
 A subscription id that no longer exists throws `IllegalArgumentException` from `resumeSubscription`, so renaming one breaks the tests that named it instead of quietly leaving them asserting nothing.
 
+# Testing Your Own EventStore
+
+Occurrent's own MongoDB and in-memory `EventStore` implementations are all checked against a shared conformance suite, and if you write your own you can hold it to the same contract. `occurrent-tck-eventstore-blocking` contains the suite for a blocking store:
+
+{% include macros/tck/eventstore/blocking/maven.md %}
+
+Depend on it in test scope. The suite classes themselves live in the artifact's `src/main`, not `src/test`, because that's the only way their JUnit 5 base classes end up on a consumer's compile path at all, so they appear as ordinary compile-scope classes even though you'll only ever extend them from a test.
+
+You extend one of the concrete suites, once per capability your store supports, and hand it an `EventStoreFixture` that builds a store holding no events:
+
+```java
+class MyEventStoreTest extends StreamEventStoreConformance {
+
+    @Override
+    protected EventStoreFixture createFixture() {
+        return new MyEventStoreFixture();
+    }
+}
+```
+
+## Capabilities
+
+An `EventStore` can be built to support two independent things, described by `EventStoreCapability`: `STREAM` (stream-based reads, writes, queries, and operations) and `DCB` ([Dynamic Consistency Boundary](#dynamic-consistency-boundary) reads and appends). A store can enable one or both, and the fixture declares which by overriding `capabilities()`. That declaration is what a suite checks before it runs a single test, in a shared `@BeforeEach` on `EventStoreConformance`, the base every concrete suite extends. Extend a suite whose required capability you haven't declared, and it fails immediately with the missing capability named, rather than failing confusingly deep inside a test.
+
+Each concrete suite requires one capability, or both:
+
+| Suite | Requires |
+|:----|:-----|
+| `StreamEventStoreConformance`, `EventStoreQueriesConformance`, `EventStoreOperationsConformance`, `EventStoreTimePrecisionConformance`, `StreamPositionConformance`, `StreamPositionDisabledConformance` | `STREAM` |
+| `DcbEventStoreConformance`, `DcbConcurrencyConformance` | `DCB` |
+| `CapabilityGuardConformance`, `DcbStreamInteropConformance` | `STREAM` and `DCB` |
+
+Every accessor on `EventStoreFixture` you don't override throws `UnsupportedOperationException` the moment a suite reaches for it, so a fixture that declares `DCB` but forgets to override `dcbEventStore()` (or `appendConditionModel()`, which has no default answer at all) fails right away, naming the capability and the method it's missing, instead of failing deep inside an unrelated test.
+
+## Refusing what you weren't built for
+
+If your store only supports one capability, calling into the other has to fail loudly. Refuse with `UnsupportedOperationException` (a subclass is fine too, choosing a more specific type isn't a contract violation) whose message names the capability, the way Occurrent's own MongoDB stores word it: "DCB capability is not enabled for this MongoEventStore." Never answer with an empty result or a silent no-op. An empty DCB read from a stream-only store looks identical to a correct query for events nobody wrote, and `CapabilityGuardConformance` exists specifically to catch that shortcut.
+
+That suite needs a store built with only `STREAM` and one built with only `DCB` to check each refusal against, so it only runs once you declare both capabilities. Those two limited stores come from `eventStoreWithoutStream()` and `eventStoreWithoutDcb()` on the fixture, returning `Optional<EventStoreWithoutStream>` and `Optional<EventStoreWithoutDcb>`, records that bundle exactly the views a capability-limited store still exposes. Leave either `Optional.empty()` and the corresponding half of the suite has nothing to check.
+
+## Positions are monotonic, with permanent gaps
+
+A global sequence position, whether it's what `PositionOrderedReader` hands back or the token a DCB append returns, is positive, unique, and strictly increasing, but never asserted to be contiguous. `StreamPositionConformance` and `DcbEventStoreConformance` both derive every bound they read from a position they got back from an earlier write, never from a literal like `1` or `2`. That's deliberate. A store is allowed to reserve a block of positions before it knows whether the write will succeed, and a rejected write can leave that block permanently unclaimed (see the [architecture decision record](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0084-what-a-position-guarantees.md) on what a position guarantees). Write your own assertions the same way if you extend these suites yourself, compare positions to each other, never to what you expect the next one to literally be.
+
+A store that hands out no global position at all is a legitimate design too. Declare it by returning a value from `eventEventStoreWithoutPosition()`, and extend `StreamPositionDisabledConformance` in place of `StreamPositionConformance`. It asserts the opposite contract, that `currentPosition()` and `readInPositionOrder()` both refuse by name, and that a written event carries no position extension at all. Extending this suite while leaving `eventEventStoreWithoutPosition()` empty is treated as a test failure, not a skip, since the suite exists to prove a position-disabled store still behaves correctly rather than to be quietly opted out of.
+
+## DCB
+
+`DcbEventStoreConformance` covers reading by criteria (event types, tags, exclusions, and combinations of them), read-range options, `exists`/`count`, append results, and append-condition semantics, but stays silent on how your store actually enforces a condition under contention. `DcbConcurrencyConformance` covers that instead, by driving real concurrent writers into a barrier-synchronized collision (`ConcurrentRendezvous`, from `occurrent-tck-common`) against overlapping and disjoint consistency boundaries, and asserting exactly one winner where boundaries overlap and no false conflicts where they don't. A loser must surface `DcbAppendConditionNotFulfilledException`, not a raw duplicate-key or write-conflict error leaking up from the underlying storage.
+
+The fixture also declares `appendConditionModel()`, one of two ways a store can evaluate a token-qualified append condition: `EXACT_CRITERIA`, comparing the condition against the exact query criteria (the in-memory store's approach), or `TAG_MARKER`, comparing by tag (the approach all three MongoDB stores take, see [ADR 21](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0021-dcb-write-path-query-scoped-concurrency.md)). A few edge-case assertions in `DcbEventStoreConformance` branch on this, so declare whichever your store actually implements.
+
+If your store supports both `STREAM` and `DCB` against the same underlying storage, add `DcbStreamInteropConformance`. It checks that the two views stay logically separate over one physical store. A DCB read never sees a stream-written event, a stream write refuses an event carrying DCB tags, and both still share a single global position sequence.
+
+## Time precision
+
+`EventStoreTimePrecisionConformance` exists because the fixed-instant events every other suite writes carry no sub-second digits, so a store that silently truncates nanoseconds would otherwise pass unnoticed. Declare `timePrecision()` (`ChronoUnit.NANOS` by default) and `preservesTimeOffset()` (`true` by default) on the fixture, and the suite checks accordingly, expecting `IllegalArgumentException` from a write it knows your declared precision or offset handling can't satisfy, rather than a silent truncation.
+
+## The reactive bridge
+
+Occurrent's reactive event stores, and any you write yourself, are checked against the same blocking suites through a bridge, rather than a second copy of them described a second time in terms of `Mono` and `Flux`, the same approach used for [reactive subscription models](#reactive-subscription-checkpoint-storage). `BlockingEventStoreOverReactive`, in `occurrent-tck-eventstore-reactor`, wraps a reactive store as a blocking one, provided that store implements all six reactive interfaces its accessors need: `EventStore`, `EventStoreQueries`, `EventStoreOperations`, `ReadEventStreamWithFilter`, `PositionOrderedReader`, and `DcbEventStore`. It materializes reads eagerly, so a suite that reads, writes, then reads again always sees the snapshot it started with rather than one a concurrent write changed underneath it.
+
+```java
+class MyReactiveEventStoreFixture implements EventStoreFixture {
+
+    private final EventStore bridge = BlockingEventStoreOverReactive.of(new MyReactiveEventStore());
+
+    @Override
+    public Set<EventStoreCapability> capabilities() {
+        return Set.of(EventStoreCapability.STREAM);
+    }
+
+    @Override
+    public EventStore eventStore() {
+        return bridge;
+    }
+
+    // queries(), operations(), filteredReader() and positionOrderedReader() all return the same bridge
+}
+```
+
+`BlockingEventStoreOverReactive.of(store)` takes one object implementing all six interfaces at once. Reach for the overload taking six separate arguments instead when your capabilities live on different objects.
+
+`BlockingEventStoreOverReactive` is a published class, and it must not be used to run a reactive store behind a blocking API in production, however tempting that looks. Every wait it makes blocks the calling thread, exactly what a reactive store exists to avoid. And a bridge that blocks on a result can't see what happens before that block, so `ReactiveEventStoreConformance` covers what's left. It asserts that a write, a delete, or an update only does anything once its publisher is actually subscribed to, that a write-condition violation or a duplicate event fails through the publisher rather than being thrown when you assemble the call, that a `Mono` documented to always emit never completes empty, and that cancelling a read early (`.take(1)`) leaves the store still readable afterwards. It takes a smaller `ReactiveEventStoreFixture`, just `eventStore()`, `queries()`, `operations()`, `positionOrderedReader()`, and `close()`, with no capability declaration, since these are properties of how the publisher is built rather than of what the store supports:
+
+```java
+class MyReactiveEventStoreConformanceTest extends ReactiveEventStoreConformance {
+
+    @Override
+    protected ReactiveEventStoreFixture createFixture() {
+        return new MyReactiveEventStoreFixture();
+    }
+}
+```
+
+A single dependency covers both suites, since `occurrent-tck-eventstore-reactor` depends on `occurrent-tck-eventstore-blocking` itself:
+
+{% include macros/tck/eventstore/reactor/maven.md %}
+
+# Testing Your Own Subscription Model {#testing-your-own-subscription-model}
+
+## Subscription Model Conformance {#subscription-model-conformance}
+
+The `occurrent-tck-subscription-blocking` artifact also holds the suites for a subscription model, so if you write your own you can have Occurrent check it against the same contract its five models are held to. `SubscriptionModelConformance` covers delivery and filtering, the whole life cycle, and cancelling. `IntrospectableSubscriptionModelConformance` covers `subscriptionIds()`, for a model that can list its subscriptions. `InProcessDeliveryConformance` is for a model that calls the handler on the publishing thread, the way the synchronous and push models do.
+
+You supply a `SubscriptionModelFixture`. Because a subscription model has no single way of being fed an event (a MongoDB model watches a change stream, an in-process one is handed the event directly), the fixture is what publishes:
+
+```java
+class MySubscriptionModelTest extends SubscriptionModelConformance {
+
+    @Override
+    protected SubscriptionModelFixture createFixture() {
+        return new MySubscriptionModelFixture();
+    }
+}
+```
+
+The fixture also declares five things the API cannot be asked:
+
+- whether a paused subscription's events are held for it or dropped
+- whether a throwing handler is retried or the exception reaches whoever published the event
+- whether the model accepts more than one subscription at a time
+- which of the four ways of saying where a subscription starts it accepts
+- whether a subscription with a brand-new id first receives the whole history
+
+Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
+
+You also say how long the suites are allowed to wait for something to arrive. `deliveryTimeout()` defaults to ten seconds, which is what every model shipping with Occurrent runs on, so a model that has to reach a broker before it can deliver widens it rather than having no way to pass:
+
+```java
+class MySubscriptionModelFixture implements SubscriptionModelFixture {
+
+    @Override
+    public Duration deliveryTimeout() {
+        return Duration.ofSeconds(30);
+    }
+
+    // the rest of the fixture
+}
+```
+
+Nothing caps that number, but raising it has a consequence worth knowing. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
+
+```java
+@Timeout(400)
+class MySubscriptionModelTest extends SubscriptionModelConformance {
+    // ...
+}
+```
+
+One thing to know if you pause a subscription and resume it later. Both MongoDB models carry on from the position they had read to, so an event written while the subscription was paused still arrives once it resumes. The price is that the same event can arrive twice, because a model that resumes from the last position it stored, rather than from just after it, hands that event over a second time. A handler has to cope with that. `stop()` on the model pauses every subscription it holds, so a `stop()` followed by a `start()` is the same situation.
+
+The TCK carries the same version number as the rest of Occurrent, and a minor release may add suites and tighten what the existing ones assert. Upgrading can therefore turn a green build red. That is the suite doing what it is for, and there are two things to do about it, fix the implementation or stay on the Occurrent version you were on. Holding the TCK back on its own is not a third option, because each artifact is compiled against the runtime API of its own version.
+
+Your fixture keeps compiling either way. A new fixture member always arrives with a `default`, and where a default value would be a lie it arrives as a `default` that throws and names itself, so a minor upgrade never breaks compilation. Removing a member or a whole suite waits for a major release.
+
+There is no way to turn off one group of tests while you fix something. Declining a contract means not extending its suite, which anyone reading your test sources can see, and nothing inside the suites can skip.
+
+## Competing Consumer Strategy Conformance {#competing-consumer-strategy-conformance}
+
+If you write your own `CompetingConsumerStrategy`, the same `occurrent-tck-subscription-blocking` artifact used for [checkpoint storage and subscription model conformance](#blocking-subscription-checkpoint-storage) also holds `CompetingConsumerStrategyConformance`. Extend it and supply a `CompetingConsumerStrategyFixture`:
+
+```java
+class MyCompetingConsumerStrategyTest extends CompetingConsumerStrategyConformance {
+
+    @Override
+    protected CompetingConsumerStrategyFixture createFixture() {
+        return new MyCompetingConsumerStrategyFixture();
+    }
+}
+```
+
+Two things the fixture supplies that nothing on the interface can. First, a `newCompetingConsumerStrategy()` factory that hands back a rival strategy contending over the *same* storage as the one under test. The suite needs a rival to register against, and in places a third instance that outlives a rival it deliberately shuts down. Constructing several strategies over one shared storage is therefore an explicit constraint on your implementation, since nothing on `CompetingConsumerStrategy` lets one instance reach another. Second, `timeToConverge()`, the longest the suite waits for the strategy's own coordination to settle who holds a lock when nothing told it directly. This is a bound rather than a delay. The suite stops waiting the moment the condition holds, so a generous value costs a passing run nothing and is only paid in full by a run that was going to fail anyway.
+
+The suite takes no position on *how* a strategy coordinates. It asserts one property, which a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
+
+It also asserts the contract both ways it can be consumed. A strategy that reports lock changes only through its listener, or that only answers correctly when `hasLock(subscriptionId, subscriberId)` is asked directly, fails half of what the suite checks, since real consumers use one or the other.
+
+## The Reactive Bridge {#subscription-reactive-bridge}
+
+Occurrent's own reactive subscription models, and any you write yourself, are checked against a bridge module built on top of the blocking suites rather than a second copy of them. `BlockingSubscriptionOverReactive`, in `occurrent-tck-subscription-reactor`, wraps a reactor `SubscriptionModel` (plus `IntrospectableSubscriptionModel`, and optionally `CheckpointAwareSubscriptionModel`) as a blocking one. Every blocking conformance suite (`SubscriptionModelConformance`, `IntrospectableSubscriptionModelConformance`, `CheckpointAwareSubscriptionModelConformance`) then runs against a reactor model unchanged. The same warning applies as for the [event-store bridge](#the-reactive-bridge), and it must not run outside a test for the same reason.
+
+A bridge that blocks on a result cannot see what happens before that block, so `ReactiveSubscriptionModelConformance` covers what is left. It asserts that the model actually subscribes to the `Mono<Void>` an action returns rather than assembling and dropping it. A handler written the idiomatic way, `ce -> repository.save(ce)`, silently does nothing under a model that gets this wrong. It asserts that an action whose `Mono` errors fails through the model's own error path instead of reaching an unrelated thread or terminating the whole model. And it asserts that `Subscription#waitUntilStarted()` answers more than once, and still after an earlier, abandoned wait was disposed of.
+
+To wire an out-of-tree reactor model into both suites, supply a blocking fixture that wraps it in the bridge, and a reactive-only fixture that hands it over directly:
+
+```java
+class MySubscriptionModelFixture implements SubscriptionModelFixture {
+
+    private final MySubscriptionModel model = new MySubscriptionModel();
+
+    @Override
+    public SubscriptionModel subscriptionModel() {
+        return BlockingSubscriptionOverReactive.of(model);
+    }
+
+    @Override
+    public void publish(List<CloudEvent> events) {
+        // however the model is fed, e.g. a change stream write or an in-process dispatch
+    }
+
+    @Override
+    public boolean deliversEventsPublishedWhilePaused() {
+        return false;
+    }
+
+    @Override
+    public boolean retriesAFailingHandler() {
+        return false;
+    }
+}
+
+class MySubscriptionModelConformanceTest extends SubscriptionModelConformance {
+
+    @Override
+    protected SubscriptionModelFixture createFixture() {
+        return new MySubscriptionModelFixture();
+    }
+}
+
+class MyReactiveSubscriptionModelFixture implements ReactiveSubscriptionModelFixture {
+
+    private final MySubscriptionModel model = new MySubscriptionModel();
+
+    @Override
+    public SubscriptionModel subscriptionModel() {
+        return model;
+    }
+
+    @Override
+    public void publish(List<CloudEvent> events) {
+        // the same feed as above, handed to the model directly rather than through the blocking bridge
+    }
+}
+
+class MyReactiveSubscriptionModelConformanceTest extends ReactiveSubscriptionModelConformance {
+
+    @Override
+    protected ReactiveSubscriptionModelFixture createFixture() {
+        return new MyReactiveSubscriptionModelFixture();
+    }
+}
+```
+
+`BlockingSubscriptionOverReactive.of(...)` needs a model that implements both the reactor `SubscriptionModel` and `IntrospectableSubscriptionModel`. Every reactive model shipping with Occurrent is both, and an out-of-tree one is likely to be too. Reach for `BlockingSubscriptionOverReactive.ofCheckpointAware(...)` instead when the model also implements `CheckpointAwareSubscriptionModel`, to additionally run `CheckpointAwareSubscriptionModelConformance` against it.
+
+A single dependency covers both suites, since `occurrent-tck-subscription-reactor` depends on `occurrent-tck-subscription-blocking` itself:
+
+{% include macros/tck/subscription/reactor/maven.md %}
+
+`ReactiveSubscriptionModelFixture.deliveryTimeout()` plays the same role as the blocking fixture's, the budget one delivery wait gets, but its default is twenty seconds rather than ten, because the suites run the reactive model through the blocking bridge and the extra hop deserves slack. Override it on your fixture when your infrastructure needs more.
+
+The reactor `IntrospectableSubscriptionModel`, in `occurrent-subscription-api-reactor`, is not only a bridge precondition. It gives the reactive stack the same `subscriptionIds()` the [blocking stack has](#blocking-subscriptions), every id a model holds, running or paused, and `ReactorMongoSubscriptionModel`, `ReactorDurableSubscriptionModel`, `CatchupThenPushSubscriptionModel` and the reactive push and synchronous models all implement it, so a test or an admin endpoint can name the ids that exist rather than repeating the one it was given.
+
 # Upgrading
 
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
 
-For the {{site.occurrentversion}} release, add the `rewrite-maven-plugin`, point it at the umbrella recipe `org.occurrent.UpgradeToOccurrent_0_30`, and run it. The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.30.0.md) has the full plugin setup, the steps the recipe cannot safely make for you (mostly `Stream` to `List` lambda bodies and a few Kotlin call sites), and the runtime defaults to read before you deploy.
+## Upgrading to 0.32.0 {#upgrading-to-0-32-0}
 
-0.30.0 also renamed the module artifact coordinates (every artifact now has an `occurrent-` prefix). See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.30.0.md) for the full old to new mapping.
+The `org.occurrent.UpgradeToOccurrent_0_32` recipe rewrites the renames below for you. Run it before making any of the changes by hand.
 
-If you are upgrading an existing MongoDB deployment, note that stream `position` is on by default for new stores, but the events already in your collection have none. The store detects this at startup and turns position off for itself rather than triggering a surprise index build on your existing data. To backfill `position` onto those old events and use position-based catch-up against them, follow the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) and its [tool](https://github.com/johanhaleby/occurrent/blob/main/eventstore/migration/position-backfill/README.md).
+A few behavior changes affect already-running code, with no compiler error to point at them. Starting a subscription model that is already started is now accepted everywhere, where `CompetingConsumerSubscriptionModel` used to throw. A catch-up failure on the blocking push model's replay now surfaces from the handle that started it instead of from `subscribe(...)`. A synchronous subscription keeps handling an event even when another subscription's handler throws on the same dispatch, instead of the first exception ending delivery for every subscription. A push subscription model or `DomainEventFeed` now refuses a second projection or saga registered against it, because sharing one broker acknowledgement between two consumers let one failing consumer hold up the other. With more than one delivering thread, a live push handler can be invoked concurrently and has to tolerate that, though a single-threaded caller sees no change. A saga now refuses an event it cannot recognize as a redelivery of, and `@Saga` defaults to a background startup so a replaying saga no longer blocks application startup.
 
-0.31.0 also unifies the annotation `ResumeBehavior` and `StartupMode` enums into shared top-level `org.occurrent.annotation.ResumeBehavior` and `org.occurrent.annotation.StartupMode` types, instead of separate nested enums on `@Subscription`, `@StreamSubscription` and `@DcbSubscription`. This is a breaking rename for 0.30.0 callers, and the `org.occurrent.UpgradeToOccurrent_0_31` recipe rewrites it for you. `@Projection` and `@Snapshot` are new in 0.31.0 and use the shared types from the start, so there is nothing to rewrite for them. The same 0.31.0 release also moves `EventMetadata` from `org.occurrent.dsl.subscription` to `org.occurrent.cloudevents`, and the same recipe updates those imports as well. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.31.0.md) for the details.
+A few types and packages also moved. The reactor `SubscriptionModel`, the interface whose `subscribe` returns a `Flux<CloudEvent>`, is renamed to `FluxSubscriptionModel`, freeing `SubscriptionModel` to mean the same lifecycle-managed subscription on both stacks. `NativeMongoLeaseCompetingConsumerStrategy` moved out of the Spring package it never belonged in and into the native-driver one. Several refusals that used to throw a general `IllegalArgumentException` or `IllegalStateException` now throw a dedicated type instead, such as `DuplicateSubscriptionIdException` or `SagaRedeliveryDetectionException`, though catching the old general types still compiles. MongoDB's `RFC_3339_STRING` time representation now writes one canonical shape so events from different writers compare correctly with `Filter.time(..)`. And `occurrent-command-composition` no longer leaks the in-memory event store onto your compile classpath, a side effect of a missing test scope on one of its dependencies.
+
+See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) for the full details and the steps the recipe cannot make for you.
+
+## Upgrading to 0.31.0 {#upgrading-to-0-31-0}
+
+The `org.occurrent.UpgradeToOccurrent_0_31` recipe rewrites the annotation `ResumeBehavior` and `StartupMode` enums into the shared top-level `org.occurrent.annotation.ResumeBehavior` and `org.occurrent.annotation.StartupMode` types, replacing the separate nested enums on `@Subscription`, `@StreamSubscription` and `@DcbSubscription`. It also updates the `EventMetadata` import, which moved from `org.occurrent.dsl.subscription` to `org.occurrent.cloudevents`. `@Projection` and `@Snapshot` are new in 0.31.0 and use the shared types from the start, so there is nothing to rewrite for them. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.31.0.md) for the details.
+
+## Upgrading to 0.30.0 {#upgrading-to-0-30-0}
+
+The `org.occurrent.UpgradeToOccurrent_0_30` recipe handles the mechanical renames, the package moves, and the safe part of the `Stream` to `List` write-side migration, plus the module artifact coordinate renames (every artifact now has an `occurrent-` prefix). If you are upgrading an existing MongoDB deployment, note that stream `position` is on by default for new stores, but the events already in your collection have none. The store detects this at startup and turns position off for itself rather than triggering a surprise index build on your existing data. Follow the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) and its [tool](https://github.com/johanhaleby/occurrent/blob/main/eventstore/migration/position-backfill/README.md) to backfill `position` onto those old events and use position-based catch-up against them. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.30.0.md) for the full plugin setup and old-to-new artifact mapping.
 
 # Examples
 
