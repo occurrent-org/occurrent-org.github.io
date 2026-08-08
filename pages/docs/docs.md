@@ -1416,23 +1416,20 @@ As of `0.20.0` the `ApplicationService` supports filtered reads and side effects
 * synchronous post-write side effects
 * both at the same time
 
-A Java example:
+An example:
 
 {% capture java %}
 WriteResult result = applicationService.execute(
         gameId,
         ExecuteOptions.<DomainEvent>options()
-                .filter(ExecuteFilter.type(GameWasStarted.class))
-                .sideEffect(newEvents -> newEvents.forEach(this::publish)),
+                .filter(ExecuteFilter.type(GameWasStarted.class)),
         events -> WordGuessingGame.guessWord(events, guess)
 );
 {% endcapture %}
 {% capture kotlin %}
 val result = applicationService.execute(
     gameId,
-    options().filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
-        { event: GameWasStarted -> publish(event) }
-    )
+    filter(ExecuteFilters.type<GameWasStarted>())
 ) { events ->
     WordGuessingGame.guessWord(events, guess)
 }
@@ -1440,6 +1437,8 @@ val result = applicationService.execute(
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 The typed filter resolves the event class to its cloud event type using the application service's configured type mapper, so it keeps working even if you map event types to custom names. You can still pass a raw `StreamReadFilter` to `filter(...)` when you want to filter on an explicit type string or on other attributes.
+
+You can also run synchronous side effects after a successful write through the same options object, covered in [Synchronous Side Effects](#synchronous-side-effects).
 
 For EventStore support details, filtering semantics, and direct EventStore examples, see [Stream Filtering](#eventstore-stream-filtering).
 
