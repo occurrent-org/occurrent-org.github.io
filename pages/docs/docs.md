@@ -3511,8 +3511,8 @@ Since 0.32.0, `CompetingConsumerSubscriptionModel` refuses two calls it used to 
 Pausing a subscription whose consumer is still waiting for the lock now works too, instead of being silently ignored. Before this fix, `pauseSubscription(id)` on a waiting consumer logged the call and returned as if it had succeeded, `isPaused(id)` kept answering `false`, and the consumer started anyway the moment the lock arrived. Pausing a waiting consumer now unregisters it from the strategy, so the lock never arrives while it's paused, and `isPaused(id)` answers `true` for it right away. `resumeSubscription(id)` registers it again as a lock candidate.
 
 ```java
-subscriptionModel.pauseSubscription("orders"); // works even before this node has won the lock
-subscriptionModel.isPaused("orders"); // true, whether or not the lock ever arrived
+competingConsumerSubscriptionModel.pauseSubscription("orders"); // works even before this node has won the lock
+competingConsumerSubscriptionModel.isPaused("orders"); // true, whether or not the lock ever arrived
 ```
 
 `isRunning(id)` doesn't change. It still answers `false` for a consumer that hasn't won the lock, paused or not, which is what a saga's timer poller relies on to stay off a node that isn't delivering.
