@@ -1381,7 +1381,7 @@ This is now the preferred API for these concerns.
 applicationService.execute(
         gameId,
         ExecuteOptions.<DomainEvent>options()
-                .filter(StreamReadFilter.type(GameWasStarted.class.getName()))
+                .filter(ExecuteFilter.type(GameWasStarted.class))
                 .sideEffect(newEvents -> newEvents.forEach(this::publish)),
         events -> WordGuessingGame.guessWord(events, guess)
 );
@@ -1389,7 +1389,7 @@ applicationService.execute(
 {% capture kotlin %}
 applicationService.execute(
     gameId,
-    filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+    filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
         { event: GameWasStarted -> publish(event) }
     )
 ) { events ->
@@ -1422,7 +1422,7 @@ A Java example:
 WriteResult result = applicationService.execute(
         gameId,
         ExecuteOptions.<DomainEvent>options()
-                .filter(StreamReadFilter.type(GameWasStarted.class.getName()))
+                .filter(ExecuteFilter.type(GameWasStarted.class))
                 .sideEffect(newEvents -> newEvents.forEach(this::publish)),
         events -> WordGuessingGame.guessWord(events, guess)
 );
@@ -1430,7 +1430,7 @@ WriteResult result = applicationService.execute(
 {% capture kotlin %}
 val result = applicationService.execute(
     gameId,
-    options().filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+    options().filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
         { event: GameWasStarted -> publish(event) }
     )
 ) { events ->
@@ -1438,6 +1438,8 @@ val result = applicationService.execute(
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The typed filter resolves the event class to its cloud event type using the application service's configured type mapper, so it keeps working even if you map event types to custom names. You can still pass a raw `StreamReadFilter` to `filter(...)` when you want to filter on an explicit type string or on other attributes.
 
 For EventStore support details, filtering semantics, and direct EventStore examples, see [Stream Filtering](#eventstore-stream-filtering).
 
@@ -1451,7 +1453,7 @@ If you are documenting or writing new synchronous side-effect code, prefer `Exec
 
 A side effect is not the same as a [synchronous subscription](#synchronous-subscriptions). A side effect is a closure you pass at each call site, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does. Reach for a synchronous subscription when the reaction should be declared once and decoupled from the call, or should commit atomically with the write through a `TransactionExecutor`.
 
-### Java Examples
+### Examples
 
 {% capture java %}
 applicationService.execute(
@@ -1477,9 +1479,9 @@ applicationService.execute(
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-### Kotlin Examples
+### Kotlin Helper Functions
 
-For Kotlin, the domain function is a `(List<DomainEvent>) -> List<DomainEvent>` lambda passed straight to `execute`. You can start from either `options()` or the top-level helper functions:
+For Kotlin, the domain function is a `(List<DomainEvent>) -> List<DomainEvent>` lambda passed straight to `execute`. You can start from either `options()` or the top-level helper functions below:
 
 ```kotlin
 applicationService.execute(
