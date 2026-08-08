@@ -685,14 +685,14 @@ val eventStream = filteredEventStore?.read(
 A subscription is a way to get notified when new events are written to an event store. Typically, a subscription will be used to create views from events (such as projections, sagas, snapshots etc) or
 create integration events that can be forwarded to another piece of infrastructure such as a message bus. There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
 represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` interface (in the `org.occurrent:occurrent-subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
-represented by the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface (in the `org.occurrent:occurrent-subscription-api-reactor` module). 
+represented by the `org.occurrent.subscription.api.reactor.FluxSubscriptionModel` interface (in the `org.occurrent:occurrent-subscription-api-reactor` module). 
 
 
 The blocking API is callback based, which is fine if you're working with individual events (you can of course use a simple function that aggregates events into batches yourself).
-If you want to work with streams of data, the reactor `SubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
+If you want to work with streams of data, the reactor `FluxSubscriptionModel` is probably a better option since it's using the [Flux](https://projectreactor.io/docs/core/release/api/reactor/core/publisher/Flux.html)
 publisher from [project reactor](https://projectreactor.io/).
 
-Note that it's fine to use reactive `SubscriptionModel`, even though the event store is implemented using the blocking api, and vice versa.
+Note that it's fine to use reactive `FluxSubscriptionModel`, even though the event store is implemented using the blocking api, and vice versa.
 If the datastore allows it, you can also run subscriptions in a different process than the processes reading and writing to the event store.   
 
 To get started with subscriptions refer to [Using Subscriptions](#using-subscriptions).
@@ -3175,8 +3175,8 @@ of data. This is arguably a bit more complex for the typical Java developer, and
 if high throughput, low CPU and memory-consumption is not critical. 
  
 To create a reactive subscription you first need to choose which "subscription model" to use. Then you create a subscription instance from this subscription model. 
-All reactive subscriptions implements the `org.occurrent.subscription.api.reactor.SubscriptionModel` interface which uses 
-components from [project reactor](https://projectreactor.io). This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
+All reactive subscriptions implement the `org.occurrent.subscription.api.reactor.FluxSubscriptionModel` interface which uses 
+components from [project reactor](https://projectreactor.io). This interface provides means to subscribe to new events from an `EventStore` as they are written. For example:
 
 {% capture java %}
 subscriptionModel.subscribe("mySubscriptionId").doOnNext(System.out::println).subscribe();
@@ -3193,7 +3193,7 @@ This will simply print each cloud event written to the event store to the consol
 Note that the signature of `subscribe` is defined like this:
 
 ```java
-public interface SubscriptionModel {
+public interface FluxSubscriptionModel {
 
     /**
      * Stream events from the event store as they arrive. Use this method if want to start streaming from a specific position.
@@ -3209,8 +3209,8 @@ public interface SubscriptionModel {
 
 It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes 
 the checkpoint (if the datastore doesn't maintain the checkpoint on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this checkpoint 
-for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `SubscriptionModel` implementation that also implement the 
-`org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface. The `CheckpointAwareSubscriptionModel`  is an example of a `SubscriptionModel` that returns a wrapper around 
+for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `FluxSubscriptionModel` implementation that also implements the 
+`org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface. The `CheckpointAwareSubscriptionModel` interface extends `FluxSubscriptionModel` and returns a wrapper around 
 `io.cloudevents.CloudEvent` called `org.occurrent.subscription.CheckpointAwareCloudEvent` which adds an additional method, `Checkpoint getCheckpoint()`, that you can use to get  
 the current checkpoint. You can check if a cloud event contains a checkpoint by calling `CheckpointAwareCloudEvent.hasCheckpoint(cloudEvent)`
 and then get the checkpoint by using `CheckpointAwareCloudEvent.getCheckpointOrThrowIAE(cloudEvent)`. 
@@ -5360,7 +5360,7 @@ to find which configuration properties that are supported.
 
 ## Reactive Spring Boot Starter
 
-If your application is reactive (Spring WebFlux with reactive MongoDB), use the reactive starter (`org.occurrent:occurrent-mongodb-reactive-spring-boot-starter`) and annotate your application with `@EnableOccurrentReactive` (package `org.occurrent.springboot.mongo.reactor`) instead of `@EnableOccurrent`. It auto-configures the reactive counterparts of everything the blocking starter sets up: a reactive `EventStore`, a reactive transaction manager, a reactive application service (both the stream and the DCB application service), the query DSLs, a reactive `SubscriptionModel` backed by `CheckpointStorage`, and the reactive `StreamSubscriptions` and `DcbSubscriptions` DSLs. The blocking and reactive starters are mutually exclusive, so pick the one that matches your stack.
+If your application is reactive (Spring WebFlux with reactive MongoDB), use the reactive starter (`org.occurrent:occurrent-mongodb-reactive-spring-boot-starter`) and annotate your application with `@EnableOccurrentReactive` (package `org.occurrent.springboot.mongo.reactor`) instead of `@EnableOccurrent`. It auto-configures the reactive counterparts of everything the blocking starter sets up: a reactive `EventStore`, a reactive transaction manager, a reactive application service (both the stream and the DCB application service), the query DSLs, a reactive subscription model backed by `CheckpointStorage`, and the reactive `StreamSubscriptions` and `DcbSubscriptions` DSLs. The blocking and reactive starters are mutually exclusive, so pick the one that matches your stack.
 
 ## Spring Boot Annotations
 
@@ -5851,34 +5851,33 @@ Two more worth knowing. `waitUntilStarted()` closes the race between subscribing
 
 Pausing the subscriptions a test does not want works until somebody adds a subscription to the application. The new one then runs in every test that never mentioned it, and a test that used to pass can start failing for a reason nowhere in its own code.
 
-Turning the default around removes that whole class of problem. Stop the entire subscription model before each test, and let each test name what it needs:
+Turning the default around removes that whole class of problem. Stop the entire subscription model before each test, and let each test name what it needs. `occurrent-testing-junit-jupiter-blocking` is the JUnit 5 extension that does it:
 
-```java
-class StopSubscriptionsExtension implements BeforeEachCallback, AfterEachCallback {
-
-    private final SubscriptionModel subscriptionModel;
-
-    StopSubscriptionsExtension(SubscriptionModel subscriptionModel) {
-        this.subscriptionModel = subscriptionModel;
-    }
-
-    @Override
-    public void beforeEach(ExtensionContext context) {
-        subscriptionModel.stop();
-    }
-
-    @Override
-    public void afterEach(ExtensionContext context) {
-        subscriptionModel.stop();
-    }
-
-    void start(String subscriptionId) {
-        subscriptionModel.resumeSubscription(subscriptionId).waitUntilStarted();
-    }
-}
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-junit-jupiter-blocking</artifactId>
+    <version>{{site.occurrentversion}}</version>
+    <scope>test</scope>
+</dependency>
 ```
 
-`stop()` leaves every running subscription paused rather than cancelled, which is what lets `resumeSubscription` bring them back one at a time. Keeping `waitUntilStarted()` inside the helper means no test can forget it.
+It depends on JUnit and the blocking subscription API and nothing else, so it works without Spring and without a container:
+
+{% capture java %}
+@RegisterExtension
+static final OccurrentSubscriptionsExtension subscriptions =
+        OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
+{% endcapture %}
+{% capture kotlin %}
+@JvmField
+@RegisterExtension
+val subscriptions = subscriptionModel.stoppedByDefault()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+<div class="comment">Kotlin needs the "@JvmField", or JUnit never picks the field up and every subscription stays live.</div>
+
+`stop()` leaves every running subscription paused rather than cancelled, which is what lets the extension bring them back one at a time. `start(id)` waits until the subscription is really listening before it returns, so no test can forget that and race its own write.
 
 A test now opens with its own dependency list:
 
@@ -5900,20 +5899,75 @@ If you also flush the database between tests, stop the subscriptions first, and 
 ```java
 @RegisterExtension
 @Order(1)
-StopSubscriptionsExtension subscriptions = new StopSubscriptionsExtension(subscriptionModel);
+OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
 
 @RegisterExtension
 @Order(2)
 FlushDatabaseExtension flush = new FlushDatabaseExtension(mongoTemplate);
 ```
 
+### Naming several subscriptions, or all of them {#testing-subscription-starting-several}
+
+Two shortcuts for the cases where naming one id per test is the wrong shape.
+
+`alwaysStart` names subscriptions that every test in the class needs, resumed in `beforeEach` right after the stop, so individual tests do not repeat themselves:
+
+```java
+OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection");
+```
+
+`startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
+
+```java
+subscriptions.startAll();
+```
+
+Both rest on the model being able to list its subscriptions, through `IntrospectableSubscriptionModel`. The in-memory, Spring MongoDB and native MongoDB models implement it, and so does the competing consumer model, which also reports a consumer still waiting for its lock. Name an id that does not exist and the failure tells you the ids that do, instead of only repeating the one you got wrong.
+
+### Wiring it into a Spring Boot test {#testing-subscription-spring-boot}
+
+`occurrent-testing-spring-boot` wires the same extension into the application context, so a test autowires it rather than constructing it:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-spring-boot</artifactId>
+    <version>{{site.occurrentversion}}</version>
+    <scope>test</scope>
+</dependency>
+```
+
+{% capture java %}
+@SpringBootTest
+@EnableOccurrentTesting
+class OrderProjectionTest {
+
+    @Autowired
+    @RegisterExtension
+    OccurrentSubscriptionsExtension subscriptions;
+}
+{% endcapture %}
+{% capture kotlin %}
+@SpringBootTest
+@EnableOccurrentTesting
+class OrderProjectionTest {
+
+    @Autowired
+    @RegisterExtension
+    lateinit var subscriptions: OccurrentSubscriptionsExtension
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The extension bean is all `@EnableOccurrentTesting` adds. Your event store and subscription model are left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
+
+Your application registers its subscriptions at startup through its annotations, so a test never registers them itself. Outside Spring, register them once in `@BeforeAll`. Doing it in `@BeforeEach` fails on the second test with `Subscription <id> is already defined`, and would not work anyway, because JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped.
+
 While flushing, delete the documents instead of dropping the collections or the database. Dropping them invalidates a live MongoDB change stream, and the subscriptions you resume afterwards then receive nothing.
 
 Flush the checkpoint collection along with the events, `subscriptions` unless you changed `occurrent.subscription.collection`. Resuming a subscription continues from its stored checkpoint, so a subscription left behind by an earlier test picks up whatever that test wrote while it was stopped, and the second test then sees events it never wrote. Clearing the events alone does not prevent this, because the checkpoint is what decides where the resume starts.
 
 The in-memory subscription model does not have this problem. Events written while a subscription is stopped are dropped rather than queued, so there is nothing to catch up on when a later test starts it again.
-
-Register your subscriptions once, not per test. A second `subscribe` call with an id that already exists fails with `Subscription <id> is already defined`, and the ids stay registered because stopping a subscription is not the same as cancelling it. Under Spring the application registers them at startup and a test never touches that. Without Spring, register them in `@BeforeAll`. Registering in `@BeforeEach` fails on the second test, and it would not work anyway: JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped and runs in every test.
 
 Then keep at least one test with everything running. Deny-by-default means nothing checks two subscriptions reacting to the same event unless you ask it to.
 
