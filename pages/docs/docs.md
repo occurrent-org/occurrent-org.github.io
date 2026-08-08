@@ -5123,6 +5123,24 @@ This matters most with `occurrent.subscription.mode=manual`, where the registrat
 
 Register the projection on a synchronous subscription model and build the application service with it, and the read model updates inside the same transaction as the write. The projected state is then visible the moment `execute(...)` returns, with no eventual-consistency lag. This trades a little write latency for read-your-writes consistency, so reach for it when a command needs to see its own effect immediately.
 
+### Read-your-writes for an asynchronous projection {#projection-read-your-writes-async}
+
+Synchronous mode is one way to get read-your-writes. When the projection stays asynchronous but a client still needs to see its own write, wrap the `MaterializedView` with `Projections.recordingAppliedPosition(view, store, projectionId)` instead. The wrapped view records the event's global position after every write, so the recorded position never runs ahead of the state it describes, and a client that holds a position, one an `EventStore`'s `currentPosition()` returns right after the write, say, waits for the projection to reach it:
+
+{% capture java %}
+AppliedPositionStore store = AppliedPositionStore.inMemory();
+MaterializedView<CourseEvent> enrolledStudentsView = Projections.recordingAppliedPosition(
+        Projections.materializedView(enrolledStudents, repository), store, "enrolled-students");
+
+eventStore.write(courseId, newEvents);
+long position = eventStore.currentPosition();
+
+boolean caughtUp = store.waitUntilApplied("enrolled-students", position, Duration.ofSeconds(5));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java %}
+
+`waitUntilApplied` polls the stored position rather than blocking on a notification, and returns `false` on timeout instead of throwing. The polls back off, 25 ms doubling up to 250 ms, so a projection that is already caught up still answers on the first poll while one that is behind is not asked over and over by every waiting caller. Pass your own `Backoff` to the four-argument overload to change that for a single call, or set `occurrent.projection.applied-position.initial`, `.max` and `.multiplier` to change it for the whole application. `Backoff.none()` is rejected, since a wait with no delay between polls is a busy loop on the store. A position belonging to an event type outside the projection's selector is never reached, so a wait for such a position simply times out rather than failing, since the projection genuinely has nothing to show for an event it never handles. The recorded position is one per projection rather than one per keyed instance, so it answers "has this projection applied everything up to P" for the whole projection, which is what a client holding a position from a multi-stream command needs. An event with no global position, from a store that has position writing turned off, or a live feed the application fed with no metadata, makes the wrapped view throw rather than record nothing. See [ADR 111](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0111-a-projection-records-the-position-it-has-applied.md) for the full contract, including why the position is per projection and not per key.
+
 ### Reactor
 
 Everything above has a reactor counterpart in `org.occurrent.dsl.projection.reactor` with the same shape. The push callbacks return `Mono<Void>`, the on-demand `project` returns `Mono<S>`, and you supply either a reactive update function for a reactive store or a blocking view store that the runner bridges onto a bounded-elastic scheduler.
@@ -5198,6 +5216,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the projection from a `PushSubscriptionModel` or `DomainEventFeed` bean instead, see [Push Subscription](#push-subscription-blocking). |
 | `subscriptionModel` / `subscriptionModelName` | Select the feed bean by type or name when `source = PUSH`. |
 | `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
+| `recordAppliedPosition` | `false` by default. `true` wraps the resolved store with [`Projections.recordingAppliedPosition`](#projection-read-your-writes-async), so a client can wait for this projection to catch up to a position it already holds. Needs an `AppliedPositionStore` bean, resolved the same way `store` resolves a read-model store bean; the Mongo starters contribute a zero-config default. Mutually exclusive with `mode = SYNCHRONOUS`. |
 
 `startAt`, `startAtPosition`, and `resumeBehavior` are mutually exclusive with `mode = SYNCHRONOUS`. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
 
@@ -5243,6 +5262,21 @@ You choose where the projection is stored. `store` selects the bean by type, `Ma
 #### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
 
 `mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
+
+#### Read-your-writes (recordAppliedPosition) {#projection-annotation-applied-position}
+
+`recordAppliedPosition = true` keeps the projection asynchronous but lets a client wait for it to catch up to a position it already holds, [as described above](#projection-read-your-writes-async). The registrar wraps whichever store `store`/`storeName` resolves with `Projections.recordingAppliedPosition(...)`, keyed by the projection's `id`, and resolves an `AppliedPositionStore` bean for it, the unique bean of that type, or the Mongo starter's zero-config default. Declaring one yourself, `AppliedPositionStore.inMemory()` for a single instance with nothing else to persist it in, works the same way:
+
+{% capture java %}
+@Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING, recordAppliedPosition = true)
+org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledStudents() { ... }
+{% endcapture %}
+{% include macros/docsSnippet.html java=java %}
+
+```java
+long position = eventStore.currentPosition();
+boolean caughtUp = appliedPositionStore.waitUntilApplied("enrolled-students", position, Duration.ofSeconds(5));
+```
 
 #### Without the starter {#projection-annotation-without-starter}
 
