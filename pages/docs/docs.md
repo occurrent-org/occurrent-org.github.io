@@ -5125,17 +5125,17 @@ Register the projection on a synchronous subscription model and build the applic
 
 ### Read-your-writes for an asynchronous projection {#projection-read-your-writes-async}
 
-Synchronous mode is one way to get read-your-writes. When the projection stays asynchronous but a client still needs to see its own write, wrap the `MaterializedView` with `Projections.recordingAppliedPosition(view, storage, projectionId)` instead. The wrapped view records the event's global position after every write, so the recorded position never runs ahead of the state it describes, and a client that holds a position, one an `EventStore`'s `currentPosition()` returns right after the write, say, waits for the projection to reach it:
+Synchronous mode is one way to get read-your-writes. When the projection stays asynchronous but a client still needs to see its own write, wrap the `MaterializedView` with `Projections.recordingAppliedPosition(view, store, projectionId)` instead. The wrapped view records the event's global position after every write, so the recorded position never runs ahead of the state it describes, and a client that holds a position, one an `EventStore`'s `currentPosition()` returns right after the write, say, waits for the projection to reach it:
 
 {% capture java %}
-AppliedPositionStorage storage = AppliedPositionStorage.inMemory();
+AppliedPositionStore store = AppliedPositionStore.inMemory();
 MaterializedView<CourseEvent> enrolledStudentsView = Projections.recordingAppliedPosition(
-        Projections.materializedView(enrolledStudents, repository), storage, "enrolled-students");
+        Projections.materializedView(enrolledStudents, repository), store, "enrolled-students");
 
 eventStore.write(courseId, newEvents);
 long position = eventStore.currentPosition();
 
-boolean caughtUp = storage.waitUntilApplied("enrolled-students", position, Duration.ofSeconds(5));
+boolean caughtUp = store.waitUntilApplied("enrolled-students", position, Duration.ofSeconds(5));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java %}
 
@@ -5216,7 +5216,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the projection from a `PushSubscriptionModel` or `DomainEventFeed` bean instead, see [Push Subscription](#push-subscription-blocking). |
 | `subscriptionModel` / `subscriptionModelName` | Select the feed bean by type or name when `source = PUSH`. |
 | `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
-| `recordAppliedPosition` | `false` by default. `true` wraps the resolved store with [`Projections.recordingAppliedPosition`](#projection-read-your-writes-async), so a client can wait for this projection to catch up to a position it already holds. Needs an `AppliedPositionStorage` bean, resolved the same way `store` resolves a read-model store bean; the Mongo starters contribute a zero-config default. Mutually exclusive with `mode = SYNCHRONOUS`. |
+| `recordAppliedPosition` | `false` by default. `true` wraps the resolved store with [`Projections.recordingAppliedPosition`](#projection-read-your-writes-async), so a client can wait for this projection to catch up to a position it already holds. Needs an `AppliedPositionStore` bean, resolved the same way `store` resolves a read-model store bean; the Mongo starters contribute a zero-config default. Mutually exclusive with `mode = SYNCHRONOUS`. |
 
 `startAt`, `startAtPosition`, and `resumeBehavior` are mutually exclusive with `mode = SYNCHRONOUS`. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
 
@@ -5265,7 +5265,7 @@ You choose where the projection is stored. `store` selects the bean by type, `Ma
 
 #### Read-your-writes (recordAppliedPosition) {#projection-annotation-applied-position}
 
-`recordAppliedPosition = true` keeps the projection asynchronous but lets a client wait for it to catch up to a position it already holds, [as described above](#projection-read-your-writes-async). The registrar wraps whichever store `store`/`storeName` resolves with `Projections.recordingAppliedPosition(...)`, keyed by the projection's `id`, and resolves an `AppliedPositionStorage` bean for it, the unique bean of that type, or the Mongo starter's zero-config default. Declaring one yourself, `AppliedPositionStorage.inMemory()` for a single instance with nothing else to persist it in, works the same way:
+`recordAppliedPosition = true` keeps the projection asynchronous but lets a client wait for it to catch up to a position it already holds, [as described above](#projection-read-your-writes-async). The registrar wraps whichever store `store`/`storeName` resolves with `Projections.recordingAppliedPosition(...)`, keyed by the projection's `id`, and resolves an `AppliedPositionStore` bean for it, the unique bean of that type, or the Mongo starter's zero-config default. Declaring one yourself, `AppliedPositionStore.inMemory()` for a single instance with nothing else to persist it in, works the same way:
 
 {% capture java %}
 @Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING, recordAppliedPosition = true)
@@ -5275,7 +5275,7 @@ org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledSt
 
 ```java
 long position = eventStore.currentPosition();
-boolean caughtUp = appliedPositionStorage.waitUntilApplied("enrolled-students", position, Duration.ofSeconds(5));
+boolean caughtUp = appliedPositionStore.waitUntilApplied("enrolled-students", position, Duration.ofSeconds(5));
 ```
 
 #### Without the starter {#projection-annotation-without-starter}
