@@ -167,6 +167,8 @@ permalink: /documentation
 * * * [With Spring Boot and Testcontainers](#testing-spring-boot)
 * * * [Using the subscription life cycle](#testing-subscription-lifecycle)
 * * * [Stopping every subscription, then opting in](#testing-subscription-deny-by-default)
+* * * [Naming several subscriptions, or all of them](#testing-subscription-starting-several)
+* * * [Wiring it into a Spring Boot test](#testing-subscription-spring-boot)
 * [Testing Your Own EventStore](#testing-your-own-eventstore)
 * * [Capabilities](#capabilities)
 * * [Refusing what you weren't built for](#refusing-what-you-werent-built-for)
@@ -3676,10 +3678,6 @@ You don't have to drive this by hand in your tests though. The `occurrent-testin
 
 A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
 
-A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
-
-A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
-
 `ReplayAwareSubscriptionModel` is the same kind of capability interface, with one method. `isCatchingUp(subscriptionId)` answers whether a subscription is still replaying history or has handed over to live delivery, which `isRunning(subscriptionId)` cannot tell you, since it is true throughout a replay. The catch-up models on both stacks implement it, including `CatchupThenPushSubscriptionModel`, and `ReplayAwareSubscriptionModel.of(subscriptionModel)` unwraps a wrapping chain the same way as above, so a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` answers too. Use it in a readiness probe when you run a catch-up model directly, and note that a saga's timers ask exactly this question, they do not fire until the replay has finished.
 
 When a subscription model refuses a call, the exception names the reason as a type. `subscribe(..)` throws `DuplicateSubscriptionIdException` for an id this model instance already has, `UnsupportedSubscriptionFilterException` for a filter shape it cannot apply, and `UnsupportedStartAtException` for a start position it cannot resolve. The life-cycle methods throw `SubscriptionAlreadyRunningException`, `SubscriptionNotRunningException` and `UnknownSubscriptionException` the same way. All six are sealed under `SubscriptionRefusedException`, and each carries what it refused, the subscription id or the start position, as a typed accessor, so a catch can act on the specific refusal instead of parsing a message. This holds on every subscription model on both stacks, so the answer no longer depends on which model you happen to be running against.
@@ -3713,18 +3711,6 @@ manual.resumeSubscription("current-orders")
 manual.start()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
-
-`ReplayAwareSubscriptionModel` is the same kind of capability interface, with one method. `isCatchingUp(subscriptionId)` answers whether a subscription is still replaying history or has handed over to live delivery, which `isRunning(subscriptionId)` cannot tell you, since it is true throughout a replay. The catch-up models on both stacks implement it, including `CatchupThenPushSubscriptionModel`, and `ReplayAwareSubscriptionModel.of(subscriptionModel)` unwraps a wrapping chain the same way as above, so a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` answers too. Use it in a readiness probe when you run a catch-up model directly, and note that a saga's timers ask exactly this question, they do not fire until the replay has finished.
-
-When a subscription model refuses a call, the exception names the reason as a type. `subscribe(..)` throws `DuplicateSubscriptionIdException` for an id this model instance already has, `UnsupportedSubscriptionFilterException` for a filter shape it cannot apply, and `UnsupportedStartAtException` for a start position it cannot resolve. The life-cycle methods throw `SubscriptionAlreadyRunningException`, `SubscriptionNotRunningException` and `UnknownSubscriptionException` the same way. All six are sealed under `SubscriptionRefusedException`, and each carries what it refused, the subscription id or the start position, as a typed accessor, so a catch can act on the specific refusal instead of parsing a message. This holds on every subscription model on both stacks, so the answer no longer depends on which model you happen to be running against.
-
-A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
-
-`ReplayAwareSubscriptionModel` is the same kind of capability interface, with one method. `isCatchingUp(subscriptionId)` answers whether a subscription is still replaying history or has handed over to live delivery, which `isRunning(subscriptionId)` cannot tell you, since it is true throughout a replay. The catch-up models on both stacks implement it, including `CatchupThenPushSubscriptionModel`, and `ReplayAwareSubscriptionModel.of(subscriptionModel)` unwraps a wrapping chain the same way as above, so a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` answers too. Use it in a readiness probe when you run a catch-up model directly, and note that a saga's timers ask exactly this question, they do not fire until the replay has finished.
-
-When a subscription model refuses a call, the exception names the reason as a type. `subscribe(..)` throws `DuplicateSubscriptionIdException` for an id this model instance already has, `UnsupportedSubscriptionFilterException` for a filter shape it cannot apply, and `UnsupportedStartAtException` for a start position it cannot resolve. The life-cycle methods throw `SubscriptionAlreadyRunningException`, `SubscriptionNotRunningException` and `UnknownSubscriptionException` the same way. All six are sealed under `SubscriptionRefusedException`, and each carries what it refused, the subscription id or the start position, as a typed accessor, so a catch can act on the specific refusal instead of parsing a message. This holds on every subscription model on both stacks, so the answer no longer depends on which model you happen to be running against.
 
 ## Reactive Subscriptions
 
@@ -6867,92 +6853,22 @@ Stopping in `afterEach` matters as much as in `beforeEach`. Spring caches the te
 
 If you also empty the database between tests, hand that to the same extension rather than registering a second one. It runs after every subscription is stopped and before any is resumed, which is the only order that works, and `clearingCheckpoints` takes care of the checkpoints:
 
-```java
+{% capture java %}
 @RegisterExtension
 OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel)
         .clearingStateWith(OccurrentMongoFlush.everyCollectionIn(mongoTemplate.getDb()))
         .clearingCheckpoints(checkpointStorage);
-```
-
-`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
-```
-
-`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
-```
-
-`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
-```
-
-`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
-```
-
-`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
-@Order(1)
-OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
-
-@RegisterExtension
-@Order(2)
-FlushDatabaseExtension flush = new FlushDatabaseExtension(mongoTemplate);
-```
-
-### Naming several subscriptions, or all of them {#testing-subscription-starting-several}
-
-Two shortcuts for the cases where naming one id per test is the wrong shape.
-
-`alwaysStart` names subscriptions that every test in the class needs, resumed in `beforeEach` right after the stop, so individual tests do not repeat themselves:
-
-```java
-OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection");
-```
-
-`startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
-
-```java
-subscriptions.startAll();
-```
-
-Both rest on the model being able to list its subscriptions, through `IntrospectableSubscriptionModel`. The in-memory, Spring MongoDB and native MongoDB models implement it, and so does the competing consumer model, which also reports a consumer still waiting for its lock. Name an id that does not exist and the failure tells you the ids that do, instead of only repeating the one you got wrong.
-
-### Wiring it into a Spring Boot test {#testing-subscription-spring-boot}
-
-`occurrent-testing-spring-boot` wires the same extension into the application context, so a test autowires it rather than constructing it:
-
-```xml
-<dependency>
-    <groupId>org.occurrent</groupId>
-    <artifactId>occurrent-testing-spring-boot</artifactId>
-    <version>{{site.occurrentversion}}</version>
-    <scope>test</scope>
-</dependency>
-```
-
-{% capture java %}
-@SpringBootTest
-@EnableOccurrentTesting
-class OrderProjectionTest {
-
-    @Autowired
-    @RegisterExtension
-    OccurrentSubscriptionsExtension subscriptions;
-}
 {% endcapture %}
 {% capture kotlin %}
-@SpringBootTest
-@EnableOccurrentTesting
-class OrderProjectionTest {
-
-    @Autowired
-    @RegisterExtension
-    lateinit var subscriptions: OccurrentSubscriptionsExtension
-}
+@JvmField
+@RegisterExtension
+val subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel)
+    .clearingStateWith(OccurrentMongoFlush.everyCollectionIn(mongoTemplate.db))
+    .clearingCheckpoints(checkpointStorage)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The extension bean is all `@EnableOccurrentTesting` adds. Your event store and subscription model are left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
-
-Your application registers its subscriptions at startup through its annotations, so a test never registers them itself. Outside Spring, register them once in `@BeforeAll`. Doing it in `@BeforeEach` fails on the second test with `Subscription <id> is already defined`, and would not work anyway, because JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped.
-
-While flushing, delete the documents instead of dropping the collections or the database. Dropping them invalidates a live MongoDB change stream, and the subscriptions you resume afterwards then receive nothing.
+`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
 
 ```xml
 <dependency>
@@ -6971,10 +6887,13 @@ Two shortcuts for the cases where naming one id per test is the wrong shape.
 
 `alwaysStart` names subscriptions that every test in the class needs, resumed in `beforeEach` right after the stop, so individual tests do not repeat themselves:
 
-```java
+{% capture java %}
 OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection");
+{% endcapture %}
+{% capture kotlin %}
 OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection")
-```
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 `startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
 
@@ -7022,6 +6941,32 @@ class OrderProjectionTest {
 The extension bean is all `@EnableOccurrentTesting` adds. Your event store and subscription model are left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
 
 `@EnableOccurrentTesting` wires whichever leaf you added as a test dependency, and both if you added both, which matters for an application using both stacks at once: it gets two extension beans, one per stack, autowired by type. Either way, the extension stops every subscription model in the context rather than one, since some applications have more than one that needs stopping, a durable model and a `SynchronousSubscriptionModel` side by side is the ordinary case on the reactive stack. Outside Spring the same rule applies to `stoppedByDefault`, pass every model it needs to stop: `stoppedByDefault(durableModel, synchronousModel)`.
+
+To add the database flush and the checkpoint clearing here too, configure the injected extension in an `@Autowired` method. The extension bean is prototype scoped, so do not take it as a method parameter, that would configure a different instance than the one the test registers. Configure the field instead, Spring injects fields before methods:
+
+{% capture java %}
+@Autowired
+@RegisterExtension
+OccurrentSubscriptionsExtension subscriptions;
+
+@Autowired
+void addStateClearing(MongoTemplate mongoTemplate, CheckpointStorage checkpointStorage) {
+    subscriptions.clearingStateWith(OccurrentMongoFlush.everyCollectionIn(mongoTemplate.getDb()))
+            .clearingCheckpoints(checkpointStorage);
+}
+{% endcapture %}
+{% capture kotlin %}
+@Autowired
+@RegisterExtension
+lateinit var subscriptions: OccurrentSubscriptionsExtension
+
+@Autowired
+fun addStateClearing(mongoTemplate: MongoTemplate, checkpointStorage: CheckpointStorage) {
+    subscriptions.clearingStateWith(OccurrentMongoFlush.everyCollectionIn(mongoTemplate.db))
+        .clearingCheckpoints(checkpointStorage)
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 Your application registers its subscriptions at startup through its annotations, so a test never registers them itself. Outside Spring, register them once in `@BeforeAll`. Doing it in `@BeforeEach` fails on the second test with `Subscription <id> is already defined`, and would not work anyway, because JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped.
 
