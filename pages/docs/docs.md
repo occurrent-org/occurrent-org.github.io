@@ -157,6 +157,23 @@ permalink: /documentation
 * * * [Selective Events](#selective-events)
 * * * [Event Metadata](#event-metadata)
 * * * [Startup Mode](#subscription-startup-mode)
+* [Testing](#testing)
+* * [Testing a Saga](#testing-a-saga)
+* * * [Two things to know before you write the first test](#two-things-to-know-before-you-write-the-first-test)
+* * * [Firing a timeout without waiting](#testing-saga-timeouts)
+* * * [A join, one event at a time](#testing-saga-joins)
+* * * [Transitions and loops](#testing-saga-transitions)
+* * * [Through the executor, once](#testing-saga-end-to-end)
+* * [Testing a Projection](#testing-a-projection)
+* * * [Into a store](#testing-projection-materialized)
+* * * [Read after write, for a synchronous projection](#testing-projection-synchronous)
+* * * [Fed from a broker, without a broker](#testing-projection-push)
+* * * [The push and pull agreement](#testing-projection-agreement)
+* * [Integration Testing](#integration-testing)
+* * * [Without a framework](#testing-in-memory)
+* * * [With Spring Boot and Testcontainers](#testing-spring-boot)
+* * * [Using the subscription life cycle](#testing-subscription-lifecycle)
+* * * [Stopping every subscription, then opting in](#testing-subscription-deny-by-default)
 * [Upgrading](#upgrading)
 * [Examples](#examples)
 * [Blogs](#blogs)
@@ -1494,7 +1511,7 @@ This is now the preferred API for these concerns.
 applicationService.execute(
         gameId,
         ExecuteOptions.<DomainEvent>options()
-                .filter(StreamReadFilter.type(GameWasStarted.class.getName()))
+                .filter(ExecuteFilter.type(GameWasStarted.class))
                 .sideEffect(newEvents -> newEvents.forEach(this::publish)),
         events -> WordGuessingGame.guessWord(events, guess)
 );
@@ -1502,7 +1519,7 @@ applicationService.execute(
 {% capture kotlin %}
 applicationService.execute(
     gameId,
-    filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
+    filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
         { event: GameWasStarted -> publish(event) }
     )
 ) { events ->
@@ -1529,28 +1546,29 @@ As of `0.20.0` the `ApplicationService` supports filtered reads and side effects
 * synchronous post-write side effects
 * both at the same time
 
-A Java example:
+An example:
 
 {% capture java %}
 WriteResult result = applicationService.execute(
         gameId,
         ExecuteOptions.<DomainEvent>options()
-                .filter(StreamReadFilter.type(GameWasStarted.class.getName()))
-                .sideEffect(newEvents -> newEvents.forEach(this::publish)),
+                .filter(ExecuteFilter.type(GameWasStarted.class)),
         events -> WordGuessingGame.guessWord(events, guess)
 );
 {% endcapture %}
 {% capture kotlin %}
 val result = applicationService.execute(
     gameId,
-    options().filter(StreamReadFilter.type(GameWasStarted::class.java.name)).sideEffect(
-        { event: GameWasStarted -> publish(event) }
-    )
+    filter(ExecuteFilters.type<GameWasStarted>())
 ) { events ->
     WordGuessingGame.guessWord(events, guess)
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The typed filter resolves the event class to its cloud event type using the application service's configured type mapper, so it keeps working even if you map event types to custom names. You can still pass a raw `StreamReadFilter` to `filter(...)` when you want to filter on an explicit type string or on other attributes.
+
+You can also run synchronous side effects after a successful write through the same options object, covered in [Synchronous Side Effects](#synchronous-side-effects).
 
 For EventStore support details, filtering semantics, and direct EventStore examples, see [Stream Filtering](#eventstore-stream-filtering).
 
@@ -1564,7 +1582,7 @@ If you are documenting or writing new synchronous side-effect code, prefer `Exec
 
 A side effect is not the same as a [synchronous subscription](#synchronous-subscriptions). A side effect is a closure you pass at each call site, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does. Reach for a synchronous subscription when the reaction should be declared once and decoupled from the call, or should commit atomically with the write through a `TransactionExecutor`.
 
-### Java Examples
+### Examples
 
 {% capture java %}
 applicationService.execute(
@@ -1590,9 +1608,9 @@ applicationService.execute(
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-### Kotlin Examples
+### Kotlin Helper Functions
 
-For Kotlin, the domain function is a `(List<DomainEvent>) -> List<DomainEvent>` lambda passed straight to `execute`. You can start from either `options()` or the top-level helper functions:
+For Kotlin, the domain function is a `(List<DomainEvent>) -> List<DomainEvent>` lambda passed straight to `execute`. You can start from either `options()` or the top-level helper functions below:
 
 ```kotlin
 applicationService.execute(
@@ -1802,6 +1820,7 @@ A saga or a policy needs to issue commands without knowing how those commands ge
 There is a second, optional method, `void dispatchAll(List<C> commands)`. A saga hands one reaction's whole command list to it in a single call, and the default implementation just dispatches them one at a time, which is what a plain lambda dispatcher gets.
 
 That matters because a saga dispatches before it saves its own state. If the third of three commands fails, the first two have already been dispatched, the state is not saved, and the redelivery runs the reaction again from the top. There is no per-command progress marker, so a command that keeps failing re-issues the ones before it every time. For a receiver backed by an `ApplicationService` that costs nothing, because it re-reads the stream and the target rejects a command it has already applied. For something external and not idempotent, such as sending an email or charging a card, that repeated prefix is the thing to watch.
+That matters because a saga dispatches before it saves its own state. If the third of three commands fails, the first two have already been dispatched, the state is not saved, and the redelivery runs the reaction again from the top. There is no per-command progress marker, so a command that keeps failing re-issues the ones before it every time. For a receiver backed by an `ApplicationService` that costs nothing, because it re-reads the stream and the target rejects a command it has already applied. For something external and not idempotent, such as sending an email or charging a card, that repeated prefix is the thing to watch out for.
 
 Every dispatcher from [`CommandDispatchers`](#convenience-factories) already overrides `dispatchAll`, so you get the batching without asking for it. A run of consecutive commands aimed at the same stream, or at the same DCB boundary, becomes one append, and a failure anywhere in that run leaves none of it written. The one exception is `DcbCommandDispatchers.invocation(...)`, because two invocations sharing a boundary can each carry their own `TagGenerator` and a single append can only be tagged one way. Write your own override when the target is something Occurrent knows nothing about and you can write a batch together, for example inside one transaction.
 
@@ -1824,12 +1843,12 @@ Wiring a `CommandDispatcher` by hand means picking an `ApplicationService`, a `D
 For a stream-keyed decider, `org.occurrent.command.CommandDispatchers.decider(deciderApplicationService, decider, streamIdResolver)` builds a `CommandDispatcher<C>` that resolves the stream id, then executes the decider through the application service. It lives in `occurrent-command-dispatch`, the same module as `CommandDispatcher` itself, but using it also pulls in `occurrent-decider`, a light, optional dependency you'd otherwise add yourself.
 
 {% capture java %}
-public record PlaceOrder(@TargetStreamId String orderId, String productId, int quantity) {
+public record PlaceOrder(String orderId, String productId, int quantity) {
 }
 
 Decider<PlaceOrder, OrderState, OrderEvent> placeOrderDecider = ...;
 DeciderApplicationService<OrderEvent> applicationService = ...;
-StreamIdResolver<PlaceOrder> streamIdResolver = new AnnotationStreamIdResolver<>();
+StreamIdResolver<PlaceOrder> streamIdResolver = PlaceOrder::orderId;
 
 CommandDispatcher<PlaceOrder> dispatcher = CommandDispatchers.decider(applicationService, placeOrderDecider, streamIdResolver);
 
@@ -1837,20 +1856,55 @@ dispatcher.dispatch(new PlaceOrder(orderId, productId, quantity));
 {% endcapture %}
 {% capture kotlin %}
 data class PlaceOrder(
-    @get:TargetStreamId val orderId: String,
+    val orderId: String,
     val productId: String,
     val quantity: Int
 )
 
 val placeOrderDecider: Decider<PlaceOrder, OrderState, OrderEvent> = ...
 val applicationService: DeciderApplicationService<OrderEvent> = ...
-val streamIdResolver: StreamIdResolver<PlaceOrder> = AnnotationStreamIdResolver()
+val streamIdResolver = StreamIdResolver<PlaceOrder> { command -> command.orderId }
 
 val dispatcher: CommandDispatcher<PlaceOrder> = CommandDispatchers.decider(applicationService, placeOrderDecider, streamIdResolver)
 
 dispatcher.dispatch(PlaceOrder(orderId, productId, quantity))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A dispatcher usually handles a whole family of related commands, not just one, so the resolver typically branches over the command type instead of reading a single field:
+
+{% capture java %}
+public sealed interface OrderCommand permits PlaceOrder, ShipOrder {
+}
+
+public record PlaceOrder(String orderId, String productId, int quantity) implements OrderCommand {
+}
+
+public record ShipOrder(String orderId) implements OrderCommand {
+}
+
+StreamIdResolver<OrderCommand> streamIdResolver = command -> switch (command) {
+    case PlaceOrder c -> c.orderId();
+    case ShipOrder c -> c.orderId();
+};
+{% endcapture %}
+{% capture kotlin %}
+sealed interface OrderCommand
+
+data class PlaceOrder(val orderId: String, val productId: String, val quantity: Int) : OrderCommand
+
+data class ShipOrder(val orderId: String) : OrderCommand
+
+val streamIdResolver = StreamIdResolver<OrderCommand> { command ->
+    when (command) {
+        is PlaceOrder -> command.orderId
+        is ShipOrder -> command.orderId
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+When every command in the family already has a field that holds the stream id, you can skip writing the resolver and derive it from an annotation instead, as shown in [Deriving the Stream Id From Annotations](#deriving-the-stream-id-from-annotations).
 
 For a [`DcbDecider`](#coupling-a-decider-to-a-boundary), `org.occurrent.command.dcb.DcbCommandDispatchers.decider(dcbDeciderApplicationService, dcbDecider)` takes only those two arguments. A `DcbDecider` already carries its own `DcbCriteria` and `TagGenerator`, so there's no stream id to resolve. This factory lives in its own module, `occurrent-command-dispatch-dcb`, kept separate from `occurrent-command-dispatch` so that dispatching commands to plain, stream-keyed deciders doesn't drag in the DCB and CloudEvent stack.
 
@@ -3325,6 +3379,10 @@ Add `catchup = Catchup.NONE` when the feed carries events that are not in this a
 
 Like every other subscription model, a `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. There's no feed behind it holding events back, so an event handed to `accept(..)` while the model is stopped, or a subscription is paused, never reaches that handler, and resuming does not replay it. That's dropped, not deferred. `shutdown()` is one-way. A model that's been shut down stays that way. This is the same contract [`SynchronousSubscriptionModel` runs on](#synchronous-subscription-life-cycle), and it's what lets a test [stop every subscription model in the application and opt back in per test](#testing-subscription-deny-by-default), a `PushSubscriptionModel` included.
 
+##### Life-cycle {#push-subscription-blocking-life-cycle}
+
+Like every other subscription model, a `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. There's no feed behind it holding events back, so an event handed to `accept(..)` while the model is stopped, or a subscription is paused, never reaches that handler, and resuming does not replay it. That's dropped, not deferred. `shutdown()` is one-way. A model that's been shut down stays that way. This is the same contract [`SynchronousSubscriptionModel` runs on](#synchronous-subscription-life-cycle), and it's what lets a test [stop every subscription model in the application and opt back in per test](#testing-subscription-deny-by-default), a `PushSubscriptionModel` included.
+
 ##### Feeding domain events instead of CloudEvents
 
 If your listener already hands you domain events (for example a broker message converter deserializes them for you), pushing them through the CloudEvent model means `domainEvent` to `CloudEvent` and back, a full serialize and deserialize per event. Feed the projection in domain space instead and the live path does no conversion at all.
@@ -3351,6 +3409,18 @@ CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
 feed.catchUp();
 ```
 
+When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still buffers every `accept(...)` until told to stop, so events pile up until the buffer's cap throws. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
+
+```java
+feed.goLive();
+```
+
+It skips the replay and starts delivering the buffered and future live events directly, writing no completion marker, so a later real `catchUp()` on the same feed still replays the full history rather than treating it as already done.
+
+Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and runs its catch-up. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
+`stopCatchUp()` asks a running replay to stop, which is what a shutdown wants: without it an application closing mid-replay would wait for the whole history to finish folding. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
+
+Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, folds domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor.
 Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. Push source is one attribute: the starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed can drive several projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor.
 `stopCatchUp()` asks a running replay to stop, which is what a shutdown wants: without it an application closing mid-replay would wait for the whole history to finish folding. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
 When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still buffers every `accept(...)` until told to stop, so events pile up until the buffer's cap throws. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
@@ -3570,7 +3640,13 @@ Note the difference between cancelling and pausing a subscription. Cancelling a 
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
 
 Many of the methods in the `SubscriptionLifeCycle` are good to have when you write integration tests.
-It's often useful to e.g. write events to the event store _without_ triggering all subscriptions listening to the events. The life cycle methods allows you to selectively start/stop individual subscriptions so that you can (integration) test them in isolation.
+It's often useful to e.g. write events to the event store _without_ triggering all subscriptions listening to the events. The life cycle methods allow you to selectively start/stop individual subscriptions so that you can (integration) test them in isolation.
+
+You don't have to drive this by hand in your tests though. The `occurrent-testing-junit-jupiter-blocking` extension stops every subscription model by default and lets each test opt subscriptions back in, as described in [Integration Testing](#integration-testing), including [using the subscription life cycle](#testing-subscription-lifecycle) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default).
+
+A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
+
+A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
 
 A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
 
@@ -3889,6 +3965,8 @@ that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionMod
 
 What differs is whether that captured position is written to the `CheckpointStorage` right away. When the wrapped model is itself a named reactor `SubscriptionModel`, which is what [delegation](#durable-subscription-reactive-delegation) below means and what every shipped composition does, the position is stored at registration, so a subscription that's registered and then never started still leaves a checkpoint behind, and resumes from there rather than from the beginning if it's ever started later. When the wrapped model offers only the cold `Flux` primitive, nothing is stored until the subscription actually starts, so one that never starts leaves nothing behind. Either way, no event written while a registered subscription waits to be started is lost, mirroring the guarantee the blocking stack's manual-start wrapper gives.
 
+The `occurrent-testing-junit-jupiter-reactor` extension covers the reactive stack the same way. See [Integration Testing](#integration-testing) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default) for how it stops a reactive subscription by default and lets a test opt it back in.
+
 ##### Delegating to a Named Wrapped Model {#durable-subscription-reactive-delegation}
 
 When the model `ReactorDurableSubscriptionModel` wraps is itself a named reactor `SubscriptionModel`, rather than only the cold `Flux` primitive, the durable model hands the subscription straight to it instead of driving that primitive itself. Everything the wrapped model already does for a named subscription applies from there. An unsupported `SubscriptionFilter` is refused when you call `subscribe(..)`, instead of surfacing later once the change stream has already started, and a failing action is retried with the wrapped model's own configured backoff instead of ending the subscription. There's no separate retry configuration on `ReactorDurableSubscriptionModel` for this path. The wrapped model's is the only one that applies.
@@ -3944,6 +4022,7 @@ The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the sam
 
 Like its [blocking twin](#push-subscription-blocking-life-cycle), a reactive `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down, with the same *dropped, not deferred* contract for whatever is fed to it while stopped or paused, and the same one-way `shutdown()`.
 
+`startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to fold.
 ## Synchronous Subscriptions
 
 The subscriptions described so far are asynchronous. They run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
@@ -5416,7 +5495,7 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-When a reaction issues a command only in some cases and none in the others, say so with `nothing`. It means there is nothing to issue, not that nothing happens: the branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
+In the Kotlin DSL, when a reaction issues a command only in some cases and none in the others, say so with `nothing`. In Java a reaction returns the list of commands to issue, so returning an empty list issues nothing. It means there is nothing to issue, not that nothing happens: the branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
 
 ```kotlin
 // Issue only when the payment was partial, otherwise nothing
@@ -5431,7 +5510,16 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-A `when` works the same way, as long as every branch ends on a command or on `nothing`. Issuing no command is a real outcome worth stating rather than an omission, which is what the word is for.
+Kotlin's `when` expression works the same way as the `if` above. Every branch must end on a command or on `nothing`. Issuing no command is a real outcome worth stating rather than an omission, which is what the word is for.
+
+```kotlin
+on<PaymentReserved>(then = end) {
+    when {
+        it.partial -> issue(ReserveRemainder(it.orderId))
+        else -> nothing
+    }
+}
+```
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
@@ -5845,6 +5933,7 @@ A saga that has run before picks up where it left off either way, because its pe
 A saga recognizes a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. A broker delivers at least once, so an event carrying none of those would make the saga react a second time and issue its commands again on every redelivery. The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs. The event goes unacknowledged, so the problem lands at the listener that dropped the metadata, which is where it can be fixed. Occurrent's own stored events always carry the extensions, so this is about what your listener forwards, not about the event store.
 
 If your feed genuinely carries none of them, another application's broker for example, and every command the saga issues is safe to receive more than once, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
+A saga recognizes a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. A broker delivers at least once, so an event that arrives without any of those is reacted to a second time and its commands are issued again. Occurrent's own stored events always carry them, so this is about what your listener forwards, not about the event store. The saga logs a warning the first time it sees an event without them, naming the saga so you can find it.
 
 This is also why a `@Saga` accepts only a `PushSubscriptionModel` and not a [`DomainEventFeed`](#feeding-domain-events-instead-of-cloudevents), which a `@Projection` does accept. A domain event feed carries no stream metadata, so a saga bound to one would lose its redelivery protection without saying anything.
 
@@ -5952,7 +6041,7 @@ timeout(after = Duration.ofMinutes(30), then = end) { received ->
 
 Both branches issue the same forward-moving `CancelOrder` compensation for the `ReservePayment` issued when the step started, whichever failure mode gets there first.
 
-The one thing to watch is idempotency, and it follows directly from the [delivery contract](#saga-delivery-contract). Command dispatch is at-least-once, so a compensating or external command can arrive twice. An `ApplicationService`-backed target handles that for free, because it replays the stream and the target's own invariants reject the duplicate. A raw third-party call does not. When a command triggers a non-idempotent external effect such as an email, a payment capture, or a partner request, give it a stable id derived from the saga and the triggering event, and dedupe at that boundary. The deferred document-local outbox described in [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md) would make dispatch exactly-once and remove this caveat, but it is not built yet.
+The one thing to watch out for is idempotency, and it follows directly from the [delivery contract](#saga-delivery-contract). Command dispatch is at-least-once, so a compensating or external command can arrive twice. An `ApplicationService`-backed target handles that for free, because it replays the stream and the target's own invariants reject the duplicate. A raw third-party call does not. When a command triggers a non-idempotent external effect such as an email, a payment capture, or a partner request, give it a stable id derived from the saga and the triggering event, and dedupe at that boundary. The deferred document-local outbox described in [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md) would make dispatch exactly-once and remove this caveat, but it is not built yet.
 
 ### Observing Saga Instances {#observing-saga-instances}
 
@@ -6621,7 +6710,7 @@ class ProjectionAnnotationTest {
 }
 ```
 
-One trap. `MongoDBContainer.getReplicaSetUrl()` with no argument always targets the database named `test`, and you cannot append a suffix to the returned URL because MongoDB rejects dots in database names, so the name silently stays `test` and tests collide. When a test needs its own database, ask for it by name with `getReplicaSetUrl(String)`.
+One trap to watch out for is that `MongoDBContainer.getReplicaSetUrl()` with no argument always targets the database named `test`. You cannot append a suffix to the returned URL either, because MongoDB rejects dots in database names, so the name silently stays `test` and tests collide. When a test needs its own database, ask for it by name with `getReplicaSetUrl(String)`.
 
 ### Using the subscription life cycle {#testing-subscription-lifecycle}
 
@@ -6672,6 +6761,7 @@ It depends on JUnit and the blocking subscription API and nothing else, so it wo
 ```
 
 The two differences are both about waiting. Resuming a subscription and clearing a checkpoint each returns a `Mono` on the reactive stack rather than blocking, and the extension blocks on them for you, so your test still calls `start(id)` and moves straight on to writing an event.
+It depends on JUnit and the blocking subscription API and nothing else, so it works without Spring and without a container:
 
 {% capture java %}
 @RegisterExtension
@@ -6713,6 +6803,78 @@ OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.
 ```
 
 `OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
+```
+
+`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
+```
+
+`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
+@Order(1)
+OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
+
+@RegisterExtension
+@Order(2)
+FlushDatabaseExtension flush = new FlushDatabaseExtension(mongoTemplate);
+```
+
+### Naming several subscriptions, or all of them {#testing-subscription-starting-several}
+
+Two shortcuts for the cases where naming one id per test is the wrong shape.
+
+`alwaysStart` names subscriptions that every test in the class needs, resumed in `beforeEach` right after the stop, so individual tests do not repeat themselves:
+
+```java
+OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection");
+```
+
+`startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
+
+```java
+subscriptions.startAll();
+```
+
+Both rest on the model being able to list its subscriptions, through `IntrospectableSubscriptionModel`. The in-memory, Spring MongoDB and native MongoDB models implement it, and so does the competing consumer model, which also reports a consumer still waiting for its lock. Name an id that does not exist and the failure tells you the ids that do, instead of only repeating the one you got wrong.
+
+### Wiring it into a Spring Boot test {#testing-subscription-spring-boot}
+
+`occurrent-testing-spring-boot` wires the same extension into the application context, so a test autowires it rather than constructing it:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-spring-boot</artifactId>
+    <version>{{site.occurrentversion}}</version>
+    <scope>test</scope>
+</dependency>
+```
+
+{% capture java %}
+@SpringBootTest
+@EnableOccurrentTesting
+class OrderProjectionTest {
+
+    @Autowired
+    @RegisterExtension
+    OccurrentSubscriptionsExtension subscriptions;
+}
+{% endcapture %}
+{% capture kotlin %}
+@SpringBootTest
+@EnableOccurrentTesting
+class OrderProjectionTest {
+
+    @Autowired
+    @RegisterExtension
+    lateinit var subscriptions: OccurrentSubscriptionsExtension
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The extension bean is all `@EnableOccurrentTesting` adds. Your event store and subscription model are left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
+
+Your application registers its subscriptions at startup through its annotations, so a test never registers them itself. Outside Spring, register them once in `@BeforeAll`. Doing it in `@BeforeEach` fails on the second test with `Subscription <id> is already defined`, and would not work anyway, because JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped.
+
+While flushing, delete the documents instead of dropping the collections or the database. Dropping them invalidates a live MongoDB change stream, and the subscriptions you resume afterwards then receive nothing.
 
 ```xml
 <dependency>
@@ -6733,6 +6895,7 @@ Two shortcuts for the cases where naming one id per test is the wrong shape.
 
 ```java
 OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection");
+OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection")
 ```
 
 `startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
@@ -6800,7 +6963,7 @@ The in-memory subscription model does not have this problem. Events written whil
 
 Then keep at least one test with everything running. Deny-by-default means nothing checks two subscriptions reacting to the same event unless you ask it to.
 
-One cost stays. Every subscription still starts once while the application context boots, and is stopped again before the first test, so on MongoDB you pay for a change stream opened and closed per subscription per context. A JUnit extension runs after the context is refreshed, so nothing in the test can prevent that.
+One cost stays whatever the tests do. Every subscription still starts once while the application context boots, and is stopped again before the first test, so on MongoDB you pay for a change stream opened and closed per subscription per context. A JUnit extension runs after the context is refreshed, so nothing in the test can prevent that.
 
 A subscription id that no longer exists throws `IllegalArgumentException` from `resumeSubscription`, so renaming one breaks the tests that named it instead of quietly leaving them asserting nothing.
 
