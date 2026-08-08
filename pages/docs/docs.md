@@ -91,6 +91,7 @@ permalink: /documentation
 * * * * * [Usage](#catch-up-subscription-usage)
 * * * * [Competing Consumer Subscription](#competing-consumer-subscription-blocking)
 * * * * [Life-cycle & Testing](#subscription-life-cycle--testing-blocking) 
+* * * * [Starting Subscriptions Manually](#manual-subscription-start)
 * * [Reactive](#reactive-subscriptions)
 * * * [Filters](#reactive-subscription-filters)
 * * * [Start Position](#reactive-subscription-start-position)
@@ -3577,6 +3578,36 @@ A subscription model may also implement `IntrospectableSubscriptionModel`, which
 
 When a subscription model refuses a call, the exception names the reason as a type. `subscribe(..)` throws `DuplicateSubscriptionIdException` for an id this model instance already has, `UnsupportedSubscriptionFilterException` for a filter shape it cannot apply, and `UnsupportedStartAtException` for a start position it cannot resolve. The life-cycle methods throw `SubscriptionAlreadyRunningException`, `SubscriptionNotRunningException` and `UnknownSubscriptionException` the same way. All six are sealed under `SubscriptionRefusedException`, and each carries what it refused, the subscription id or the start position, as a typed accessor, so a catch can act on the specific refusal instead of parsing a message. This holds on every subscription model on both stacks, so the answer no longer depends on which model you happen to be running against.
 
+#### Starting Subscriptions Manually {#manual-subscription-start}
+
+`ManualStartSubscriptionModel` in `occurrent-subscription-api-blocking` wraps any subscription model so that subscribing only registers a subscription, and nothing runs until you start it yourself. No framework is required. `ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel)` withholds every subscription, then `start()` or `resumeSubscription(id)` brings one up. The position a subscription resumes from is fixed when it is registered, not when it is started, so events written while it waits are not skipped. It is also what the JUnit extension's [stopped-by-default testing](#testing-subscription-deny-by-default) is built on.
+
+{% capture java %}
+var manual = ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel);
+
+// Registered but withheld, nothing is delivered yet
+manual.subscribe("current-orders", System.out::println);
+
+// Start just this one once its dependencies are ready
+manual.resumeSubscription("current-orders");
+
+// Or bring up everything still withheld
+manual.start();
+{% endcapture %}
+{% capture kotlin %}
+val manual = ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel)
+
+// Registered but withheld, nothing is delivered yet
+manual.subscribe("current-orders") { println(it) }
+
+// Start just this one once its dependencies are ready
+manual.resumeSubscription("current-orders")
+
+// Or bring up everything still withheld
+manual.start()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
 ## Reactive Subscriptions
 
 A "reactive subscription" is a subscription that uses non-blocking IO when reading events from the event store, i.e. reading changes from an [EventStore](#choosing-an-eventstore) 
@@ -6103,33 +6134,7 @@ Withholding is not the same as never having registered. The position a subscript
 
 Boot no longer validates subscription wiring under `manual`. A bad filter or an unsupported start position used to fail during context refresh. Under `manual` it instead fails the first time the subscription is started, which for a leader-election deployment can be well after the application has already started serving traffic.
 
-Outside Spring, `ManualStartSubscriptionModel` in `occurrent-subscription-api-blocking` gives you the same thing. `ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel)` wraps any subscription model so that subscriptions register withheld and start only when you say so, with the same registration-fixes-the-position guarantee as above. It is also what the JUnit extension's [stopped-by-default testing](#testing-subscription-deny-by-default) is built on.
-
-{% capture java %}
-var manual = ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel);
-
-// Registered but withheld, nothing is delivered yet
-manual.subscribe("current-orders", System.out::println);
-
-// Start just this one once its dependencies are ready
-manual.resumeSubscription("current-orders");
-
-// Or bring up everything still withheld
-manual.start();
-{% endcapture %}
-{% capture kotlin %}
-val manual = ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel)
-
-// Registered but withheld, nothing is delivered yet
-manual.subscribe("current-orders") { println(it) }
-
-// Start just this one once its dependencies are ready
-manual.resumeSubscription("current-orders")
-
-// Or bring up everything still withheld
-manual.start()
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+Outside Spring, the same behavior comes from wrapping the subscription model yourself, see [starting subscriptions manually](#manual-subscription-start).
 
 `occurrent.subscription.mode` replaces the deprecated `occurrent.subscription.enabled` (`true` maps to `auto`, `false` to `disabled`). The deprecated property still works during the deprecation window, and setting both is fine as long as they agree, so a leftover environment variable does not break an otherwise-migrated configuration. Setting both to values that disagree fails startup, naming both values in the error. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) for the OpenRewrite recipe that renames the property for you.
 
