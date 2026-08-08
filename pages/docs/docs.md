@@ -4807,7 +4807,7 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-When a reaction issues a command only in some cases and none in the others, say so with `nothing`. It means there is nothing to issue, not that nothing happens: the branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
+In the Kotlin DSL, when a reaction issues a command only in some cases and none in the others, say so with `nothing`. In Java a reaction returns the list of commands to issue, so returning an empty list issues nothing. It means there is nothing to issue, not that nothing happens: the branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
 
 ```kotlin
 // Issue only when the payment was partial, otherwise nothing
@@ -4822,7 +4822,16 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-A `when` works the same way, as long as every branch ends on a command or on `nothing`. Issuing no command is a real outcome worth stating rather than an omission, which is what the word is for.
+Kotlin's `when` expression works the same way as the `if` above. Every branch must end on a command or on `nothing`. Issuing no command is a real outcome worth stating rather than an omission, which is what the word is for.
+
+```kotlin
+on<PaymentReserved>(then = end) {
+    when {
+        it.partial -> issue(ReserveRemainder(it.orderId))
+        else -> nothing
+    }
+}
+```
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
