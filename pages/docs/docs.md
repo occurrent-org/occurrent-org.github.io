@@ -6286,10 +6286,16 @@ void order_projection_is_updated_when_an_order_is_placed() {
 
 Stopping in `afterEach` matters as much as in `beforeEach`. Spring caches the test context across test classes, so a subscription that one class resumed is still running when the next class starts.
 
-If you also flush the database between tests, stop the subscriptions first, and pin the order with `@Order` rather than relying on the order of the fields:
+If you also empty the database between tests, hand that to the same extension rather than registering a second one. It runs after every subscription is stopped and before any is resumed, which is the only order that works, and `clearingCheckpoints` takes care of the checkpoints:
 
 ```java
 @RegisterExtension
+OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel)
+        .clearingStateWith(OccurrentMongoFlush.everyCollectionIn(mongoTemplate.getDb()))
+        .clearingCheckpoints(checkpointStorage);
+```
+
+`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
 @Order(1)
 OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
 
@@ -6357,7 +6363,85 @@ Your application registers its subscriptions at startup through its annotations,
 
 While flushing, delete the documents instead of dropping the collections or the database. Dropping them invalidates a live MongoDB change stream, and the subscriptions you resume afterwards then receive nothing.
 
-Flush the checkpoint collection along with the events, `subscriptions` unless you changed `occurrent.subscription.collection`. Resuming a subscription continues from its stored checkpoint, so a subscription left behind by an earlier test picks up whatever that test wrote while it was stopped, and the second test then sees events it never wrote. Clearing the events alone does not prevent this, because the checkpoint is what decides where the resume starts.
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-mongodb</artifactId>
+    <version>{{site.occurrentversion}}</version>
+    <scope>test</scope>
+</dependency>
+```
+
+`clearingStateWith` takes any `Runnable`, so a store other than MongoDB fits the same shape.
+
+### Naming several subscriptions, or all of them {#testing-subscription-starting-several}
+
+Two shortcuts for the cases where naming one id per test is the wrong shape.
+
+`alwaysStart` names subscriptions that every test in the class needs, resumed in `beforeEach` right after the stop, so individual tests do not repeat themselves:
+
+```java
+OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection")
+```
+
+`startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
+
+```java
+subscriptions.startAll();
+```
+
+Both rest on the model being able to list its subscriptions, through `IntrospectableSubscriptionModel`. The in-memory, Spring MongoDB and native MongoDB models implement it, and so does the competing consumer model, which also reports a consumer still waiting for its lock. Name an id that does not exist and the failure tells you the ids that do, instead of only repeating the one you got wrong.
+
+### Wiring it into a Spring Boot test {#testing-subscription-spring-boot}
+
+`occurrent-testing-spring-boot` wires the same extension into the application context, so a test autowires it rather than constructing it:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-spring-boot</artifactId>
+    <version>{{site.occurrentversion}}</version>
+    <scope>test</scope>
+</dependency>
+```
+
+{% capture java %}
+@SpringBootTest
+@EnableOccurrentTesting
+class OrderProjectionTest {
+
+    @Autowired
+    @RegisterExtension
+    OccurrentSubscriptionsExtension subscriptions;
+}
+{% endcapture %}
+{% capture kotlin %}
+@SpringBootTest
+@EnableOccurrentTesting
+class OrderProjectionTest {
+
+    @Autowired
+    @RegisterExtension
+    lateinit var subscriptions: OccurrentSubscriptionsExtension
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The extension bean is all `@EnableOccurrentTesting` adds. Your event store and subscription model are left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
+
+Your application registers its subscriptions at startup through its annotations, so a test never registers them itself. Outside Spring, register them once in `@BeforeAll`. Doing it in `@BeforeEach` fails on the second test with `Subscription <id> is already defined`, and would not work anyway, because JUnit runs an extension's `beforeEach` before any `@BeforeEach` method, so a subscription created there is never stopped.
+
+`everyCollectionIn` deletes the documents rather than dropping anything, which matters for two reasons.
+
+Dropping a collection or a database invalidates a live MongoDB change stream, and the subscriptions you resume afterwards then receive nothing. Stopping the model first does not save you, because it resumes from a position that points into a collection which no longer exists.
+
+The quieter reason is that your event store creates its unique indexes when it is constructed, so dropping removes them and only a new store brings them back. Spring caches the test context, so nothing constructs one again, and your optimistic-concurrency and duplicate-detection tests keep passing for the rest of the run with no index behind them. That failure never announces itself, which makes it the worse of the two.
+
+It names no collections, on purpose. Occurrent writes to more of them than you are likely to remember: the events, a stream position collection, a DCB checkpoint collection, the checkpoint collection below, and a competing consumer lock collection. A list you maintain by hand stops covering one the day you switch a feature on. Use `collectionsIn(database, ..)` only when the database holds something a test has to keep, and `except(..)` to spare one collection from the sweep.
+
+For the one case deleting cannot serve, a test asserting that a collection or an index does *not* exist, there is `droppingTheDatabaseIn(database)`. Nothing else should reach for it.
+
+The checkpoints have to go too, which is what `clearingCheckpoints` is for. Resuming a subscription continues from its stored checkpoint, so a subscription left behind by an earlier test picks up whatever that test wrote while it was stopped, and the second test then sees events it never wrote. Clearing the events alone does not prevent this, because the checkpoint is what decides where the resume starts. It works through `CheckpointStorage` rather than a collection name, so it is right whether your checkpoints live beside the events or in Redis.
 
 The in-memory subscription model does not have this problem. Events written while a subscription is stopped are dropped rather than queued, so there is nothing to catch up on when a later test starts it again.
 
