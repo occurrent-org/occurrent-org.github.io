@@ -125,6 +125,7 @@ permalink: /documentation
 * * * [Reading On Demand](#reading-on-demand)
 * * * [Read-your-writes](#read-your-writes)
 * * * [Reactor](#reactor)
+* * * [Replay Batching](#replay-batching)
 * * * [The `@Projection` Annotation](#the-projection-annotation)
 * * * * [Store](#projection-annotation-store)
 * * * * [Read-your-writes (Synchronous Mode)](#projection-annotation-synchronous)
@@ -5240,6 +5241,61 @@ Register the projection on a synchronous subscription model and build the applic
 ### Reactor
 
 Everything above has a reactor counterpart in `org.occurrent.dsl.projection.reactor` with the same shape. The push callbacks return `Mono<Void>`, the on-demand `project` returns `Mono<S>`, and you supply either a reactive update function for a reactive store or a blocking view store that the runner bridges onto a bounded-elastic scheduler.
+
+### Replay batching {#replay-batching}
+
+A catch-up replay used to cost one store read and one store write per event. `CatchupProjectionFeed`, and a `DomainEventFeed` built on it (see [Feeding domain events instead of CloudEvents](#feeding-domain-events-instead-of-cloudevents)), now buffer replayed events per view instance instead and flush them in batches. A history of N events over K view instances then costs about 2K store round trips rather than 2N, and about two per batch when the repository also implements the bulk operations described below. This is on by default, nothing to opt in to.
+
+Batching only reaches a projection fed that way. `ProjectionRunner`, `DcbProjectionRunner`, and the default `@Projection(source = Source.EVENT_STORE)` path register the projection on a `SubscriptionModel` instead, and so does `@Projection(source = Source.PUSH)` bound to a `PushSubscriptionModel` rather than a `DomainEventFeed`. All of those still pay one read and one write per replayed event, because the subscription model owns that catch-up and doesn't yet tell the view where a replay begins or ends.
+
+`Projections.materializedView` (blocking) and `Projections.reactiveUpdateWithMetadata` (reactor), the two builders `CatchupProjectionFeed` and `DomainEventFeed` use internally, take a `MaterializedViewOptions` with a `batchSize`, 1000 events buffered across every view instance before a batch flushes:
+
+```java
+MaterializedView<OrderEvent> view = Projections.materializedView(
+        orderStatusProjection(), repository, RetryStrategy.none(), new MaterializedViewOptions(200));
+
+CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
+        "order-status", view, Filter.all(), eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage);
+```
+
+Pass `new MaterializedViewOptions(1)` for a batch size of one. That reads, applies, and saves each event one at a time, the same as before this feature existed, and is the way out if the behaviour below surprises you.
+
+#### What a replay promises about the view while it runs
+
+Nothing, and that's exactly why batching defaults on. Outside a replay the view is always current, an update reads the current state, applies the event, and writes it back one event at a time. During a replay, a buffered view instance is stale until its batch flushes, cross-instance write order is no longer the event order (updates land instance by instance rather than event by event), and anything watching the read model's storage directly, a change stream, an audit trail keyed off writes, sees fewer, larger writes than events replayed. Within one view instance, its buffered events still apply in arrival order, exactly as before. None of this takes away a promise that existed. The projection DSL never guaranteed a live view during a replay, only a correct one once the replay finishes, and batching keeps that.
+
+#### Opting a hand-built view in: `ReplayAwareMaterializedView`
+
+A view learns where a replay begins and ends through a small capability interface in the view DSL:
+
+```java
+public interface ReplayAwareMaterializedView {
+    void replayStarted();
+    void replayCompleted();
+    void replayAbandoned();
+}
+```
+
+`Projections.materializedView` and `Projections.reactiveUpdateWithMetadata` already implement it, so you never touch this directly through the projection DSL. It matters when you build a `MaterializedView` by hand instead, through `MaterializedView.create(...)` or the view DSL's `materialized(mongoOperations, ...)` Kotlin helper (see [Materializing with Spring](#materialized-view-spring)), and hand it to `CatchupProjectionFeed.create(id, view, filter, ...)`. Neither of those builders implements the capability, so a hand-built view stays on the per-event path unless you implement `ReplayAwareMaterializedView` on it yourself. Buffer in `replayStarted()`, write the buffer in `replayCompleted()`, and drop it in `replayAbandoned()`.
+
+The reactor twin lives in `org.occurrent.dsl.projection.reactor` rather than beside the blocking one, the blocking view DSL carries no reactor dependency. It differs in one place, `replayCompleted()` returns a `Mono<Void>` so a buffered write can be asynchronous, chained before the catch-up marker is recorded. `replayStarted()` and `replayAbandoned()` stay plain signals on both.
+
+#### Partial failure
+
+A batch write is not atomic across view instances. When it fails partway, some instances are durable and some are not, the same as a plain loop over `save` failing partway would leave. That's safe because of how the rest of the behaviour constrains it:
+
+* Nothing stays buffered when the catch-up marker is recorded. The flush is ordered before the marker, so a stored instance is never behind what the marker claims.
+* A failed write fails the whole catch-up, the same as a failed write always has outside a replay. The marker is not recorded, and the next start replays the whole history again.
+* A stopped replay discards its buffer instead of writing it. `replayAbandoned()` runs and drops whatever was buffered, because a stopped catch-up already writes no marker and goes live for nothing, so a partial write would only store state the next replay recomputes anyway.
+* Retrying a lost optimistic-locking update stays scoped to one view instance at a time. Pass a `retryStrategy` other than `RetryStrategy.none()` to `Projections.materializedView`/`reactiveUpdateWithMetadata` and a flush falls back to reading and writing one instance at a time, retrying only the one that lost the race, instead of the bulk `findAllById`/`saveAll` round trip. A repository that overrides `saveAll` for a real bulk write reports no per-instance outcome, so there's nothing inside it for a retry to target.
+
+None of this widens the replay's existing at-least-once contract. A failed or stopped catch-up already left the view partially advanced and replayed the same events again next time. Batching only narrows the window in which that's true, durability that used to be per event never spans more than one batch now.
+
+#### The shipped Mongo repositories
+
+The Mongo-backed `ViewStateRepository` implementations Occurrent ships, the `MongoOperations`-backed one behind `materialized(mongoOperations, ...)`, the `CrudRepository`-backed one behind `materialized(crudRepository, ...)`, and the default store the `@Projection` annotation falls back to when you declare no store bean, all override `findAllById` and `saveAll`. A flush then costs one round trip each way instead of one per view instance, a single `_id in (...)` query for the read, and one unordered bulk write for the save. This only takes effect with the default `RetryStrategy.none()`, a configured retry strategy falls back to the per-instance path described above.
+
+No extra MongoDB index is needed to get this. Both the bulk read and the bulk write key off `_id`, the index every MongoDB collection already carries, so there's nothing to create up front the way [some of the event store's own indexes](#mongodb-indexes) sometimes need.
 
 ### The `@Projection` annotation {#the-projection-annotation}
 
