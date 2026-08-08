@@ -1707,12 +1707,12 @@ Wiring a `CommandDispatcher` by hand means picking an `ApplicationService`, a `D
 For a stream-keyed decider, `org.occurrent.command.CommandDispatchers.decider(deciderApplicationService, decider, streamIdResolver)` builds a `CommandDispatcher<C>` that resolves the stream id, then executes the decider through the application service. It lives in `occurrent-command-dispatch`, the same module as `CommandDispatcher` itself, but using it also pulls in `occurrent-decider`, a light, optional dependency you'd otherwise add yourself.
 
 {% capture java %}
-public record PlaceOrder(@TargetStreamId String orderId, String productId, int quantity) {
+public record PlaceOrder(String orderId, String productId, int quantity) {
 }
 
 Decider<PlaceOrder, OrderState, OrderEvent> placeOrderDecider = ...;
 DeciderApplicationService<OrderEvent> applicationService = ...;
-StreamIdResolver<PlaceOrder> streamIdResolver = new AnnotationStreamIdResolver<>();
+StreamIdResolver<PlaceOrder> streamIdResolver = PlaceOrder::orderId;
 
 CommandDispatcher<PlaceOrder> dispatcher = CommandDispatchers.decider(applicationService, placeOrderDecider, streamIdResolver);
 
@@ -1720,20 +1720,55 @@ dispatcher.dispatch(new PlaceOrder(orderId, productId, quantity));
 {% endcapture %}
 {% capture kotlin %}
 data class PlaceOrder(
-    @get:TargetStreamId val orderId: String,
+    val orderId: String,
     val productId: String,
     val quantity: Int
 )
 
 val placeOrderDecider: Decider<PlaceOrder, OrderState, OrderEvent> = ...
 val applicationService: DeciderApplicationService<OrderEvent> = ...
-val streamIdResolver: StreamIdResolver<PlaceOrder> = AnnotationStreamIdResolver()
+val streamIdResolver = StreamIdResolver<PlaceOrder> { command -> command.orderId }
 
 val dispatcher: CommandDispatcher<PlaceOrder> = CommandDispatchers.decider(applicationService, placeOrderDecider, streamIdResolver)
 
 dispatcher.dispatch(PlaceOrder(orderId, productId, quantity))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A dispatcher usually handles a whole family of related commands, not just one, so the resolver typically branches over the command type instead of reading a single field:
+
+{% capture java %}
+public sealed interface OrderCommand permits PlaceOrder, ShipOrder {
+}
+
+public record PlaceOrder(String orderId, String productId, int quantity) implements OrderCommand {
+}
+
+public record ShipOrder(String orderId) implements OrderCommand {
+}
+
+StreamIdResolver<OrderCommand> streamIdResolver = command -> switch (command) {
+    case PlaceOrder c -> c.orderId();
+    case ShipOrder c -> c.orderId();
+};
+{% endcapture %}
+{% capture kotlin %}
+sealed interface OrderCommand
+
+data class PlaceOrder(val orderId: String, val productId: String, val quantity: Int) : OrderCommand
+
+data class ShipOrder(val orderId: String) : OrderCommand
+
+val streamIdResolver = StreamIdResolver<OrderCommand> { command ->
+    when (command) {
+        is PlaceOrder -> command.orderId
+        is ShipOrder -> command.orderId
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+When every command in the family already has a field that holds the stream id, you can skip writing the resolver and derive it from an annotation instead, as shown in [Deriving the Stream Id From Annotations](#deriving-the-stream-id-from-annotations).
 
 For a [`DcbDecider`](#coupling-a-decider-to-a-boundary), `org.occurrent.command.dcb.DcbCommandDispatchers.decider(dcbDeciderApplicationService, dcbDecider)` takes only those two arguments. A `DcbDecider` already carries its own `DcbCriteria` and `TagGenerator`, so there's no stream id to resolve. This factory lives in its own module, `occurrent-command-dispatch-dcb`, kept separate from `occurrent-command-dispatch` so that dispatching commands to plain, stream-keyed deciders doesn't drag in the DCB and CloudEvent stack.
 
