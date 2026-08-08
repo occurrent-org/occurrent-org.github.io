@@ -3317,7 +3317,7 @@ that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionMod
 
 What differs is whether that captured position is written to the `CheckpointStorage` right away. When the wrapped model is itself a named reactor `SubscriptionModel`, which is what [delegation](#durable-subscription-reactive-delegation) below means and what every shipped composition does, the position is stored at registration, so a subscription that's registered and then never started still leaves a checkpoint behind, and resumes from there rather than from the beginning if it's ever started later. When the wrapped model offers only the cold `Flux` primitive, nothing is stored until the subscription actually starts, so one that never starts leaves nothing behind. Either way, no event written while a registered subscription waits to be started is lost, mirroring the guarantee the blocking stack's manual-start wrapper gives.
 
-The same `occurrent-testing-junit-jupiter` extension covers the reactive stack too. See [Integration Testing](#integration-testing) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default) for how it stops a reactive subscription by default and lets a test opt it back in.
+The `occurrent-testing-junit-jupiter-reactor` extension covers the reactive stack the same way. See [Integration Testing](#integration-testing) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default) for how it stops a reactive subscription by default and lets a test opt it back in.
 
 ##### Delegating to a Named Wrapped Model {#durable-subscription-reactive-delegation}
 
