@@ -3289,6 +3289,10 @@ Add `catchup = Catchup.NONE` when the feed carries events that are not in this a
 
 Like every other subscription model, a `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. There's no feed behind it holding events back, so an event handed to `accept(..)` while the model is stopped, or a subscription is paused, never reaches that handler, and resuming does not replay it. That's dropped, not deferred. `shutdown()` is one-way. A model that's been shut down stays that way. This is the same contract [`SynchronousSubscriptionModel` runs on](#synchronous-subscription-life-cycle), and it's what lets a test [stop every subscription model in the application and opt back in per test](#testing-subscription-deny-by-default), a `PushSubscriptionModel` included.
 
+##### Life-cycle {#push-subscription-blocking-life-cycle}
+
+Like every other subscription model, a `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. There's no feed behind it holding events back, so an event handed to `accept(..)` while the model is stopped, or a subscription is paused, never reaches that handler, and resuming does not replay it. That's dropped, not deferred. `shutdown()` is one-way. A model that's been shut down stays that way. This is the same contract [`SynchronousSubscriptionModel` runs on](#synchronous-subscription-life-cycle), and it's what lets a test [stop every subscription model in the application and opt back in per test](#testing-subscription-deny-by-default), a `PushSubscriptionModel` included.
+
 ##### Feeding domain events instead of CloudEvents
 
 If your listener already hands you domain events (for example a broker message converter deserializes them for you), pushing them through the CloudEvent model means `domainEvent` to `CloudEvent` and back, a full serialize and deserialize per event. Feed the projection in domain space instead and the live path does no conversion at all.
@@ -3505,6 +3509,31 @@ It also asserts the contract both ways Occurrent relies on it. `CompetingConsume
 
 Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implement this). These subscription models support cancelling, pausing and resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`). That "all" includes the once-exception cases. A [synchronous subscription](#synchronous-subscription-life-cycle) and a [push subscription](#push-subscription-blocking-life-cycle) can be stopped, paused and shut down exactly like a MongoDB-backed one.
 
+Calling `start()` on a model that's already running is allowed. Starting a model is a goal, not a one-time transition, so a second call brings up whatever is still down and leaves the rest exactly as it was, including a subscription you paused yourself with `pauseSubscription(id)`. That's what lets a leader election or a health check call `start()` without checking `isRunning()` first, which is what `occurrent.subscription.mode=manual` is for.
+
+```java
+// Fine to call on every tick, whether or not the model is already running
+subscriptionModel.start(true);
+```
+
+`CompetingConsumerSubscriptionModel` used to throw `IllegalStateException` here. Every other subscription model already accepted a repeated `start()`, and now this one does too.
+
+`Subscription.waitUntilStarted(..)` answers for the one `start()` the handle was created for. It's not a live status check.
+
+```java
+Subscription subscription = subscriptionModel.subscribe("orders", e -> handleOrderEvent(e));
+subscription.waitUntilStarted(Duration.ofSeconds(10)); // true
+
+subscriptionModel.pauseSubscription("orders");
+subscription.waitUntilStarted(Duration.ofSeconds(10)); // still true, "orders" is paused right now
+```
+
+Once a subscription has started, its handle keeps answering `true` even after you pause it, stop it, or it loses a competing consumer lock. Ask `isRunning(id)` and `isPaused(id)` when you want to know what's happening right now.
+
+A handle answers `false` only for a subscription you still have to start yourself. That covers a registration withheld under `occurrent.subscription.mode=manual`, one registered while a `PushSubscriptionModel` or a `SynchronousSubscriptionModel` is stopped, and a catch-up replay that `stop()` interrupted. A start that failed and won't be retried throws instead of answering.
+
+On the reactor stack, `waitUntilStarted()` returns a `Mono<Void>` instead of blocking. It completes once the subscription has started and errors if the start failed, so a subscription that hasn't started yet is a `Mono` that hasn't completed.
+
 Note the difference between cancelling and pausing a subscription. Cancelling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
 
@@ -3512,6 +3541,8 @@ Many of the methods in the `SubscriptionLifeCycle` are good to have when you wri
 It's often useful to e.g. write events to the event store _without_ triggering all subscriptions listening to the events. The life cycle methods allow you to selectively start/stop individual subscriptions so that you can (integration) test them in isolation.
 
 You don't have to drive this by hand in your tests though. The `occurrent-testing-junit-jupiter-blocking` extension stops every subscription model by default and lets each test opt subscriptions back in, as described in [Integration Testing](#integration-testing), including [using the subscription life cycle](#testing-subscription-lifecycle) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default).
+
+A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
 
 A subscription model may also implement `IntrospectableSubscriptionModel`, which adds `subscriptionIds()`, every id it knows about, running or paused. Not every subscription model does, so reach for it with the static `IntrospectableSubscriptionModel.of(subscriptionModel)`. It unwraps a chain of wrapping subscription models, a `DurableSubscriptionModel` wrapping a `CatchupSubscriptionModel` wrapping a `NativeMongoSubscriptionModel`, for example, until it finds one that implements it, or returns empty if nothing in the chain does. That's what lets a caller holding a wrapped model ask what it's subscribed to, without knowing its concrete type or how many layers deep the answer lives.
 
@@ -6526,6 +6557,8 @@ subscriptionModel.resumeSubscription("orders");
 Resuming continues from the stored checkpoint rather than replaying from the beginning, so this is also how you test that resume behaviour is what you think it is: pause, write, resume, and assert the handler saw exactly what was written while it was away.
 
 Two more worth knowing. `waitUntilStarted()` closes the race between subscribing and writing, and it is why the examples call it before their first write. `cancelSubscription(id)` drops a subscription entirely and frees its id, which is useful when one test class exercises several subscriptions in turn. The in-memory subscription model supports all of these, so most of this can be tested with no container at all.
+
+Running under `occurrent.subscription.mode=manual`, the handle that `subscribe(..)` returns answers `false` for as long as the registration is withheld. `resumeSubscription(id)` hands back a different handle, the one for the start that actually runs, and that's the one to wait on.
 
 ### Stopping every subscription, then opting in {#testing-subscription-deny-by-default}
 
