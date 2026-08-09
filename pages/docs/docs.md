@@ -3736,6 +3736,8 @@ I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. 
     {% include macros/subscription/blocking/inmemory/impl/maven.md %}
     {% include macros/subscription/reactor/api/maven.md %}
 
+Since 0.33.0, `ReactorCheckpointStorage` retries a transient MongoDB error while reading, saving or deleting a checkpoint instead of letting it reach the subscription. It retries with exponential backoff by default, 100 ms up to 2 seconds, the same interval `SpringMongoCheckpointStorage` already uses on the blocking stack, but bounded to 5 attempts before rethrowing the original failure rather than retrying without limit. Pass your own `reactor.util.retry.Retry` to the three-argument constructor to change it.
+
 If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "reactive subscription API" which contains the `CheckpointStorage` interface:
 
 {% include macros/subscription/reactor/api/maven.md %}
@@ -5239,6 +5241,8 @@ class ProjectionConfig {
 #### Store {#projection-annotation-store}
 
 You choose where the projection is stored. `store` selects the bean by type, `MaterializedView`, `ViewStateRepository`, or a `CrudRepository` subinterface on the blocking stack (no `CrudRepository` on reactive), and `storeName` selects by name on its own or alongside `store` to disambiguate. Leave both unset to fall back to the convention resolution described above. It's the same store abstraction [`ProjectionRunner.project(...)`](#maintaining-a-stored-read-model) already takes as a method argument, just resolved through the annotation instead of passed in code.
+
+On the MongoDB starter, leaving `store` and `storeName` unset with no matching bean in the context falls back to `MongoProjectionStoreProvider`. Since 0.33.0 its `save` and `saveAll` reject a state whose `@Id` doesn't match the projection key with `IllegalStateException`, the same guard [`view.materialized(mongoOperations)` and `view.materialized(crudRepository)` already apply](#materialized-view-spring) to a hand-wired store. Before this, a mismatch on this path silently wrote to the wrong document and the read model never accumulated.
 
 #### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
 
@@ -6818,11 +6822,13 @@ class OrderProjectionTest {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The extension bean is all `@EnableOccurrentTesting` adds. Your event store and subscription model are left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
+Since 0.33.0, the extension bean clears checkpoints on its own. It applies `clearingCheckpoints(..)` automatically once the context has exactly one `CheckpointStorage` bean, so an application with a single checkpoint store needs no further configuration for that half. Your event store and subscription model are otherwise left exactly as the application wires them, so the test still runs against the real store. That is the point, since a subscription is only worth testing against the change streams, checkpoints and catch-up it actually uses.
 
 `@EnableOccurrentTesting` wires whichever leaf you added as a test dependency, and both if you added both, which matters for an application using both stacks at once: it gets two extension beans, one per stack, autowired by type. Either way, the extension stops every subscription model in the context rather than one, since some applications have more than one that needs stopping, a durable model and a `SynchronousSubscriptionModel` side by side is the ordinary case on the reactive stack. Outside Spring the same rule applies to `stoppedByDefault`, pass every model it needs to stop: `stoppedByDefault(durableModel, synchronousModel)`.
 
-To add the database flush and the checkpoint clearing here too, configure the injected extension in an `@Autowired` method. The extension bean is prototype scoped, so do not take it as a method parameter, that would configure a different instance than the one the test registers. Configure the field instead, Spring injects fields before methods:
+`clearState = true` on `@EnableOccurrentTesting` does the same for the database flush, applying `clearingStateWith(..)` automatically once a store integration is available to flush with, `occurrent-testing-mongodb` plus a `MongoTemplate` bean today. It is `false` by default, since flushing is destructive and not every test wants it.
+
+To configure the flush by hand instead, more than one `CheckpointStorage` bean in the context (which the automatic checkpoint clearing above leaves unresolved), or a narrower sweep than `everyCollectionIn`, `collectionsIn(..)`, `except(..)`, or `droppingTheDatabaseIn(..)` below, configure the injected extension in an `@Autowired` method. The extension bean is prototype scoped, so do not take it as a method parameter, that would configure a different instance than the one the test registers. Configure the field instead, Spring injects fields before methods:
 
 {% capture java %}
 @Autowired
