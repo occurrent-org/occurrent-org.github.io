@@ -2900,13 +2900,17 @@ is defined like this:
 ```java
 public interface CheckpointStorage {
     Checkpoint read(String subscriptionId);
-    Checkpoint save(String subscriptionId, Checkpoint checkpoint);
+    Checkpoint save(String subscriptionId, Checkpoint checkpoint, CheckpointWriteCondition condition);
+    default Checkpoint save(String subscriptionId, Checkpoint checkpoint) {
+        return save(subscriptionId, checkpoint, CheckpointWriteCondition.any());
+    }
     void delete(String subscriptionId);
     boolean exists(String subscriptionId);
+    OptionalLong writeVersion(String subscriptionId);
 }
 ```
 
-I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. Occurrent ships with four pre-defined implementations:
+It's a way to read, write and delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. `save` takes a `CheckpointWriteCondition` as a third argument, stating what has to be true of the stored version before the write is allowed. The two-argument overload keeps its old meaning, an unconditional write, `any()`, that carries whatever version is already stored forward untouched, and every subscription model in this library calls it unless you wire up [checkpoint fencing](#checkpoint-fencing-blocking) for competing consumers. `writeVersion(subscriptionId)` reads back the version a condition is judged against. Occurrent ships with four pre-defined implementations:
 
 1\. **NativeMongoCheckpointStorage**<br>
     Uses the vanilla MongoDB Java (sync) driver to store `Checkpoint`'s in MongoDB.
