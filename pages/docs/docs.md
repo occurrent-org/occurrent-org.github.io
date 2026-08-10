@@ -4152,6 +4152,24 @@ These aren't optional mixins, everyone gets one, they're translation layers you 
 
 0.33.0 adds a root marker interface, `SubscriptionModelCapability`, on both stacks, and every capability facet on this page extends it. That's also the release where the method shown throughout this page is renamed from `of(Object)` to `findIn(SubscriptionModelCapability)`, the two changes ship together. The narrower parameter type doesn't change what compiles at an existing call site (a `SubscriptionModel` reference still passes straight through), it only stops you probing something that was never part of this hierarchy in the first place.
 
+### Asking the model instead of naming a facet
+
+`SubscriptionModelCapability` also carries two default methods, `capability(type)` and `hasCapability(type)`, so any subscription model can answer for a capability handed to it as a `Class` rather than named directly in a static call:
+
+{% capture java %}
+Optional<IntrospectableSubscriptions> found = subscriptionModel.capability(IntrospectableSubscriptions.class);
+boolean canIntrospect = subscriptionModel.hasCapability(IntrospectableSubscriptions.class);
+{% endcapture %}
+{% capture kotlin %}
+val found: IntrospectableSubscriptions? = subscriptionModel.capability<IntrospectableSubscriptions>()
+val canIntrospect = subscriptionModel.hasCapability<IntrospectableSubscriptions>()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`capability(type)` runs the same search as `IntrospectableSubscriptions.findIn(model)` above, generalized over whichever `Class` you pass it instead of hard-coded to one facet. On the blocking stack it unwraps a `SubscriptionModelWrapper` chain until something implements `type`, and on the reactor stack, which has no wrapper to unwrap, it checks the model itself directly. `hasCapability(type)` answers the same question as a `boolean`, for a caller that only needs to know whether the capability is there. Reach for `findIn` when the facet is fixed at the call site, `IntrospectableSubscriptions.findIn(model)` names both the search and its target in one call. Reach for `capability`/`hasCapability` when the `Class` you're checking is itself a value, chosen by a caller further up the stack rather than written into the code doing the check.
+
+The Kotlin extensions come from the same [Subscription DSL](#subscription-dsl) module as `streamSubscriptions`/`subscriptions`, on both stacks, as `capability<T>()` and `hasCapability<T>()`, inferring `T` from the type argument instead of taking a `Class`.
+
 ### Does composition order matter?
 
 Three different questions hide behind "does order matter", and they don't share an answer.
