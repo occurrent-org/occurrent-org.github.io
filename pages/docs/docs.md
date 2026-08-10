@@ -123,7 +123,7 @@ permalink: /documentation
 * * * [Event Metadata](#projection-event-metadata)
 * * * [DCB Projections](#dcb-projections)
 * * * [Reading On Demand](#reading-on-demand)
-* * * [Read-your-writes](#read-your-writes)
+* * * [Read-your-writes for a synchronous projection](#read-your-writes-for-a-synchronous-projection)
 * * * [Reactor](#reactor)
 * * * [The `@Projection` Annotation](#the-projection-annotation)
 * * * * [Store](#projection-annotation-store)
@@ -5119,7 +5119,7 @@ A fourth guard covers the window before anything is registered. `DomainEventFeed
 
 This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the write path (as an `InMemoryEventStore` listener, say), where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker.
 
-### Read-your-writes
+### Read-your-writes for a synchronous projection
 
 Register the projection on a synchronous subscription model and build the application service with it, and the read model updates inside the same transaction as the write. The projected state is then visible the moment `execute(...)` returns, with no eventual-consistency lag. This trades a little write latency for read-your-writes consistency, so reach for it when a command needs to see its own effect immediately.
 
@@ -5242,7 +5242,7 @@ You choose where the projection is stored. `store` selects the bean by type, `Ma
 
 #### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
 
-`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
+`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes-for-a-synchronous-projection) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
 
 #### Without the starter {#projection-annotation-without-starter}
 
