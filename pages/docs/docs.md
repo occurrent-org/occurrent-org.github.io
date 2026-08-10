@@ -4092,7 +4092,7 @@ Most of these capabilities are mixins you reach with a static probe rather than 
 // subscriptionModel might be a bare NativeMongoSubscriptionModel, or three layers of
 // wrapper deep, CompetingConsumer(Catchup(Durable(Mongo))). Either way, this reaches
 // whichever layer actually knows the answer.
-Set<String> ids = IntrospectableSubscriptions.of(subscriptionModel)
+Set<String> ids = IntrospectableSubscriptions.findIn(subscriptionModel)
         .map(IntrospectableSubscriptions::subscriptionIds)
         .orElse(Set.of());
 {% endcapture %}
@@ -4100,7 +4100,7 @@ Set<String> ids = IntrospectableSubscriptions.of(subscriptionModel)
 // subscriptionModel might be a bare NativeMongoSubscriptionModel, or three layers of
 // wrapper deep, CompetingConsumer(Catchup(Durable(Mongo))). Either way, this reaches
 // whichever layer actually knows the answer.
-val ids = IntrospectableSubscriptions.of(subscriptionModel)
+val ids = IntrospectableSubscriptions.findIn(subscriptionModel)
     .map { it.subscriptionIds() }
     .orElse(emptySet())
 {% endcapture %}
@@ -4115,21 +4115,21 @@ val ids = IntrospectableSubscriptions.of(subscriptionModel)
 | `SubscriptionModelLifeCycle` | yes | yes | extends `CancellableSubscriptions` with `start`, `stop`, `pauseSubscription`, `resumeSubscription`, `isRunning`, `isPaused`, and `shutdown` |
 | `SubscriptionModel` | yes | yes | `Subscribable` + `SubscriptionModelLifeCycle` together, what "a subscription model" means on either stack |
 
-### Wrapping, and the `of(..)` probe
+### Wrapping, and the `findIn(..)` probe
 
 A model that wraps another one (`DurableSubscriptionModel` around a Mongo model, `CatchupSubscriptionModel` around that, and so on) implements `SubscriptionModelWrapper` on the blocking stack, which exposes `getWrappedSubscriptionModel()` and a recursive variant that walks all the way down. This is blocking-only, reactor has no equivalent interface, so a reactor wrapper has no generic way to hand back what it wraps.
 
-That asymmetry is why the two stacks reach an optional capability differently. On the blocking stack, `IntrospectableSubscriptions`, `ReplayAwareSubscriptions`, and `RepositionableSubscriptions` each carry a static `of(subscriptionModel)` probe that checks the model you hand it first, and only unwraps a `SubscriptionModelWrapper` layer by layer if that model itself doesn't implement the capability. Which means the **outermost** implementer answers, not the innermost one. Hold `CompetingConsumer(Catchup(Durable(Mongo)))`, and if every layer happens to implement `IntrospectableSubscriptions`, `of(..)` returns `CompetingConsumerSubscriptionModel`'s own answer, never Mongo's. On the reactor stack there is no probe at all for `IntrospectableSubscriptions` or `ReplayAwareSubscriptions`, check the concrete model you're holding with `instanceof` instead, and note that the subscription DSL wrappers don't forward either capability, so ask the subscription model itself rather than a DSL wrapper around it.
+That asymmetry is why the two stacks reach an optional capability differently. On the blocking stack, `IntrospectableSubscriptions`, `ReplayAwareSubscriptions`, and `RepositionableSubscriptions` each carry a static `findIn(subscriptionModel)` probe that checks the model you hand it first, and only unwraps a `SubscriptionModelWrapper` layer by layer if that model itself doesn't implement the capability. It searches the whole wrapper chain and can come back with nothing, an `Optional`, not a guaranteed conversion, which is why it's named `findIn(..)` rather than `of(..)`. Which means the **outermost** implementer answers, not the innermost one. Hold `CompetingConsumer(Catchup(Durable(Mongo)))`, and if every layer happens to implement `IntrospectableSubscriptions`, `findIn(..)` returns `CompetingConsumerSubscriptionModel`'s own answer, never Mongo's. On the reactor stack there is no probe at all for `IntrospectableSubscriptions` or `ReplayAwareSubscriptions`, check the concrete model you're holding with `instanceof` instead, and note that the subscription DSL wrappers don't forward either capability, so ask the subscription model itself rather than a DSL wrapper around it.
 
 ### Optional mixins
 
 | Interface | Blocking | Reactor | Adds | Reach it with |
 |:----|:----|:----|:----|:----|
-| `IntrospectableSubscriptions` | yes | yes | `subscriptionIds()`, every id the model knows, running or paused | `of(model)` (blocking) / `instanceof` (reactor) |
-| `ReplayAwareSubscriptions` | yes | yes | `isCatchingUp(id)`, true only while that subscription is still replaying history, which `isRunning(id)` can't tell you since it stays true throughout a replay | `of(model)` (blocking) / `instanceof` (reactor) |
-| `RepositionableSubscriptions` | yes | no | `resumeSubscription(id, startAt)`, resume at an explicit position instead of wherever the model stopped | `of(model)` |
-| `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `of(..)` walks through | declare or cast |
-| `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, and cloud events carrying a checkpoint you can store yourself | declare the variable as this type, or cast, no `of(..)` probe, see below |
+| `IntrospectableSubscriptions` | yes | yes | `subscriptionIds()`, every id the model knows, running or paused | `findIn(model)` (blocking) / `instanceof` (reactor) |
+| `ReplayAwareSubscriptions` | yes | yes | `isCatchingUp(id)`, true only while that subscription is still replaying history, which `isRunning(id)` can't tell you since it stays true throughout a replay | `findIn(model)` (blocking) / `instanceof` (reactor) |
+| `RepositionableSubscriptions` | yes | no | `resumeSubscription(id, startAt)`, resume at an explicit position instead of wherever the model stopped | `findIn(model)` |
+| `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `findIn(..)` walks through | declare or cast |
+| `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, and cloud events carrying a checkpoint you can store yourself | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
 | `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`, the target a broker listener feeds events into | implemented directly by the push models, declare or cast |
 
 `CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the first three are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
@@ -4150,7 +4150,7 @@ These aren't optional mixins, everyone gets one, they're translation layers you 
 
 ### Looking ahead, `SubscriptionModelCapability`
 
-The unreleased 0.33.0 library adds a root marker interface, `SubscriptionModelCapability`, on both stacks, and every capability facet on this page extends it. The `of(..)` probes above narrow from `of(Object)` to `of(SubscriptionModelCapability)`, which doesn't change what compiles at an existing call site (a `SubscriptionModel` reference still passes straight through), it only stops you probing something that was never part of this hierarchy in the first place. This section documents the design as planned. It ships alongside the rest of 0.33.0 and needs re-checking against the final interface if that design shifts before release.
+The unreleased 0.33.0 library adds a root marker interface, `SubscriptionModelCapability`, on both stacks, and every capability facet on this page extends it. That's also the release where the probe method shown throughout this page is renamed from `of(Object)` to `findIn(SubscriptionModelCapability)`, the two changes ship together. The narrower parameter type doesn't change what compiles at an existing call site (a `SubscriptionModel` reference still passes straight through), it only stops you probing something that was never part of this hierarchy in the first place. This section documents both changes as planned. They ship alongside the rest of 0.33.0 and need re-checking against the final interfaces if that design shifts before release.
 
 ### Does composition order matter?
 
@@ -4162,9 +4162,9 @@ Three different questions hide behind "does order matter", and they don't share 
 
 The MongoDB Spring Boot starter's own wiring is the concrete version of this. It builds, in order, a `SpringMongoSubscriptionModel`, wraps it in `DurableSubscriptionModel`, wraps that in `CatchupSubscriptionModel` when the store has stream or DCB history to replay, wraps that in `CompetingConsumerSubscriptionModel`, and, only under `occurrent.subscription.mode=manual`, wraps the whole thing one more time in `ManualStartSubscriptionModel`. See [`OccurrentMongoAutoConfiguration`](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java).
 
-Not every constraint is type-checked though. `ManualStartSubscriptionModel` has to be the outermost wrapper for a reason its own documentation states directly: withholding a subscription only works if nothing beneath it has already been handed the registration. Put it anywhere but outermost, and a catch-up layer below it would replay history to a handler nobody started yet. So wrap outward from whichever layer needs the most from its delegate (checkpoint-awareness first), then whatever only needs a plain `SubscriptionModel`, and put anything that has to see every subscription before the rest of the stack does, like `ManualStartSubscriptionModel`, last.
+Not every constraint is type-checked though. `ManualStartSubscriptionModel` has to be the outermost wrapper, and its own documentation states directly why. Withholding a subscription only works if nothing beneath it has already been handed the registration. Put it anywhere but outermost, and a catch-up layer below it would replay history to a handler nobody started yet. So wrap outward from whichever layer needs the most from its delegate (checkpoint-awareness first), then whatever only needs a plain `SubscriptionModel`, and put anything that has to see every subscription before the rest of the stack does, like `ManualStartSubscriptionModel`, last.
 
-**Which layer answers a probe.** The outermost one. This is the same rule as the `of(..)` probe described above, restated here because it's the detail that actually surprises people composing wrappers. Build `CompetingConsumer(Catchup(Durable(Mongo)))` and ask `ReplayAwareSubscriptions.of(..)` on the whole stack: `CompetingConsumerSubscriptionModel` doesn't implement `ReplayAwareSubscriptions` itself, so the probe unwraps one layer and asks `CatchupSubscriptionModel`, which does, and that's the answer you get, not whatever `Durable` or `Mongo` underneath it would have said. The first layer in the chain that implements the capability wins, working from the outside in.
+**Which layer answers a probe.** The outermost one. This is the same rule as the `findIn(..)` probe described above, restated here because it's the detail that actually surprises people composing wrappers. Build `CompetingConsumer(Catchup(Durable(Mongo)))` and ask `ReplayAwareSubscriptions.findIn(..)` on the whole stack: `CompetingConsumerSubscriptionModel` doesn't implement `ReplayAwareSubscriptions` itself, so the probe unwraps one layer and asks `CatchupSubscriptionModel`, which does, and that's the answer you get, not whatever `Durable` or `Mongo` underneath it would have said. The first layer in the chain that implements the capability wins, working from the outside in.
 
 # Decider
 
