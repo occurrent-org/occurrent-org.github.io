@@ -4148,9 +4148,9 @@ These aren't optional mixins, everyone gets one, they're translation layers you 
 
 `CheckpointWriteVersionSource`, blocking only, supplies the version a checkpoint-writing model stamps its own writes with. A model asks it right before every checkpoint write. An answer becomes a not-older-than write condition, no answer or no source at all becomes an unconditional write, so the model has one code path instead of choosing between two. It carries nothing about a lease or a competing consumer itself, the Spring Boot starter wires `CompetingConsumerCheckpointWriteVersionSource` (backed by `CompetingConsumerStrategy::fencingToken`) into `DurableSubscriptionModel` and `CatchupSubscriptionModel` at the call site that constructs them, so a node that lost its lock and kept writing can't overwrite a checkpoint a faster node already advanced.
 
-### Looking ahead, `SubscriptionModelCapability`
+### `SubscriptionModelCapability`
 
-The unreleased 0.33.0 library adds a root marker interface, `SubscriptionModelCapability`, on both stacks, and every capability facet on this page extends it. That's also the release where the probe method shown throughout this page is renamed from `of(Object)` to `findIn(SubscriptionModelCapability)`, the two changes ship together. The narrower parameter type doesn't change what compiles at an existing call site (a `SubscriptionModel` reference still passes straight through), it only stops you probing something that was never part of this hierarchy in the first place. This section documents both changes as planned. They ship alongside the rest of 0.33.0 and need re-checking against the final interfaces if that design shifts before release.
+0.33.0 adds a root marker interface, `SubscriptionModelCapability`, on both stacks, and every capability facet on this page extends it. That's also the release where the method shown throughout this page is renamed from `of(Object)` to `findIn(SubscriptionModelCapability)`, the two changes ship together. The narrower parameter type doesn't change what compiles at an existing call site (a `SubscriptionModel` reference still passes straight through), it only stops you probing something that was never part of this hierarchy in the first place.
 
 ### Does composition order matter?
 
