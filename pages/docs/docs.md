@@ -649,7 +649,7 @@ Which components need a reader, and which don't, comes down to whether they matc
 * **Synchronous and push subscriptions** (`SynchronousSubscriptionModel`, `PushSubscriptionModel`) also match entirely in memory, regardless of which store or broker feeds them, so both take a `DataFieldReader` as a constructor argument the same way `InMemorySubscriptionModel` does.
 * **A catch-up subscription model needs nothing.** It wraps a store that already applied the filter server-side to deliver the event in the first place, and on the live tail it only re-checks attributes and extensions, trusting the store for a payload condition. If you're writing your own subscription model wrapper and want the same trust, `FilterMatcher.matcherIgnoringPayloadConditions(filter)` builds that predicate for you.
 
-Worth knowing if you write a subscription model of your own. A catch-up wrapper assumes the model it wraps already applied a payload condition. If your model ignores one instead, the catch-up wrapper now over-delivers rather than throwing, since it has no store of its own to ask.
+If you write a subscription model of your own, a catch-up wrapper assumes the model it wraps already applied a payload condition. If your model ignores one instead, the catch-up wrapper now over-delivers rather than throwing, since it has no store of its own to ask.
 
 ##### Writing your own reader
 
@@ -1211,7 +1211,7 @@ that knows how to convert the "simple name" cloud event type back into the domai
 CloudEventTypeMapper<MyDomainEvent> typeMapper = ReflectionCloudEventTypeMapper.simple(MyDomainEvent.class);
 ```
 
-This will create an instance of `ReflectionCloudEventTypeMapper` that uses the simple name of the domain event as cloud event type. But the crucial thing is that when deriving the domain event type from the cloud event, 
+This will create an instance of `ReflectionCloudEventTypeMapper` that uses the simple name of the domain event as cloud event type. But when deriving the domain event type from the cloud event, 
 the `ReflectionCloudEventTypeMapper` will prepend the package name of supplied domain event type (`MyDomainEvent`) to the cloud event type, thus reconstructing the fully-qualified name of the class. 
 For this to work, _all_ domain events must reside in exactly the same package as `MyDomainEvent`.
 
@@ -2269,7 +2269,7 @@ public class CancelPayment {
 }
 ```
 
-As you can see it's a regular Java POJO. This is very important since JobRunr needs to serialize/de-serialize this class to the database. Typically, this is done using Jackson (so it's fine to use Jackson annotations etc), but JobRunr has support for other mappers as well.
+It's a regular Java POJO, because JobRunr needs to serialize/de-serialize this class to the database. Typically, this is done using Jackson (so it's fine to use Jackson annotations etc), but JobRunr has support for other mappers as well.
  
 Now lets see how we can schedule a "CancelPayment":
 
@@ -2485,7 +2485,7 @@ What we _would_ like to do is to persist the `time` attribute as a `Date` in Mon
 
 Occurrent makes the string comparison behave for the common case by writing every `time` in one canonical shape, always with seconds and always with nine
 fractional digits, for example `2026-07-28T12:00:00.000000000Z`. Because every stored value then has the same width, the character-by-character comparison
-follows chronological order. Two limits are worth knowing before you rely on it, and both are covered under
+follows chronological order. It has two limits, and both are covered under
 [time queries with RFC_3339_STRING](#time-queries-with-rfc_3339_string) below. Rationale in [ADR 79](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0079-canonical-fixed-width-time-for-rfc3339-storage.md).
 
 Because of the reasons described above, users of a MongoDB-backed EventStore implementation, must decide how the `time` attribute is to be represented in MongoDB
@@ -2982,7 +2982,7 @@ class MySubscriptionModelFixture implements SubscriptionModelFixture {
 }
 ```
 
-Nothing caps that number, but raising it has a consequence worth knowing. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
+Nothing caps that number, but raising it has a consequence. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
 
 ```java
 @Timeout(400)
@@ -4742,7 +4742,7 @@ operator fun invoke(gameId: GameId, timeOfGuess: Timestamp, playerId: PlayerId, 
 
 `DataIntegrityViolationException` belongs in that list even though a write conflict is not an integrity violation. MongoDB labels the conflict `TransientTransactionError`, but Spring translates it to `DataIntegrityViolationException`, which is not one of Spring's transient types, so a retry predicate built on `TransientDataAccessException` alone misses the most common conflict there is. Both DCB versions of the [word guessing game](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/domain/word-guessing-game) retry this way.
 
-One consequence worth knowing when you read a failure. [ADR 21](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0021-dcb-write-path-query-scoped-concurrency.md) describes the global position counter as being updated outside the append transaction, which holds only while the store owns that transaction. When the store joins your transaction the counter update joins it as well, so one shared document becomes a conflict point for every concurrent append in that transaction, even for appends to boundaries that have nothing to do with each other. A nested append often loses on the counter before it ever reaches the append itself.
+A nested append often loses on the counter before it ever reaches the append itself, and that is what a failure here looks like. [ADR 21](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0021-dcb-write-path-query-scoped-concurrency.md) describes the global position counter as being updated outside the append transaction, which holds only while the store owns that transaction. When the store joins your transaction the counter update joins it as well, so one shared document becomes a conflict point for every concurrent append in that transaction, even for appends to boundaries that have nothing to do with each other.
 
 The full reasoning is in [ADR 74](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0074-retry-only-where-the-transaction-is-owned.md).
 
@@ -5458,7 +5458,7 @@ on<PaymentReserved>(then = end) {
 
 A flow reaction reads `ReceivedEvents`, the events this instance has seen so far with the initiating event first. In Kotlin `received.initiating<GameCreated>()` gets the start event back to build the command from (Java uses `received.initiating(GameCreated.class)`), and `first`, `all`, and `count` have the same reified form. A `timeout(after = ...)` fires once a relative duration has elapsed, and `timeout(at = { received -> ... })` fires at an absolute `Instant` you compute from the received events, an auction's end time for example.
 
-Those reified accessors are Kotlin extensions, so a file outside the `org.occurrent.dsl.saga.flow` package imports each one it uses, `import org.occurrent.dsl.saga.flow.initiating` for the example above. Worth knowing for `initiating` in particular, because `ReceivedEvents` also has a no-arg `initiating()` member and a member wins over an extension. Leave the import out and the compiler points at that member with "No type arguments expected" rather than telling you the extension is missing, which sends you looking in the wrong place.
+Those reified accessors are Kotlin extensions, so a file outside the `org.occurrent.dsl.saga.flow` package imports each one it uses, `import org.occurrent.dsl.saga.flow.initiating` for the example above. Leave that import out for `initiating` specifically and the failure looks different than you'd expect, because `ReceivedEvents` also has a no-arg `initiating()` member and a member wins over an extension. The compiler points at that member with "No type arguments expected" rather than telling you the extension is missing, which sends you looking in the wrong place.
 
 A step is either a set of `on(...)` branches or a single `join(...)`, never both. A join waits until every `Expectation` it lists is met, counted since the step was entered, then runs once and follows its `Continuation`. Here is a step that waits for both players in the lobby above to ready up before it advances. It needs no new correlation, because the lobby's `correlateAll` already covers `PlayerReady`, which is what that fallback buys you:
 
@@ -5686,7 +5686,7 @@ For [DCB](#dynamic-consistency-boundary) the type is `DcbInvocation`, which take
 
 `E` here is the event type of the stream being written to, which is not necessarily the type the saga subscribes to. `Saga.adapt` cannot widen an `Invocation<Narrow>` into an `Invocation<Wide>`, because Java generics are invariant, so type a feature saga on the module-wide event type from the start.
 
-The cost is in the tests, and it is worth knowing before you choose this. A lambda has no value equality, so `assertThat(step.issuedCommands()).containsExactly(ShipOrder(orderId))` has no equivalent. Two replacements, both of which say more than the command's name did:
+The cost is in the tests. A lambda has no value equality, so `assertThat(step.issuedCommands()).containsExactly(ShipOrder(orderId))` has no equivalent. Two replacements, both of which say more than the command's name did:
 
 {% capture kotlin %}
 // Check what the command does, by running its decision over the events you care about
@@ -6339,7 +6339,7 @@ Timers get the same split treatment as commands. `timerEffects()` reads the star
 
 ### Firing a timeout without waiting {#testing-saga-timeouts}
 
-This is the part worth knowing. A timeout is an input, so you fire it by naming its timer instead of letting time pass. A flow step's timeout is named after the step, with a `step:` prefix, so a step called `awaiting-players` fires as `step:awaiting-players`:
+Fire a timeout in a test by naming its timer, instead of waiting for time to pass. A flow step's timer is named after the step, with a `step:` prefix, so a step called `awaiting-players` fires as `step:awaiting-players`:
 
 {% capture kotlin %}
 val step = lobby.step(started.state, SagaInput.timeout(SagaTimeout("game-1", "step:awaiting-players")))
@@ -6360,7 +6360,13 @@ assertAll(
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-An absolute `timeout(at = ...)` is fired exactly the same way. The deadline decides when the executor would fire the timer, and it has no say in what happens once it does, so a test never has to reach that instant. A timer name the saga does not know is a no-op, which is also worth a test, because it is what a typo in a `reactOnTimeout` name looks like.
+The step takes `SagaInput.timeout(...)` here the same way it took `SagaInput.event(...)` in the tests above, because to a step a timeout is just another input to react to.
+
+An absolute `timeout(at = ...)` fires the same way.
+
+The deadline only tells the executor when to fire the timer. Once it fires, the deadline has no further say in what happens, so a test never has to reach that instant to check the outcome.
+
+A timer name the saga does not know is a no-op. Test that case too, since it's what a typo in a `reactOnTimeout` name looks like.
 
 ### A join, one event at a time {#testing-saga-joins}
 
@@ -6669,7 +6675,7 @@ subscriptionModel.resumeSubscription("orders");
 
 Resuming continues from the stored checkpoint rather than replaying from the beginning, so this is also how you test that resume behaviour is what you think it is: pause, write, resume, and assert the handler saw exactly what was written while it was away.
 
-Two more worth knowing. `waitUntilStarted()` closes the race between subscribing and writing, and it is why the examples call it before their first write. `cancelSubscription(id)` drops a subscription entirely and frees its id, which is useful when one test class exercises several subscriptions in turn. The in-memory subscription model supports all of these, so most of this can be tested with no container at all.
+`waitUntilStarted()` closes the race between subscribing and writing, and it is why the examples call it before their first write. `cancelSubscription(id)` drops a subscription entirely and frees its id, which is useful when one test class exercises several subscriptions in turn. The in-memory subscription model supports all of these, so most of this can be tested with no container at all.
 
 Running under `occurrent.subscription.mode=manual`, the handle that `subscribe(..)` returns answers `false` for as long as the registration is withheld. `resumeSubscription(id)` hands back a different handle, the one for the start that actually runs, and that's the one to wait on.
 
@@ -7011,7 +7017,7 @@ class MySubscriptionModelFixture implements SubscriptionModelFixture {
 }
 ```
 
-Nothing caps that number, but raising it has a consequence worth knowing. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
+Nothing caps that number, but raising it has a consequence. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
 
 ```java
 @Timeout(400)
