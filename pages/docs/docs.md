@@ -5537,7 +5537,102 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
 
 `awaiting-decision` completes the moment either alternative is met. Two `Approved` events do it, and so does a single `Rejected`. `event<Approved>(2)` matches once the step's window holds two `Approved` events. `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. `anyOf` combines the two into one condition that fires on whichever alternative is met first, and the reaction reads the whole window through `ReceivedEvents`, `received.all(Rejected.class)` here, to tell which alternative fired and choose the command.
 
-`allOf` is `anyOf`'s counterpart. It is satisfied once every condition it lists is, rather than any single one. An `event(...)` call, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative, two events of one type together with either of two others, by putting one inside the other. `event(...)` also takes a predicate alongside its count, so a match can depend on the arriving event's own data and not only its type, the same idea the `onlyIf` guard on a classic `on<T>` branch already applies to a single event. A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side, with the first branch satisfied winning, exactly as described [above](#saga-flow-dsl).
+`allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
+
+{% capture kotlin %}
+val shipment = saga<ShipmentEvent, DispatchShipment> {
+    startsOn<ShipmentStarted>()
+    correlateAll { it.shipmentId }
+    step("packing") {
+        on(allOf(event<ItemPacked>(2), anyOf(event<CourierAssigned>(), event<PickupScheduled>())), then = end) { received ->
+            issue(DispatchShipment(received.initiating<ShipmentStarted>().shipmentId))
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<ShipmentEvent, FlowState<ShipmentEvent>, DispatchShipment> shipment =
+        FlowSaga.<ShipmentEvent, DispatchShipment>builder()
+                .startsOn(ShipmentStarted.class)
+                .correlateAll(ShipmentEvent::shipmentId)
+                .step("packing", step -> step
+                        .on(StepCondition.allOf(
+                                        StepCondition.event(ItemPacked.class, 2),
+                                        StepCondition.anyOf(StepCondition.event(CourierAssigned.class), StepCondition.event(PickupScheduled.class))),
+                                Continuation.end(),
+                                received -> List.of(new DispatchShipment(received.initiating(ShipmentStarted.class).shipmentId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`event(...)` also takes a predicate alongside its count, so a match can depend on the arriving event's own data and not only its type, the same idea the `onlyIf` guard on a classic `on<T>` branch already applies to a single event. Here `monitoring` completes the moment a reading exceeds a threshold:
+
+{% capture kotlin %}
+val sensor = saga<SensorEvent, RaiseAlarm> {
+    startsOn<SensorArmed>()
+    correlateAll { it.sensorId }
+    step("monitoring") {
+        on(event<ReadingTaken> { it.celsius > 40 }, then = end) { received ->
+            issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<SensorEvent, FlowState<SensorEvent>, RaiseAlarm> sensor =
+        FlowSaga.<SensorEvent, RaiseAlarm>builder()
+                .startsOn(SensorArmed.class)
+                .correlateAll(SensorEvent::sensorId)
+                .step("monitoring", step -> step
+                        .on(StepCondition.event(ReadingTaken.class, (ReadingTaken reading) -> reading.celsius() > 40),
+                                Continuation.end(),
+                                received -> List.of(new RaiseAlarm(received.initiating(SensorArmed.class).sensorId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side. Branches are evaluated in the order they are declared, and the first one satisfied wins, as already described [above](#saga-flow-dsl). Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first, or once two installments of any size have arrived, through a window condition declared second:
+
+{% capture kotlin %}
+val purchase = saga<PurchaseEvent, PurchaseCommand> {
+    startsOn<PurchaseStarted>()
+    correlateAll { it.purchaseId }
+    // A single payment covering the total releases immediately, otherwise two installments, of any amount, do.
+    step("collecting-payment") {
+        on<PaymentReceived>(
+            then = end,
+            onlyIf = { payment, received -> payment.amount >= received.initiating<PurchaseStarted>().total }
+        ) { payment ->
+            issue(ReleaseGoods(payment.purchaseId))
+        }
+        on(event<PaymentReceived>(2), then = end) { received ->
+            issue(ReleaseGoods(received.initiating<PurchaseStarted>().purchaseId))
+            issue(NotifyLayawayComplete(received.initiating<PurchaseStarted>().purchaseId))
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<PurchaseEvent, FlowState<PurchaseEvent>, PurchaseCommand> purchase =
+        FlowSaga.<PurchaseEvent, PurchaseCommand>builder()
+                .startsOn(PurchaseStarted.class)
+                .correlateAll(PurchaseEvent::purchaseId)
+                // A single payment covering the total releases immediately, otherwise two installments, of any amount, do.
+                .step("collecting-payment", step -> step
+                        .on(PaymentReceived.class,
+                                (payment, received) -> payment.amount() >= received.initiating(PurchaseStarted.class).total(),
+                                Continuation.end(),
+                                payment -> List.of(new ReleaseGoods(payment.purchaseId())))
+                        .on(StepCondition.event(PaymentReceived.class, 2),
+                                Continuation.end(),
+                                received -> List.of(
+                                        new ReleaseGoods(received.initiating(PurchaseStarted.class).purchaseId()),
+                                        new NotifyLayawayComplete(received.initiating(PurchaseStarted.class).purchaseId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A full payment that arrives as the second installment satisfies both branches. The window condition sees two `PaymentReceived` events, and the classic branch's guard also passes, since the payment alone covers the total. The classic branch wins, because it is declared first, so `collecting-payment` issues only `ReleaseGoods` and never reaches the window condition below it.
 
 Three things about a condition are easy to get wrong.
 
