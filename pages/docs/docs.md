@@ -83,6 +83,7 @@ permalink: /documentation
 * * * * [Catch-up Subscription](#catch-up-subscription-blocking)
 * * * * * [Usage](#catch-up-subscription-usage)
 * * * * [Competing Consumer Subscription](#competing-consumer-subscription-blocking)
+* * * * [Checkpoint Fencing](#checkpoint-fencing-blocking)
 * * * * [Life-cycle & Testing](#subscription-life-cycle--testing-blocking) 
 * * * * [Starting Subscriptions Manually](#manual-subscription-start)
 * * [Reactive](#reactive-subscriptions)
@@ -2900,13 +2901,17 @@ is defined like this:
 ```java
 public interface CheckpointStorage {
     Checkpoint read(String subscriptionId);
-    Checkpoint save(String subscriptionId, Checkpoint checkpoint);
+    Checkpoint save(String subscriptionId, Checkpoint checkpoint, CheckpointWriteCondition condition);
+    default Checkpoint save(String subscriptionId, Checkpoint checkpoint) {
+        return save(subscriptionId, checkpoint, CheckpointWriteCondition.any());
+    }
     void delete(String subscriptionId);
     boolean exists(String subscriptionId);
+    OptionalLong writeVersion(String subscriptionId);
 }
 ```
 
-I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. Occurrent ships with four pre-defined implementations:
+It's a way to read, write and delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. `save` takes a `CheckpointWriteCondition` as a third argument, stating what has to be true of the stored version before the write is allowed. The two-argument overload keeps its old meaning, an unconditional write, `any()`, that carries whatever version is already stored forward untouched, and every subscription model in this library calls it unless you wire up [checkpoint fencing](#checkpoint-fencing-blocking) for competing consumers. `writeVersion(subscriptionId)` reads back the version a condition is judged against. Occurrent ships with four pre-defined implementations:
 
 1\. **NativeMongoCheckpointStorage**<br>
     Uses the vanilla MongoDB Java (sync) driver to store `Checkpoint`'s in MongoDB.
@@ -3543,6 +3548,66 @@ The suite takes no position on *how* a strategy coordinates. Nothing in it knows
 It also asserts the contract both ways Occurrent relies on it. `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock. `SagaRunner` registers a consumer, never adds a listener at all, and asks `hasLock(subscriptionId, subscriberId)` on every poll instead. A strategy that reports changes only through a listener, or only answers correctly when asked directly, fails half of what the suite checks.
 
 A released competing consumer no longer reports it still holds the lock. `hasLock` used to answer yes for up to half the lease time after `releaseCompetingConsumer`, which reached `SagaRunner`'s poll directly. `unregisterCompetingConsumer` and `releaseCompetingConsumer` do two different things. Unregistering keeps a consumer out until you register it again, which is what a user-paused subscription needs. Releasing keeps it registered so it may take the lock back on its own, which is what a system-paused one needs.
+
+#### Checkpoint Fencing (Blocking) {#checkpoint-fencing-blocking}
+
+A node that has lost its competing-consumer lock can still try to write a checkpoint after another node has already taken over and written a later one. Without a fence, that write moves the checkpoint backward, and the new holder redelivers events it already processed. Since 0.33.0, `CompetingConsumerStrategy` can hand a subscription model a fencing token, and the model refuses a checkpoint write that carries an older one than what is already stored.
+
+If you use the Spring Boot starter and register a `CompetingConsumerStrategy` bean, you get this without doing anything else. The starter passes `strategy::fencingToken` at every place it builds a checkpoint-writing model, whatever your `CheckpointStorage` bean is. Registering two `CompetingConsumerStrategy` beans in the same application context turns the fence off for both, since the starter can no longer tell which one to ask.
+
+If you wire your own subscription models, pass `strategy::fencingToken` as an extra constructor argument to whichever model writes the checkpoints, `DurableSubscriptionModel` in the example below:
+
+{% capture java %}
+CheckpointStorage checkpointStorage = new NativeMongoCheckpointStorage(mongoDatabase, "position-storage");
+NativeMongoLeaseCompetingConsumerStrategy competingConsumerStrategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase);
+SubscriptionModel wrappedSubscriptionModel = new DurableSubscriptionModel(
+        new NativeMongoSubscriptionModel(mongoDatabase, "events", TimeRepresentation.DATE),
+        checkpointStorage,
+        competingConsumerStrategy::fencingToken);
+
+CompetingConsumerSubscriptionModel competingConsumerSubscriptionModel = new CompetingConsumerSubscriptionModel(wrappedSubscriptionModel, competingConsumerStrategy);
+{% endcapture %}
+{% capture kotlin %}
+val checkpointStorage = NativeMongoCheckpointStorage(mongoDatabase, "position-storage")
+val competingConsumerStrategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase)
+val wrappedSubscriptionModel = DurableSubscriptionModel(
+    NativeMongoSubscriptionModel(mongoDatabase, "events", TimeRepresentation.DATE),
+    checkpointStorage,
+    competingConsumerStrategy::fencingToken
+)
+
+val competingConsumerSubscriptionModel = CompetingConsumerSubscriptionModel(wrappedSubscriptionModel, competingConsumerStrategy)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`StreamCatchupSubscriptionModel`, `DcbCatchupSubscriptionModel` and `CatchupThenPushSubscriptionModel` take the same extra argument. `CompetingConsumerStrategy` does not implement the source type itself, a method reference is what connects the two, so a lock never has to know what a checkpoint is and a checkpoint store never has to know what a lease is.
+
+**What a refusal means for a running application.** The write throws `CheckpointWriteConditionNotFulfilledException`, and neither Mongo subscription model retries it, because a lease that has already moved on will never succeed on a later attempt. The event that triggered the write stays unacknowledged. The strategy's own lease refresh notices within one lease period that this node no longer holds the lock and pauses the consumer here. The node that took the lock over reads the checkpoint the refused write never got to update and redelivers everything from there. That is the at-least-once contract every subscription model in this library already gives you. The fence stops a node that lost its lease from moving the checkpoint backward. It does not turn delivery into exactly-once, so a handler still has to tolerate running twice on its own.
+
+**The condition behind the fence.** `CheckpointStorage.save` takes a `CheckpointWriteCondition` as a third argument, and a subscription model with a fencing token stamps its write `notOlderThan(token)`. That is one of three cases. `any()` is what the two-argument `save` has always meant, an unconditional write that carries whatever version is already stored forward untouched. `notOlderThan(version)` is what the fence uses, accepted when nothing is stored yet or the stored version is not greater than `version`, refused otherwise. `ifAbsent()` accepts only when no checkpoint is stored yet for that subscription id, for a caller that wants to fix a subscription's very first checkpoint, its start position, without racing another writer through `any()`. `CheckpointStorage.writeVersion(subscriptionId)` reads back the version a condition would be judged against.
+
+**Implementing `CheckpointStorage` yourself is a real break, on both the blocking interface and its reactor twin.** Run the `org.occurrent.UpgradeToOccurrent_0_33` OpenRewrite recipe first. It adds the three-argument `save` and `writeVersion` to every implementation it finds missing them, each a throwing placeholder with a `TODO [Occurrent 0.33 upgrade]` comment, so the module compiles again. Filling the stub in with real behavior is still yours. A store that only ever writes unconditionally can keep doing exactly that, and refuse the rest:
+
+```java
+@Override
+public Checkpoint save(String subscriptionId, Checkpoint checkpoint, CheckpointWriteCondition condition) {
+    if (!(condition instanceof CheckpointWriteCondition.Any)) {
+        throw new UnsupportedOperationException("This storage cannot evaluate " + condition + ", only any() is supported.");
+    }
+    return save(subscriptionId, checkpoint); // your existing unconditional write
+}
+
+@Override
+public OptionalLong writeVersion(String subscriptionId) {
+    return OptionalLong.empty();
+}
+```
+
+It is not a stopgap. It is the correct permanent answer for a store that genuinely cannot evaluate a condition, the same way an event store answers a capability it was not built with. Occurrent's own Mongo and Redis checkpoint storages do not need this recipe. They already evaluate every condition for real, apart from Redis Cluster, which still refuses a conditional write outright, covered below. If your store can evaluate a condition for real, the conformance suite in `occurrent-tck-subscription-blocking` checks the two rules that matter for it. `any()` has to leave whatever version is stored untouched, rather than clearing it or inferring one from the write. `notOlderThan(version)` has to accept when nothing is stored, since that is a checkpoint written before this condition existed, and every checkpoint saved by an earlier release has to stay readable.
+
+**Redis Cluster does not support the fence.** `SpringRedisCheckpointStorage` keeps the checkpoint and its stored version in two separately named keys, and the Lua script that compares and writes both atomically is refused on Redis Cluster for touching keys in different slots. Asking for `notOlderThan` or `ifAbsent` against a cluster fails immediately on the first conditional write, not quietly later. A Redis Cluster deployment with no `CompetingConsumerStrategy` wired in is unaffected.
+
+**One thing to know before rolling this out on a cluster already running competing consumers.** During the rolling upgrade from 0.32.0 to 0.33.0, a node still on 0.32.0 releases its lock by deleting the lock document, so the next node to take it over starts at version 0 again. A 0.33.0 node's checkpoint write then offers `notOlderThan(0)` against a checkpoint already stamped with a higher version and is refused. That refusal repeats, once per unit of the stored version, each cycle costing one lease period and one re-run of whatever the handler did before the refusal, until every node in the deployment runs 0.33.0. From then on the version keeps climbing instead of resetting, and the fence holds. If a subscription is stuck cycling and you want it to stop sooner, `CheckpointStorage.delete(subscriptionId)` clears the checkpoint and its stored version together, at the cost of replaying everything since. [ADR 116](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0116-a-checkpoint-write-from-a-lease-that-has-moved-on-is-refused.md) has the full design, and the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.33.0.md) covers implementing `CheckpointStorage` yourself in more detail.
 
 #### Subscription Life-cycle & Testing (Blocking)
 
