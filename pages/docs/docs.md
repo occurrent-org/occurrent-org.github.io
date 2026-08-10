@@ -136,6 +136,7 @@ permalink: /documentation
 * * * [Event Metadata](#saga-event-metadata)
 * * * [Effects Are Data](#saga-effects)
 * * * [Running a Saga](#running-a-saga)
+* * * [Sagas Without Command Types](#sagas-without-command-types)
 * * * [The `@Saga` Annotation](#the-saga-annotation)
 * * * * [Fed from a broker](#saga-push-source)
 * * * [Delivery Contract](#saga-delivery-contract)
@@ -5430,7 +5431,7 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-In the Kotlin DSL, when a reaction issues a command only in some cases and none in the others, say so with `nothing`. In Java a reaction returns the list of commands to issue, so returning an empty list issues nothing. It means there is nothing to issue, not that nothing happens: the branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
+In the Kotlin DSL, when a reaction issues a command only in some cases and none in the others, say so with `nothing`. In Java a reaction returns the list of commands to issue, so returning an empty list issues nothing. It means there is nothing to issue, not that nothing happens. The branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
 
 ```kotlin
 // Issue only when the payment was partial, otherwise nothing
@@ -5473,7 +5474,7 @@ step("waiting-for-both-players") {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A `transitionTo` names any step, including the current one, which is how a flow expresses a loop. An auction stays open as long as bids keep arriving: each `BidPlaced` transitions the `bidding` step back to itself, and an absolute timeout closes it once its end time passes. Re-entering the step re-arms its timeout, but because the deadline is derived from the initiating event it stays pinned to the auction's end time rather than sliding forward on every bid:
+A `transitionTo` names any step, including the current one, which is how a flow expresses a loop. An auction stays open as long as bids keep arriving. Each `BidPlaced` transitions the `bidding` step back to itself, and an absolute timeout closes it once its end time passes. Re-entering the step re-arms its timeout, but because the deadline is derived from the initiating event it stays pinned to the auction's end time rather than sliding forward on every bid:
 
 {% capture kotlin %}
 val auction = saga<AuctionEvent, CloseAuction> {
@@ -5504,7 +5505,7 @@ Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
 
 ### Correlation {#saga-correlation}
 
-A saga is not one process, it is many instances of the same process, one per order or game or auction. Correlation is how an incoming event finds its instance: for every event the saga is handed, it derives a `String` id, and that id is the key the state store loads and saves under. Two events that produce the same id are the same running saga. The id is a plain `String` so it survives being persisted and read back unchanged, and it is yours to choose, usually the domain id already on the event.
+A saga is not one process, it is many instances of the same process, one per order or game or auction. Correlation is how an incoming event finds its instance. For every event the saga is handed, it derives a `String` id, and that id is the key the state store loads and saves under. Two events that produce the same id are the same running saga. The id is a plain `String` so it survives being persisted and read back unchanged, and it is yours to choose, usually the domain id already on the event.
 
 Two declarations do the correlating, and both are available on the core and the flow DSL. A third names the starting event:
 
@@ -5570,7 +5571,7 @@ A reaction never performs an effect. It returns a list of `SagaEffect` values an
 
 Timers use `Duration` and `Instant`, never the [deadline module](#deadlines). Keeping effects as plain data is what makes a reaction pure. A relative `Duration` is resolved against the clock by the runner when it stores the timer, not inside `react`, so the same reaction returns the same effect values every time and you can assert on them with plain equality.
 
-Here are three of them in play: reserving payment issues a command and arms the payment timer, reserving it successfully issues another command and disarms that same timer:
+Here are three of them in play. Reserving payment issues a command and arms the payment timer, and reserving it successfully issues another command and disarms that same timer:
 
 {% capture kotlin %}
 react<OrderPlaced> { _, e ->
@@ -5680,7 +5681,7 @@ CommandDispatcher<Invocation<OrderEvent>> dispatcher = CommandDispatchers.invoca
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Nothing about the saga machinery changes. An invocation is an ordinary command, so it goes through the same `CommandDispatcher`, gets the same at-least-once delivery, and is safe for the same reason a decider is: the application service re-reads the stream before your function decides, so a duplicate decides nothing.
+Nothing about the saga machinery changes. An invocation is an ordinary command, so it goes through the same `CommandDispatcher`, gets the same at-least-once delivery, and is safe for the same reason a decider is. The application service re-reads the stream before your function decides, so a duplicate decides nothing.
 
 For [DCB](#dynamic-consistency-boundary) the type is `DcbInvocation`, which takes a `DcbCriteria` read boundary in place of the stream id, and optionally its own `TagGenerator`. Dispatch it with `DcbCommandDispatchers.invocation(applicationService)`.
 
@@ -5706,7 +5707,7 @@ Or run the saga against an in-memory event store and check the events it wrote, 
 
 ### The `@Saga` Annotation {#the-saga-annotation}
 
-On the [Spring Boot starter](#spring-boot-starter) you do not wire a `SagaRunner` yourself. Annotate a no-arg factory method returning a `Saga` with `org.occurrent.annotation.Saga` and the framework registers it as a managed saga, subscribing through the same catch-up, durable-resume, and [competing-consumer](#competing-consumer-subscription-blocking) machinery as [`@Subscription`](#spring-boot-annotations):
+On the [Spring Boot starter](#spring-boot-starter) you do not wire a `SagaRunner` yourself. Annotate a no-arg factory method returning a `Saga` with `org.occurrent.annotation.Saga`. The framework registers it as a managed saga, subscribing through the same catch-up, durable-resume, and [competing-consumer](#competing-consumer-subscription-blocking) machinery as [`@Subscription`](#spring-boot-annotations):
 
 {% capture kotlin %}
 import org.occurrent.annotation.Saga
@@ -5837,7 +5838,7 @@ class OrderEventsConfig {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Your listener calls `accept(cloudEvent)` on that bean and the saga takes it from there. Nothing else changes: the same `correlateAll`, the same steps, the same timeouts, the same state store.
+Your listener calls `accept(cloudEvent)` on that bean and the saga takes it from there, using the same `correlateAll`, the same steps, the same timeouts, and the same state store it always did.
 
 By default the starter puts a [replay in front of the feed](#push-subscription-blocking), so a saga that has never run works through the event store's history first and only then starts taking live events. That is what you want when this application wrote the events and the broker is only how they reach the saga.
 
@@ -5859,8 +5860,7 @@ org.occurrent.dsl.saga.Saga<ShipmentEvent, FlowState<ShipmentEvent>, ShipmentCom
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-This takes live events only and touches no event store at all. The bean requirements and failure messages are the same as for a [push projection with `catchup = Catchup.NONE`](#push-subscription-blocking).
-This takes live events only and touches no event store at all, so the application needs neither a `PositionOrderedReader` nor a `CheckpointStorage` bean. Leave the default in place without those beans and startup fails with a message telling you to set `catchup = Catchup.NONE`, rather than a bare missing-bean error.
+This takes live events only and touches no event store at all, so the application needs neither a `PositionOrderedReader` nor a `CheckpointStorage` bean. The bean requirements and failure messages are the same as for a [push projection with `catchup = Catchup.NONE`](#push-subscription-blocking). Leave the default in place without those beans and startup fails with a message telling you to set `catchup = Catchup.NONE`, rather than a bare missing-bean error.
 
 A saga that has run before picks up where it left off either way, because its per-instance state lives in its `SagaStateStore` and not in the feed. The difference shows on a first run against an existing history. With the default the saga is brought up to date from the event store before it reacts. With `Catchup.NONE` it starts from nothing and reacts only to what arrives from here on.
 
@@ -5868,7 +5868,7 @@ A saga that has run before picks up where it left off either way, because its pe
 
 A saga recognizes a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. A broker delivers at least once, so an event carrying none of those would make the saga react a second time and issue its commands again on every redelivery. The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs. The event goes unacknowledged, so the problem lands at the listener that dropped the metadata, which is where it can be fixed. Occurrent's own stored events always carry the extensions, so this is about what your listener forwards, not about the event store.
 
-If your feed genuinely carries none of them, another application's broker for example, and every command the saga issues is safe to receive more than once, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always carry the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
+Your feed might carry none of that redelivery metadata, another application's broker for example, while every command the saga issues is still safe to receive more than once. When both are true, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always carry the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
 
 This is also why a `@Saga` accepts only a `PushSubscriptionModel` and not a [`DomainEventFeed`](#feeding-domain-events-instead-of-cloudevents), which a `@Projection` does accept. A domain event feed carries no stream metadata, so a saga bound to one would lose its redelivery protection without saying anything.
 
@@ -5914,17 +5914,17 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
-A flow saga does not remember its whole history. The received log a join, guard, or timeout reaction reads through `ReceivedEvents` keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a guard or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
+A flow saga does not remember its whole history. A join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a guard or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
 
-What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
+What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name. So a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
 For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/saga/order-fulfillment) wires up both DSLs through `SagaRunner`, with both styles of dispatcher.
 
 ### Running Across Multiple Instances {#saga-multi-instance}
 
-Run several instances of your application and a saga has two things happening per instance: it receives events, and it polls the state store for due timers. The event side is already single-active when the subscription model is a [competing-consumer](#competing-consumer-subscription-blocking) one (the [Spring Boot starter](#spring-boot-starter) uses one by default), so for a given saga only one instance receives events at a time. The timer poller is separate. Left uncoordinated, every instance runs its own poller and queries the store for due timers on its own interval, so the timer-query load grows with the instance count even though only one instance needs to fire a due timer. Firing stays correct either way, since a lost compare-and-set is retried and the dispatch is idempotent, but the extra queries are wasted work.
+Run several instances of your application, and a saga has two things happening per instance. It receives events, and it polls the state store for due timers. The event side is already single-active when the subscription model is a [competing-consumer](#competing-consumer-subscription-blocking) one, and the [Spring Boot starter](#spring-boot-starter) uses one by default. So for a given saga, only one instance receives events at a time. The timer poller is separate. Left uncoordinated, every instance runs its own poller and queries the store for due timers on its own interval. The timer-query load then grows with the instance count, even though only one instance ever needs to fire a due timer. Firing stays correct either way, since a lost compare-and-set is retried and the dispatch is idempotent, but the extra queries are wasted work.
 
-Give the `SagaRunner` a `CompetingConsumerStrategy` with `competingConsumerStrategy(...)`, the same strategy the competing-consumer subscription uses, and the poller is gated too: it takes a lease and only polls while it holds it, so exactly one instance queries the store. The lease is keyed apart from the event subscription's own lease, and released when the `SagaSubscription` is closed, so another instance takes over within about one lease period. A standby instance checks whether it holds the lease in memory, so it costs no query at all:
+Give the `SagaRunner` a `CompetingConsumerStrategy` with `competingConsumerStrategy(...)`, the same strategy the competing-consumer subscription uses. The poller is gated too. It takes a lease and only polls while it holds it, so exactly one instance queries the store. The lease is keyed apart from the event subscription's own lease, and released when the `SagaSubscription` is closed, so another instance takes over within about one lease period. A standby instance checks whether it holds the lease in memory, so it costs no query at all:
 
 {% capture kotlin %}
 val strategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase)
@@ -5958,7 +5958,7 @@ Gating removes the redundant queries. It does not change the residual cross-node
 
 ### Side Effects and Compensation {#saga-side-effects}
 
-A saga affects the outside world in exactly one way: it issues commands. There is no "call this API" effect, and that is deliberate, because it keeps `react` a pure function whose output is data. With ordinary command types you can test that output with equality assertions, and with [`Invocation`](#sagas-without-command-types) you check what the command does instead, since a lambda has no value equality. Either way the reaction performs nothing itself. So a third-party call, whether it runs mid-process or as the last thing a completed saga does, is a command like any other. Write a reaction that issues, say, `NotifyWarehouse(orderId)`, and point that command at a dispatcher that makes the call. The terminal reaction, the one whose `Continuation` is `end`, is where a "now that the whole thing is done" effect belongs.
+A reaction that needs to reach the outside world issues a command, for example `NotifyWarehouse(orderId)`, and points it at a dispatcher that makes the call. That is the only way a saga touches the outside world. There is no "call this API" effect, and that is deliberate, because it keeps `react` a pure function whose output is data. With ordinary command types you can test that output with equality assertions, and with [`Invocation`](#sagas-without-command-types) you check what the command does instead, since a lambda has no value equality. Either way the reaction performs nothing itself, so a third-party call, whether it runs mid-process or as the last thing a completed saga does, is a command like any other. The terminal reaction, the one whose `Continuation` is `end`, is where a "now that the whole thing is done" effect belongs.
 
 Compensation works the same way. A saga does not roll back, it moves forward, so an "undo" is just another command you issue on the branch or timeout that detected the failure. The order-fulfillment saga above already does this. When payment fails or the timeout fires it issues `CancelOrder`, which is the compensation for the `ReservePayment` it issued earlier. You decide which command undoes which, there is no automatic inverse:
 
@@ -6005,7 +6005,7 @@ List<SagaInstance> stalled = instances.findByStatus(SagaStatus.ACTIVE, Instant.n
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`SagaInstances` reads the saga's state store, so it is not the event subscription answering these questions. `SagaSubscription.instances()` is a shortcut that hands you a view over the store the saga already runs against, which is also why it keeps working after you close the handle: closing stops that instance's timer poller, it does not close the store. With no handle at hand, in a separate admin process for instance, build one straight from the store with `SagaInstances.of(stateStore)`.
+`SagaInstances` reads the saga's state store, so it is not the event subscription answering these questions. `SagaSubscription.instances()` is a shortcut that hands you a view over the store the saga already runs against, which is also why it keeps working after you close the handle. Closing stops that instance's timer poller, but it does not close the store. With no handle at hand, in a separate admin process for instance, build one straight from the store with `SagaInstances.of(stateStore)`.
 
 A `SagaInstance` carries the id, the `SagaStatus` (`ACTIVE` or `COMPLETED`), the created, updated, and completed timestamps, when the next pending timer is due, and which step a flow saga is waiting in. `currentStep()` is `null` for a core saga, which names its states in your own state type rather than in a step the executor knows about.
 
@@ -6419,7 +6419,7 @@ A guard is tested the same way, by driving the same branch twice with events tha
 
 ### Through the executor, once {#testing-saga-end-to-end}
 
-The level above proves the saga. This level proves the wiring: that the runner subscribes, correlates, persists and dispatches. Use the in-memory event store and subscription model, `SagaStateStore.inMemory()`, and a `CommandDispatcher` that collects into a list so you can assert on it.
+The level above proves the saga. This level proves the wiring. It confirms that the runner subscribes, correlates, persists, and dispatches. Use the in-memory event store and subscription model, `SagaStateStore.inMemory()`, and a `CommandDispatcher` that collects into a list so you can assert on it.
 
 A timeout is the one case that genuinely needs time to pass here, and the poll interval is configurable so it does not need much. Shrink both the interval and the saga's own timeout:
 
