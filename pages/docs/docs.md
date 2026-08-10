@@ -5384,7 +5384,7 @@ The flow DSL cannot express everything, on purpose. A step can wait on a fixed c
 
 ### The Flow DSL {#saga-flow-dsl}
 
-The flow DSL describes a process as a linear sequence of named steps. A step is an ordered list of branches, each waiting for either a single event type or a condition over the events received since the step was entered, and the first branch satisfied wins. A step can also carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
+The flow DSL describes a process as a linear sequence of named steps. A step is an ordered list of branches, and the first one satisfied wins. Each branch waits for either a single event type or a condition over the events received since the step was entered. A step can also carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
 
 The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
 
@@ -5535,7 +5535,7 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`awaiting-decision` completes the moment either alternative is met. Two `Approved` events do it, and so does a single `Rejected`. `event<Approved>(2)` matches once the step's window holds two `Approved` events. `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. `anyOf` combines the two into one condition that fires on whichever alternative is met first, and the reaction reads the whole window through `ReceivedEvents`, `received.all(Rejected.class)` here, to tell which alternative fired and choose the command.
+`awaiting-decision` completes the moment either alternative is met. Two `Approved` events do it, and so does a single `Rejected`. `event<Approved>(2)` matches once the step's window holds two `Approved` events. `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. `anyOf` combines the two into one condition that fires on whichever alternative is met first. The reaction reads the whole window through `ReceivedEvents`, `received.all(Rejected.class)` here, to tell which alternative fired and choose the command.
 
 `allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
 
@@ -5591,7 +5591,7 @@ Saga<SensorEvent, FlowState<SensorEvent>, RaiseAlarm> sensor =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side. Branches are evaluated in the order they are declared, and the first one satisfied wins, as already described [above](#saga-flow-dsl). Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first, or once two installments of any size have arrived, through a window condition declared second:
+A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side. Branches are evaluated in the order they are declared, and the first one satisfied wins, as already described [above](#saga-flow-dsl). Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first. It also releases them once two installments of any size have arrived, through a window condition declared second:
 
 {% capture kotlin %}
 val purchase = saga<PurchaseEvent, PurchaseCommand> {
@@ -5755,7 +5755,7 @@ SagaSubscription runningSaga = SagaRunner.agnostic(subscriptionModel, cloudEvent
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`run(...)` waits for the saga's subscription to be started and caught up before it returns, and an overload takes a `waitUntilStarted` boolean to opt out of that wait, so a caller driving the runner directly can start a long replay in the background the way [`@Saga` does by default](#the-saga-annotation). Either way the saga's timers do not fire until the subscription is running and has finished replaying, on a push feed and on a catch-up subscription model alike, so a timeout can never decide against state the saga has only half rebuilt.
+`run(...)` waits for the saga's subscription to be started and caught up before it returns. An overload takes a `waitUntilStarted` boolean to opt out of that wait, so a caller driving the runner directly can start a long replay in the background the way [`@Saga` does by default](#the-saga-annotation). Either way, the saga's timers do not fire until the subscription is running and has finished replaying, on a push feed and on a catch-up subscription model alike. So a timeout can never decide against state the saga has only half rebuilt.
 
 The dispatcher is a `CommandDispatcher`, usually just a lambda over an `ApplicationService`. The decider-free path above is first-class, you hand each command to any `ApplicationService`-shaped receiver. When the command target is a decider, `CommandDispatchers.decider(...)` wires it for you:
 
