@@ -5384,7 +5384,16 @@ The flow DSL cannot express everything, on purpose. A step can wait on a fixed c
 
 ### The Flow DSL {#saga-flow-dsl}
 
-The flow DSL describes a process as a linear sequence of named steps. A step is an ordered list of branches, and the first one satisfied wins. Each branch waits for either a single event type or a condition over the events received since the step was entered. A step can also carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
+The flow DSL describes a process as a linear sequence of named steps. Here is one branch from a step, reacting to `PaymentReserved`:
+
+```kotlin
+on<PaymentReserved>(then = end) {
+    if (it.partial) issue(ReserveRemainder(it.orderId))
+    issue(ShipOrder(it.orderId))
+}
+```
+
+A step is an ordered list of branches like the one above, and the first one satisfied wins. Each branch waits for either a single event type or a condition over the events received since the step was entered. A step can also carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
 
 The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
 
@@ -5422,14 +5431,7 @@ When there is a reaction, it returns what `issue` gives back rather than nothing
 on<PaymentReserved>(then = end) { ShipOrder(it.orderId) }
 ```
 
-You write reactions exactly as you always would, because `issue` and the timer calls already return the receiver. Conditionals included, as long as the reaction ends on a command:
-
-```kotlin
-on<PaymentReserved>(then = end) {
-    if (it.partial) issue(ReserveRemainder(it.orderId))
-    issue(ShipOrder(it.orderId))
-}
-```
+You write reactions exactly as you always would, because `issue` and the timer calls already return the receiver. Conditionals included, as long as the reaction ends on a command, exactly as the branch above does.
 
 In the Kotlin DSL, when a reaction issues a command only in some cases and none in the others, say so with `nothing`. In Java a reaction returns the list of commands to issue, so returning an empty list issues nothing. It means there is nothing to issue, not that nothing happens: the branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
 
