@@ -5422,7 +5422,7 @@ Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Notice that `on<PlayerJoined>(then = end)` has no reaction at all. A branch, join, timeout or start that issues nothing simply omits it, in Java through a `StepBuilder` overload that takes no reaction.
+Notice that `on<PlayerJoined>(then = end)` has no reaction at all. A branch, timeout or start that issues nothing simply omits it, in Java through a `StepBuilder` overload that takes no reaction.
 
 When there is a reaction, it returns what `issue` gives back rather than nothing. That is what makes the mistake below a compile error instead of a saga that silently does nothing at runtime, since a Kotlin lambda expecting `Unit` would have accepted the command and discarded it:
 
@@ -5463,18 +5463,20 @@ A flow reaction reads `ReceivedEvents`, the events this instance has seen so far
 
 Those reified accessors are Kotlin extensions, so a file outside the `org.occurrent.dsl.saga.flow` package imports each one it uses, `import org.occurrent.dsl.saga.flow.initiating` for the example above. Leave that import out for `initiating` specifically and the failure looks different than you'd expect, because `ReceivedEvents` also has a no-arg `initiating()` member and a member wins over an extension. The compiler points at that member with "No type arguments expected" rather than telling you the extension is missing, which sends you looking in the wrong place.
 
-`join` is a shorthand for a single branch that waits until every `Expectation` it lists is met, counted since the step was entered, then runs once and follows its `Continuation`. It is deprecated in favor of `on(allOf(...))`, covered in [Step Conditions](#saga-step-conditions) below, but keeps working exactly as shown here. Here is a step that waits for both players in the lobby above to ready up before it advances. It needs no new correlation, because the lobby's `correlateAll` already covers `PlayerReady`, which is what that fallback buys you:
+A branch can also wait for several events instead of reacting to the first one that arrives. `on` takes a condition as well as an event type, and `event<PlayerReady>(2)` is met once the step has seen two `PlayerReady` events, counted since the step was entered. Here is a step that waits for both players in the lobby above to ready up before it advances. It needs no new correlation, because the lobby's `correlateAll` already covers `PlayerReady`, which is what that fallback buys you:
 
 {% capture kotlin %}
 step("waiting-for-both-players") {
-    join(expect<PlayerReady>(2), then = next)
+    on(event<PlayerReady>(2), then = next)
 }
 {% endcapture %}
 {% capture java %}
 .step("waiting-for-both-players", step -> step
-        .join(List.of(Expectation.of(PlayerReady.class, 2)), Continuation.next()))
+        .on(StepCondition.event(PlayerReady.class, 2), Continuation.next()))
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Conditions combine, so a step can wait for an alternative or mix a count with one. [Step Conditions](#saga-step-conditions) below covers `allOf` and `anyOf`. The older `join(...)`, which waited for a list of `Expectation`s, does the same thing as `on(allOf(...))` and is deprecated in favor of it. Existing code keeps working.
 
 A `transitionTo` names any step, including the current one, which is how a flow expresses a loop. An auction stays open as long as bids keep arriving: each `BidPlaced` transitions the `bidding` step back to itself, and an absolute timeout closes it once its end time passes. Re-entering the step re-arms its timeout, but because the deadline is derived from the initiating event it stays pinned to the auction's end time rather than sliding forward on every bid:
 
@@ -5638,7 +5640,7 @@ A full payment that arrives as the second installment satisfies both branches. T
 
 Three things about a condition are easy to get wrong.
 
-Re-entering a step, including a `transitionTo` back into the step it is already in, restarts its window. Every branch in that step starts counting from zero again, so a classic branch's self-loop wipes a sibling condition's partial progress exactly as it already wipes a join's.
+Re-entering a step, including a `transitionTo` back into the step it is already in, restarts its window. Every branch in that step starts counting from zero again, so a classic branch's self-loop wipes a sibling condition's partial progress along with its own.
 
 A condition on the first step that names the start event's own type only counts events arriving after the start. The start delivery is what enters the step, and it does not also count toward that step's window, so a condition built from the start type never fires on the delivery that created the instance.
 
@@ -6056,7 +6058,7 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
-A flow saga does not remember its whole history. The received log a condition, join, guard, or timeout reaction reads through `ReceivedEvents` keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` only bounds history carried over from earlier steps. The current step's own events are never dropped mid-step, so a condition counting since the step was entered sees all of them even with `historyWindow(0)`. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
+A flow saga does not remember its whole history. The received log a condition, guard, or timeout reaction reads through `ReceivedEvents` keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition or guard that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` only bounds history carried over from earlier steps. The current step's own events are never dropped mid-step, so a condition counting since the step was entered sees all of them even with `historyWindow(0)`. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
 
 What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
@@ -6512,7 +6514,7 @@ A timer name the saga does not know is a no-op. Test that case too, since it's w
 
 ### A condition, one event at a time {#testing-saga-joins}
 
-A condition, like a join, fires once it is satisfied, counted since the step was entered. The interesting tests are the ones before that, a partial match that must not fire, and the other alternative firing instead. Using the `review` saga from [Step Conditions](#saga-step-conditions) above, one `Approved` is not enough to publish, a second one is, and a single `Rejected` discards immediately without waiting for anything else. Feed the events one at a time and pass each step's state into the next:
+A condition fires once it is satisfied, counted since the step was entered. The interesting tests are the ones before that, a partial match that must not fire, and the other alternative firing instead. Using the `review` saga from [Step Conditions](#saga-step-conditions) above, one `Approved` is not enough to publish, a second one is, and a single `Rejected` discards immediately without waiting for anything else. Feed the events one at a time and pass each step's state into the next:
 
 {% capture kotlin %}
 val started = start(review, ReviewStarted("review-1"))
