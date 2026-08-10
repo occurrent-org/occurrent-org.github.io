@@ -3953,6 +3953,7 @@ The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the sam
 ##### Life-cycle {#push-subscription-reactive-life-cycle}
 
 Like its [blocking twin](#push-subscription-blocking-life-cycle), a reactive `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down, with the same *dropped, not deferred* contract for whatever is fed to it while stopped or paused, and the same one-way `shutdown()`.
+
 ## Synchronous Subscriptions
 
 The subscriptions described so far are asynchronous. They run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
@@ -4080,6 +4081,90 @@ class OngoingGamesProjection(private val someDatabase: Database) {
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 Because the starter wires a Spring-backed `TransactionExecutor` by default, the handler above already commits atomically with the event write. Add `@Transactional` to the method to compose your own transaction on top. On the same MongoDB it joins the write's transaction, and on a different datastore it commits independently.
+
+## Subscription Model Capabilities {#subscription-model-capabilities}
+
+A `SubscriptionModel` is a small interface with four things on it, subscribe, cancel, pause, and stop. Everything else, listing subscriptions, knowing whether a replay is still running, resuming at an explicit position, wrapping another model, exposing a checkpoint, is an optional capability a concrete model may or may not add. This is a different idea from the event store's own `EventStoreCapability` (`STREAM` and `DCB`, see [Capabilities](#capabilities)), which describes what an `EventStore` supports rather than what a `SubscriptionModel` does.
+
+Most of these capabilities are mixins you reach with a static probe rather than a cast, because the model you're holding is usually several wrappers deep:
+
+{% capture java %}
+// subscriptionModel might be a bare NativeMongoSubscriptionModel, or three layers of
+// wrapper deep, CompetingConsumer(Catchup(Durable(Mongo))). Either way, this reaches
+// whichever layer actually knows the answer.
+Set<String> ids = IntrospectableSubscriptions.of(subscriptionModel)
+        .map(IntrospectableSubscriptions::subscriptionIds)
+        .orElse(Set.of());
+{% endcapture %}
+{% capture kotlin %}
+// subscriptionModel might be a bare NativeMongoSubscriptionModel, or three layers of
+// wrapper deep, CompetingConsumer(Catchup(Durable(Mongo))). Either way, this reaches
+// whichever layer actually knows the answer.
+val ids = IntrospectableSubscriptions.of(subscriptionModel)
+    .map { it.subscriptionIds() }
+    .orElse(emptySet())
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+### The base every subscription model has
+
+| Interface | Blocking | Reactor | Adds |
+|:----|:----|:----|:----|
+| `Subscribable` | yes | yes | `subscribe(...)`, the read-and-react primitive every model starts from |
+| `CancellableSubscriptions` | yes | yes | `cancelSubscription(id)` alone, split out for a register-only model that has nothing to start, stop, or pause. No shipped model uses it on its own today, every one implements the fuller `SubscriptionModelLifeCycle` below instead |
+| `SubscriptionModelLifeCycle` | yes | yes | extends `CancellableSubscriptions` with `start`, `stop`, `pauseSubscription`, `resumeSubscription`, `isRunning`, `isPaused`, and `shutdown` |
+| `SubscriptionModel` | yes | yes | `Subscribable` + `SubscriptionModelLifeCycle` together, what "a subscription model" means on either stack |
+
+### Wrapping, and the `of(..)` probe
+
+A model that wraps another one (`DurableSubscriptionModel` around a Mongo model, `CatchupSubscriptionModel` around that, and so on) implements `SubscriptionModelWrapper` on the blocking stack, which exposes `getWrappedSubscriptionModel()` and a recursive variant that walks all the way down. This is blocking-only, reactor has no equivalent interface, so a reactor wrapper has no generic way to hand back what it wraps.
+
+That asymmetry is why the two stacks reach an optional capability differently. On the blocking stack, `IntrospectableSubscriptions`, `ReplayAwareSubscriptions`, and `RepositionableSubscriptions` each carry a static `of(subscriptionModel)` probe that checks the model you hand it first, and only unwraps a `SubscriptionModelWrapper` layer by layer if that model itself doesn't implement the capability. Which means the **outermost** implementer answers, not the innermost one. Hold `CompetingConsumer(Catchup(Durable(Mongo)))`, and if every layer happens to implement `IntrospectableSubscriptions`, `of(..)` returns `CompetingConsumerSubscriptionModel`'s own answer, never Mongo's. On the reactor stack there is no probe at all for `IntrospectableSubscriptions` or `ReplayAwareSubscriptions`, check the concrete model you're holding with `instanceof` instead, and note that the subscription DSL wrappers don't forward either capability, so ask the subscription model itself rather than a DSL wrapper around it.
+
+### Optional mixins
+
+| Interface | Blocking | Reactor | Adds | Reach it with |
+|:----|:----|:----|:----|:----|
+| `IntrospectableSubscriptions` | yes | yes | `subscriptionIds()`, every id the model knows, running or paused | `of(model)` (blocking) / `instanceof` (reactor) |
+| `ReplayAwareSubscriptions` | yes | yes | `isCatchingUp(id)`, true only while that subscription is still replaying history, which `isRunning(id)` can't tell you since it stays true throughout a replay | `of(model)` (blocking) / `instanceof` (reactor) |
+| `RepositionableSubscriptions` | yes | no | `resumeSubscription(id, startAt)`, resume at an explicit position instead of wherever the model stopped | `of(model)` |
+| `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `of(..)` walks through | declare or cast |
+| `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, and cloud events carrying a checkpoint you can store yourself | declare the variable as this type, or cast, no `of(..)` probe, see below |
+| `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`, the target a broker listener feeds events into | implemented directly by the push models, declare or cast |
+
+`CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the first three are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
+
+### Typed views
+
+| Interface | Blocking | Reactor | Accepts | Reach it with |
+|:----|:----|:----|:----|:----|
+| `StreamSubscriptionModel` | yes | no | `Filter`, `StartAt` | `StreamSubscriptionModel.from(delegate)` |
+| `DcbSubscriptionModel` | yes | yes, different shape | `DcbCriteria`, `DcbStartAt` | `DcbSubscriptionModel.from(delegate)` |
+| `FluxSubscriptionModel` | n/a | yes | `SubscriptionFilter`, `StartAt` | the reactor stack's bare primitive, `subscribe(..)` returns a `Flux<CloudEvent>` directly rather than a tracked `Subscription` |
+
+These aren't optional mixins, everyone gets one, they're translation layers you build explicitly around any `SubscriptionModel`. `Subscribable`'s generic `subscribe(..)` only accepts the marker type `SubscriptionFilter`. `StreamSubscriptionModel.from(delegate)` narrows that to the concrete `Filter` type on the blocking stack, and `DcbSubscriptionModel.from(delegate)` narrows it to `DcbCriteria`/`DcbStartAt` on both stacks. Reactor never needed a stream-typed facade to match, its bare `FluxSubscriptionModel` primitive already takes a `Filter` directly, since `Filter` implements `SubscriptionFilter`. The reactor `DcbSubscriptionModel` is a different shape from its blocking counterpart though. Its unnamed `subscribe(criteria, startAt)` returns a bare `Flux<CloudEvent>` the way `FluxSubscriptionModel` does, and only the named, life-cycle-managed `subscribe(id, criteria, startAt, action)` and `cancelSubscription(id)` require the delegate to also implement `Subscribable` and `SubscriptionModelLifeCycle`, checked only when one of those methods is actually called.
+
+### Checkpoint fencing
+
+`CheckpointWriteVersionSource`, blocking only, supplies the version a checkpoint-writing model stamps its own writes with. A model asks it right before every checkpoint write. An answer becomes a not-older-than write condition, no answer or no source at all becomes an unconditional write, so the model has one code path instead of choosing between two. It carries nothing about a lease or a competing consumer itself, the Spring Boot starter wires `CompetingConsumerCheckpointWriteVersionSource` (backed by `CompetingConsumerStrategy::fencingToken`) into `DurableSubscriptionModel` and `CatchupSubscriptionModel` at the call site that constructs them, so a node that lost its lock and kept writing can't overwrite a checkpoint a faster node already advanced.
+
+### Looking ahead, `SubscriptionModelCapability`
+
+The unreleased 0.33.0 library adds a root marker interface, `SubscriptionModelCapability`, on both stacks, and every capability facet on this page extends it. The `of(..)` probes above narrow from `of(Object)` to `of(SubscriptionModelCapability)`, which doesn't change what compiles at an existing call site (a `SubscriptionModel` reference still passes straight through), it only stops you probing something that was never part of this hierarchy in the first place. This section documents the design as planned. It ships alongside the rest of 0.33.0 and needs re-checking against the final interface if that design shifts before release.
+
+### Does composition order matter?
+
+Three different questions hide behind "does order matter", and they don't share an answer.
+
+**Declaring interfaces on your own model.** No. `class MySubscriptionModel implements SubscriptionModel, IntrospectableSubscriptions, ReplayAwareSubscriptions` behaves identically no matter which order you list the interfaces in. Java doesn't care, and neither does anything in Occurrent that inspects the result.
+
+**Composing wrappers.** Yes, and the constraint is mostly the type system. Each wrapper's constructor declares what it needs its delegate to already be. `DurableSubscriptionModel` and `CatchupSubscriptionModel` (and their reactor equivalents) both require a `CheckpointAwareSubscriptionModel` delegate, so each has to sit directly on something that already is one, the raw Mongo model, or another wrapper that also implements it (`DurableSubscriptionModel` does, which is what lets `CatchupSubscriptionModel` wrap it). `CompetingConsumerSubscriptionModel` and `ManualStartSubscriptionModel` only require a plain `SubscriptionModel`, so they compose further out, and in fact can't compose any other way: `CompetingConsumerSubscriptionModel` doesn't implement `CheckpointAwareSubscriptionModel`, so `CatchupSubscriptionModel` can't wrap it even if you wanted it to.
+
+The MongoDB Spring Boot starter's own wiring is the concrete version of this. It builds, in order, a `SpringMongoSubscriptionModel`, wraps it in `DurableSubscriptionModel`, wraps that in `CatchupSubscriptionModel` when the store has stream or DCB history to replay, wraps that in `CompetingConsumerSubscriptionModel`, and, only under `occurrent.subscription.mode=manual`, wraps the whole thing one more time in `ManualStartSubscriptionModel`. See [`OccurrentMongoAutoConfiguration`](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java).
+
+Not every constraint is type-checked though. `ManualStartSubscriptionModel` has to be the outermost wrapper for a reason its own documentation states directly: withholding a subscription only works if nothing beneath it has already been handed the registration. Put it anywhere but outermost, and a catch-up layer below it would replay history to a handler nobody started yet. So wrap outward from whichever layer needs the most from its delegate (checkpoint-awareness first), then whatever only needs a plain `SubscriptionModel`, and put anything that has to see every subscription before the rest of the stack does, like `ManualStartSubscriptionModel`, last.
+
+**Which layer answers a probe.** The outermost one. This is the same rule as the `of(..)` probe described above, restated here because it's the detail that actually surprises people composing wrappers. Build `CompetingConsumer(Catchup(Durable(Mongo)))` and ask `ReplayAwareSubscriptions.of(..)` on the whole stack: `CompetingConsumerSubscriptionModel` doesn't implement `ReplayAwareSubscriptions` itself, so the probe unwraps one layer and asks `CatchupSubscriptionModel`, which does, and that's the answer you get, not whatever `Durable` or `Mongo` underneath it would have said. The first layer in the chain that implements the capability wins, working from the outside in.
 
 # Decider
 
