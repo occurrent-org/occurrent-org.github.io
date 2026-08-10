@@ -3509,6 +3509,17 @@ If the above code is executed on multiple nodes/processes, then only *one* subsc
 
 Since 0.32.0, `CompetingConsumerSubscriptionModel` refuses two calls it used to accept quietly, both scoped to one model instance rather than to the subscription id across the cluster. Running the same subscription id on several nodes is untouched, since that's the whole point of the pattern. Subscribing twice to one subscription id on one instance now throws `DuplicateSubscriptionIdException`, matching what every other subscription model already did, and pausing a subscription this instance never had now throws `UnknownSubscriptionException` instead of doing nothing. Cancelling a subscription that opted out of competing consumption now also frees its subscription id, where the model used to remember it forever.
 
+Pausing a subscription whose consumer is still waiting for the lock now works too, instead of being silently ignored. Before this fix, `pauseSubscription(id)` on a waiting consumer logged the call and returned as if it had succeeded, `isPaused(id)` kept answering `false`, and the consumer started anyway the moment the lock arrived. Pausing a waiting consumer now unregisters it from the strategy, so the lock never arrives while it's paused, and `isPaused(id)` answers `true` for it right away. `resumeSubscription(id)` registers it again as a lock candidate.
+
+```java
+competingConsumerSubscriptionModel.pauseSubscription("orders"); // works even before this node has won the lock
+competingConsumerSubscriptionModel.isPaused("orders"); // true, whether or not the lock ever arrived
+```
+
+`isRunning(id)` doesn't change. It still answers `false` for a consumer that hasn't won the lock, paused or not, which is what a saga's timer poller relies on to stay off a node that isn't delivering.
+
+This also narrows what `SubscriptionModelLifeCycle.pauseSubscription` refuses. It used to describe the refusal as covering a subscription that "is not running, because it is already paused, was never started, or the whole model is stopped." Not currently delivering is no longer, on its own, a reason to refuse. A subscription that has started can be paused even while nothing is coming through it right now.
+
 Note that you can make several tweaks to the `CompetingConsumerStrategy` using the `Builder`, (`new NativeMongoLeaseCompetingConsumerStrategy.Builder()` or `new SpringMongoLeaseCompetingConsumerStrategy.Builder()`). 
 You can, for example, tweak how long the lease time should be for the lock (default is 20 seconds), the name of lease collection in MongoDB, as well as the retry strategy and other things. 
 
