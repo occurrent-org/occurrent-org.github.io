@@ -134,6 +134,7 @@ permalink: /documentation
 * * [Saga DSL](#saga-dsl)
 * * * [The Core DSL](#saga-core-dsl)
 * * * [The Flow DSL](#saga-flow-dsl)
+* * * * [Step Conditions](#saga-step-conditions)
 * * * [Correlation](#saga-correlation)
 * * * [Event Metadata](#saga-event-metadata)
 * * * [Effects Are Data](#saga-effects)
@@ -156,7 +157,7 @@ permalink: /documentation
 * * [Testing a Saga](#testing-a-saga)
 * * * [Two things to know before you write the first test](#two-things-to-know-before-you-write-the-first-test)
 * * * [Firing a timeout without waiting](#testing-saga-timeouts)
-* * * [A join, one event at a time](#testing-saga-joins)
+* * * [A condition, one event at a time](#testing-saga-joins)
 * * * [Transitions and loops](#testing-saga-transitions)
 * * * [Through the executor, once](#testing-saga-end-to-end)
 * * [Testing a Projection](#testing-a-projection)
@@ -5655,11 +5656,11 @@ Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment =
 
 `startsOn` names the event types that create a new instance, and `correlateAll` (or a per-type `correlate`) says which instance every other event belongs to, described under [correlation](#saga-correlation) below. `isTerminal` marks the states that end the process. A terminal instance ignores further input, and the runner cancels its outstanding timers.
 
-The flow DSL cannot express everything, on purpose. It has no dynamic N-of-M joins, no accumulators across steps, and no "this event is valid in every step" matching. A process that needs any of those drops to the core DSL, where `evolve` and `react` can express them directly.
+The flow DSL cannot express everything, on purpose. A step can wait on a fixed combination of alternatives and counts, built once when the saga is defined, but a count decided at runtime rather than fixed at build time is still out of reach, and so are accumulators across steps and "this event is valid in every step" matching. A process that needs any of those drops to the core DSL, where `evolve` and `react` can express them directly.
 
 ### The Flow DSL {#saga-flow-dsl}
 
-The flow DSL describes a process as a linear sequence of named steps. A step is either a set of `on(...)` branches (first match wins) or a single `join(...)`, and it can carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
+The flow DSL describes a process as a linear sequence of named steps. A step is an ordered list of branches, each waiting for either a single event type or a condition over the events received since the step was entered, and the first branch satisfied wins. A step can also carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
 
 The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
 
@@ -5736,7 +5737,7 @@ A flow reaction reads `ReceivedEvents`, the events this instance has seen so far
 
 Those reified accessors are Kotlin extensions, so a file outside the `org.occurrent.dsl.saga.flow` package imports each one it uses, `import org.occurrent.dsl.saga.flow.initiating` for the example above. Leave that import out for `initiating` specifically and the failure looks different than you'd expect, because `ReceivedEvents` also has a no-arg `initiating()` member and a member wins over an extension. The compiler points at that member with "No type arguments expected" rather than telling you the extension is missing, which sends you looking in the wrong place.
 
-A step is either a set of `on(...)` branches or a single `join(...)`, never both. A join waits until every `Expectation` it lists is met, counted since the step was entered, then runs once and follows its `Continuation`. Here is a step that waits for both players in the lobby above to ready up before it advances. It needs no new correlation, because the lobby's `correlateAll` already covers `PlayerReady`, which is what that fallback buys you:
+`join` is a shorthand for a single branch that waits until every `Expectation` it lists is met, counted since the step was entered, then runs once and follows its `Continuation`. It is deprecated in favor of `on(allOf(...))`, covered in [Step Conditions](#saga-step-conditions) below, but keeps working exactly as shown here. Here is a step that waits for both players in the lobby above to ready up before it advances. It needs no new correlation, because the lobby's `correlateAll` already covers `PlayerReady`, which is what that fallback buys you:
 
 {% capture kotlin %}
 step("waiting-for-both-players") {
@@ -5777,6 +5778,145 @@ Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
                 .build();
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+#### Step Conditions {#saga-step-conditions}
+
+{% capture kotlin %}
+val review = saga<ReviewEvent, ReviewCommand> {
+    startsOn<ReviewStarted>()
+    correlateAll { it.reviewId }
+    step("awaiting-decision") {
+        on(anyOf(event<Approved>(2), event<Rejected>()), then = end) { received ->
+            if (received.all(Rejected::class.java).isEmpty()) {
+                issue(Publish(received.initiating<ReviewStarted>().reviewId))
+            } else {
+                issue(Discard(received.initiating<ReviewStarted>().reviewId))
+            }
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
+        FlowSaga.<ReviewEvent, ReviewCommand>builder()
+                .startsOn(ReviewStarted.class)
+                .correlateAll(ReviewEvent::reviewId)
+                .step("awaiting-decision", step -> step
+                        .on(StepCondition.anyOf(StepCondition.event(Approved.class, 2), StepCondition.event(Rejected.class)),
+                                Continuation.end(),
+                                received -> received.all(Rejected.class).isEmpty()
+                                        ? List.of(new Publish(received.initiating(ReviewStarted.class).reviewId()))
+                                        : List.of(new Discard(received.initiating(ReviewStarted.class).reviewId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`awaiting-decision` completes the moment either alternative is met. Two `Approved` events do it, and so does a single `Rejected`. `event<Approved>(2)` matches once the step's window holds two `Approved` events. `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. `anyOf` combines the two into one condition that fires on whichever alternative is met first, and the reaction reads the whole window through `ReceivedEvents`, `received.all(Rejected.class)` here, to tell which alternative fired and choose the command.
+
+`allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
+
+{% capture kotlin %}
+val shipment = saga<ShipmentEvent, DispatchShipment> {
+    startsOn<ShipmentStarted>()
+    correlateAll { it.shipmentId }
+    step("packing") {
+        on(allOf(event<ItemPacked>(2), anyOf(event<CourierAssigned>(), event<PickupScheduled>())), then = end) { received ->
+            issue(DispatchShipment(received.initiating<ShipmentStarted>().shipmentId))
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<ShipmentEvent, FlowState<ShipmentEvent>, DispatchShipment> shipment =
+        FlowSaga.<ShipmentEvent, DispatchShipment>builder()
+                .startsOn(ShipmentStarted.class)
+                .correlateAll(ShipmentEvent::shipmentId)
+                .step("packing", step -> step
+                        .on(StepCondition.allOf(
+                                        StepCondition.event(ItemPacked.class, 2),
+                                        StepCondition.anyOf(StepCondition.event(CourierAssigned.class), StepCondition.event(PickupScheduled.class))),
+                                Continuation.end(),
+                                received -> List.of(new DispatchShipment(received.initiating(ShipmentStarted.class).shipmentId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`event(...)` also takes a predicate alongside its count, so a match can depend on the arriving event's own data and not only its type, the same idea the `onlyIf` guard on a classic `on<T>` branch already applies to a single event. Here `monitoring` completes the moment a reading exceeds a threshold:
+
+{% capture kotlin %}
+val sensor = saga<SensorEvent, RaiseAlarm> {
+    startsOn<SensorArmed>()
+    correlateAll { it.sensorId }
+    step("monitoring") {
+        on(event<ReadingTaken> { it.celsius > 40 }, then = end) { received ->
+            issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<SensorEvent, FlowState<SensorEvent>, RaiseAlarm> sensor =
+        FlowSaga.<SensorEvent, RaiseAlarm>builder()
+                .startsOn(SensorArmed.class)
+                .correlateAll(SensorEvent::sensorId)
+                .step("monitoring", step -> step
+                        .on(StepCondition.event(ReadingTaken.class, (ReadingTaken reading) -> reading.celsius() > 40),
+                                Continuation.end(),
+                                received -> List.of(new RaiseAlarm(received.initiating(SensorArmed.class).sensorId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side. Branches are evaluated in the order they are declared, and the first one satisfied wins, as already described [above](#saga-flow-dsl). Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first, or once two installments of any size have arrived, through a window condition declared second:
+
+{% capture kotlin %}
+val purchase = saga<PurchaseEvent, PurchaseCommand> {
+    startsOn<PurchaseStarted>()
+    correlateAll { it.purchaseId }
+    // A single payment covering the total releases immediately, otherwise two installments, of any amount, do.
+    step("collecting-payment") {
+        on<PaymentReceived>(
+            then = end,
+            onlyIf = { payment, received -> payment.amount >= received.initiating<PurchaseStarted>().total }
+        ) { payment ->
+            issue(ReleaseGoods(payment.purchaseId))
+        }
+        on(event<PaymentReceived>(2), then = end) { received ->
+            issue(ReleaseGoods(received.initiating<PurchaseStarted>().purchaseId))
+            issue(NotifyLayawayComplete(received.initiating<PurchaseStarted>().purchaseId))
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<PurchaseEvent, FlowState<PurchaseEvent>, PurchaseCommand> purchase =
+        FlowSaga.<PurchaseEvent, PurchaseCommand>builder()
+                .startsOn(PurchaseStarted.class)
+                .correlateAll(PurchaseEvent::purchaseId)
+                // A single payment covering the total releases immediately, otherwise two installments, of any amount, do.
+                .step("collecting-payment", step -> step
+                        .on(PaymentReceived.class,
+                                (payment, received) -> payment.amount() >= received.initiating(PurchaseStarted.class).total(),
+                                Continuation.end(),
+                                payment -> List.of(new ReleaseGoods(payment.purchaseId())))
+                        .on(StepCondition.event(PaymentReceived.class, 2),
+                                Continuation.end(),
+                                received -> List.of(
+                                        new ReleaseGoods(received.initiating(PurchaseStarted.class).purchaseId()),
+                                        new NotifyLayawayComplete(received.initiating(PurchaseStarted.class).purchaseId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A full payment that arrives as the second installment satisfies both branches. The window condition sees two `PaymentReceived` events, and the classic branch's guard also passes, since the payment alone covers the total. The classic branch wins, because it is declared first, so `collecting-payment` issues only `ReleaseGoods` and never reaches the window condition below it.
+
+Three things about a condition are easy to get wrong.
+
+Re-entering a step, including a `transitionTo` back into the step it is already in, restarts its window. Every branch in that step starts counting from zero again, so a classic branch's self-loop wipes a sibling condition's partial progress exactly as it already wipes a join's.
+
+A condition on the first step that names the start event's own type only counts events arriving after the start. The start delivery is what enters the step, and it does not also count toward that step's window, so a condition built from the start type never fires on the delivery that created the instance.
+
+There is no way to ask a condition for an event's absence, and no negation to build one out of. An `event(...)` match only ever asks whether enough matching events have arrived, so a condition only ever becomes more true as events arrive, never less, which is what lets it be checked fresh on every event rather than re-scanned. A step's `timeout` is what says an event did not arrive in time.
 
 ### Correlation {#saga-correlation}
 
@@ -6190,7 +6330,7 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
-A flow saga does not remember its whole history. The received log a join, guard, or timeout reaction reads through `ReceivedEvents` keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a guard or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
+A flow saga does not remember its whole history. The received log a condition, join, guard, or timeout reaction reads through `ReceivedEvents` keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` only bounds history carried over from earlier steps. The current step's own events are never dropped mid-step, so a condition counting since the step was entered sees all of them even with `historyWindow(0)`. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
 
 What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name, so a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
@@ -6644,31 +6784,61 @@ The deadline only tells the executor when to fire the timer. Once it fires, the 
 
 A timer name the saga does not know is a no-op. Test that case too, since it's what a typo in a `reactOnTimeout` name looks like.
 
-### A join, one event at a time {#testing-saga-joins}
+### A condition, one event at a time {#testing-saga-joins}
 
-A join runs once every expectation is met, counted since the step was entered. The interesting test is the one before that, where the join is partially fulfilled and must not advance. Feed the events one at a time and pass each step's state into the next:
+A condition, like a join, fires once it is satisfied, counted since the step was entered. The interesting tests are the ones before that, a partial match that must not fire, and the other alternative firing instead. Using the `review` saga from [Step Conditions](#saga-step-conditions) above, one `Approved` is not enough to publish, a second one is, and a single `Rejected` discards immediately without waiting for anything else. Feed the events one at a time and pass each step's state into the next:
 
 {% capture kotlin %}
-// One of the two expected events: the flow must stay put
-val afterFirst = lobby.step(joinStepEntered, SagaInput.event(PlayerReady("game-1")))
-assertThat(afterFirst.state.currentStep()).isEqualTo("waiting-for-both-players")
+val started = start(review, ReviewStarted("review-1"))
 
-// The second one fulfils the join and follows its continuation
-val afterSecond = lobby.step(afterFirst.state, SagaInput.event(PlayerReady("game-1")))
-assertThat(afterSecond.state.completed()).isTrue()
+// One of the two Approved events the condition needs, not enough to complete yet
+val afterFirst = review.step(started.state, SagaInput.event(Approved("review-1")))
+assertThat(afterFirst.state.completed()).isFalse()
+
+// The second Approved satisfies the condition and publishes
+val afterSecond = review.step(afterFirst.state, SagaInput.event(Approved("review-1")))
+assertAll(
+    { assertThat(afterSecond.state.completed()).isTrue() },
+    { assertThat(afterSecond.effects).containsExactly(SagaEffect.issue(Publish("review-1"))) }
+)
 {% endcapture %}
 {% capture java %}
-// One of the two expected events: the flow must stay put
-Saga.Step<FlowState<GameEvent>, CloseGame> afterFirst = lobby.step(joinStepEntered, SagaInput.event(new PlayerReady("game-1")));
-assertThat(afterFirst.state().currentStep()).isEqualTo("waiting-for-both-players");
+Saga.Step<FlowState<ReviewEvent>, ReviewCommand> started = start(review, new ReviewStarted("review-1"));
 
-// The second one fulfils the join and follows its continuation
-Saga.Step<FlowState<GameEvent>, CloseGame> afterSecond = lobby.step(afterFirst.state(), SagaInput.event(new PlayerReady("game-1")));
-assertThat(afterSecond.state().completed()).isTrue();
+// One of the two Approved events the condition needs, not enough to complete yet
+Saga.Step<FlowState<ReviewEvent>, ReviewCommand> afterFirst = review.step(started.state(), SagaInput.event(new Approved("review-1")));
+assertThat(afterFirst.state().completed()).isFalse();
+
+// The second Approved satisfies the condition and publishes
+Saga.Step<FlowState<ReviewEvent>, ReviewCommand> afterSecond = review.step(afterFirst.state(), SagaInput.event(new Approved("review-1")));
+assertAll(
+        () -> assertThat(afterSecond.state().completed()).isTrue(),
+        () -> assertThat(afterSecond.effects()).containsExactly(SagaEffect.issue(new Publish("review-1")))
+);
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Write the partial case first. A join that advances too early passes a test that only checks the fulfilled path.
+A single `Rejected` reaches the same `anyOf` from the other side and completes the saga immediately, with no second event needed:
+
+{% capture kotlin %}
+val step = review.step(started.state, SagaInput.event(Rejected("review-1")))
+
+assertAll(
+    { assertThat(step.state.completed()).isTrue() },
+    { assertThat(step.effects).containsExactly(SagaEffect.issue(Discard("review-1"))) }
+)
+{% endcapture %}
+{% capture java %}
+Saga.Step<FlowState<ReviewEvent>, ReviewCommand> step = review.step(started.state(), SagaInput.event(new Rejected("review-1")));
+
+assertAll(
+        () -> assertThat(step.state().completed()).isTrue(),
+        () -> assertThat(step.effects()).containsExactly(SagaEffect.issue(new Discard("review-1")))
+);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Write the partial case first. A condition that fires too early passes a test that only checks the fulfilled path.
 
 ### Transitions and loops {#testing-saga-transitions}
 
