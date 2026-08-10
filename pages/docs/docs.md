@@ -5794,7 +5794,7 @@ val review = saga<ReviewEvent, ReviewCommand> {
     correlateAll { it.reviewId }
     step("awaiting-decision") {
         on(anyOf(event<Approved>(2), event<Rejected>()), then = end) { received ->
-            if (received.all(Rejected::class.java).isEmpty()) {
+            if (received.none<Rejected>()) {
                 issue(Publish(received.initiating<ReviewStarted>().reviewId))
             } else {
                 issue(Discard(received.initiating<ReviewStarted>().reviewId))
@@ -5811,14 +5811,14 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
                 .step("awaiting-decision", step -> step
                         .on(StepCondition.anyOf(StepCondition.event(Approved.class, 2), StepCondition.event(Rejected.class)),
                                 Continuation.end(),
-                                received -> received.all(Rejected.class).isEmpty()
+                                received -> received.none(Rejected.class)
                                         ? List.of(new Publish(received.initiating(ReviewStarted.class).reviewId()))
                                         : List.of(new Discard(received.initiating(ReviewStarted.class).reviewId()))))
                 .build();
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`awaiting-decision` completes the moment either alternative is met. Two `Approved` events do it, and so does a single `Rejected`. `event<Approved>(2)` matches once the step's window holds two `Approved` events. `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. `anyOf` combines the two into one condition that fires on whichever alternative is met first. The reaction reads the whole window through `ReceivedEvents`, `received.all(Rejected.class)` here, to tell which alternative fired and choose the command.
+`awaiting-decision` completes the moment either alternative is met. Two `Approved` events do it, and so does a single `Rejected`. `event<Approved>(2)` matches once the step's window holds two `Approved` events. `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. `anyOf` combines the two into one condition that fires on whichever alternative is met first. The reaction reads the whole window through `ReceivedEvents`, `received.none(Rejected.class)` here, to tell which alternative fired and choose the command.
 
 `allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
 
