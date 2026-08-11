@@ -94,7 +94,8 @@ if (document.location.pathname.includes("/documentation")) {
         "durable-subscription-reactive-life-cycle" : "0.32.0",
         "durable-subscription-reactive-delegation" : "0.32.0",
         "push-subscription-reactive-life-cycle" : "0.32.0",
-        "synchronous-subscription-life-cycle" : "0.32.0"
+        "synchronous-subscription-life-cycle" : "0.32.0",
+        "saga-event-types" : "0.33.0"
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",

@@ -133,6 +133,7 @@ permalink: /documentation
 * * * [The Core DSL](#saga-core-dsl)
 * * * [The Flow DSL](#saga-flow-dsl)
 * * * [Correlation](#saga-correlation)
+* * * [Declared Event Types](#saga-event-types)
 * * * [Event Metadata](#saga-event-metadata)
 * * * [Effects Are Data](#saga-effects)
 * * * [Running a Saga](#running-a-saga)
@@ -5519,6 +5520,33 @@ The builder checks the rules rather than trusting you to follow them. Every even
 Two things happen at run time rather than at build time, and both are deliberately quiet. A correlator that returns `null` means "this event belongs to no instance", and the event is skipped. So is an event that correlates to an instance that does not exist yet, unless its type is a start type, which is what stops a mid-process event from starting a saga at the wrong point.
 
 
+### Declared Event Types {#saga-event-types}
+
+A saga's event types are also its subscription filter. Occurrent takes the types you registered through `startsOn`, `evolve`, `react`, a step's `on(...)` and an `event(...)` condition, asks the `CloudEventTypeMapper` for the CloudEvent type of each one, and subscribes on those.
+
+A sealed type is expanded into the concrete types it permits, all the way down. A saga declaring a sealed `OrderEvent` subscribes on `OrderEvent`, `OrderPlaced` and `PaymentReserved`, so it receives the concrete events stored under that hierarchy (before 0.33.0 the filter asked only for `OrderEvent`'s own CloudEvent type, so with the mappers Occurrent ships the saga received nothing).
+
+Where the concrete types cannot be found, `build()` throws `IllegalArgumentException` naming the type. That covers an interface or an abstract class that is not sealed, and a sealed hierarchy with a level below the declared type that is neither sealed nor final, `non-sealed` in Java, `open class` or `abstract class` in Kotlin. A `sealed class` you can instantiate is no exception, because a sealed declaration says its subtypes are knowable whether or not events are stored under the root's own name.
+
+The remedy to prefer when you own the events is to seal every level, since the saga then keeps working when you add an event type:
+
+{% capture kotlin %}
+sealed interface OrderEvent
+sealed class Payment : OrderEvent          // was open class or abstract class
+data class PaymentReserved(val orderId: String) : Payment()
+{% endcapture %}
+{% capture java %}
+public sealed interface OrderEvent permits Payment { }
+// was non-sealed class Payment implements OrderEvent
+public sealed class Payment implements OrderEvent permits PaymentReserved { }
+public final class PaymentReserved extends Payment { }
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+When the hierarchy is not yours to seal, or is deliberately open, declare the concrete types instead, one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
+
+Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs none of this. If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one type string, declaring the supertype worked before 0.33.0 and now throws. Declaring the concrete types keeps it working, since they all map to the same string.
+
 ### Event Metadata {#saga-event-metadata}
 
 `evolve`, `react`, and `onStart` can also see the delivering event's metadata, its stream id and version, the global position, and any CloudEvent extension, through metadata-carrying overloads. This is the same [`EventMetadata`](#event-metadata) a plain subscription already hands a subscriber. A flow step's `on(...)` branch gets the same for its triggering event:
@@ -6235,6 +6263,10 @@ You can of course subscribe to an individual event, such as `DomainEvent2`. But 
 For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` but handle them as a `DomainEvent`:
 
 {% include macros/annotation/event-types-example.md %}
+
+The filter Occurrent derives from a sealed type names the declared type as well as the concrete types it permits. That only matters if you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto the type string of the type it was declared with, because such a subscription used to receive nothing at all. No mapper Occurrent ships stores an event under a sealed interface's own type, so nothing changes for the default setup.
+
+The hierarchy has to be sealed or final all the way down. A subscription on an interface or an abstract class that is not sealed, or on an array, is refused at startup, and so is one on a sealed hierarchy with a level below the declared type that is neither sealed nor final, `non-sealed` in Java, `open class` or `abstract class` in Kotlin. The message names the type and points you at `eventTypes()`. `@Saga` and `@Projection` derive their filter the same way, and the saga DSL refuses the same shapes when the saga is built, which [Declared Event Types](#saga-event-types) covers.
 
 #### Event Metadata
 
