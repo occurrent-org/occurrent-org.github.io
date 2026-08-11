@@ -124,7 +124,7 @@ permalink: /documentation
 * * * [Event Metadata](#projection-event-metadata)
 * * * [DCB Projections](#dcb-projections)
 * * * [Reading On Demand](#reading-on-demand)
-* * * [Read-your-writes for a synchronous projection](#read-your-writes-for-a-synchronous-projection)
+* * * [Read-your-writes](#read-your-writes)
 * * * [Reactor](#reactor)
 * * * [Replay Batching](#replay-batching)
 * * * [The `@Projection` Annotation](#the-projection-annotation)
@@ -2910,10 +2910,13 @@ public interface CheckpointStorage {
     void delete(String subscriptionId);
     boolean exists(String subscriptionId);
     OptionalLong writeVersion(String subscriptionId);
+    default boolean evaluatesWriteConditions() {
+        return false;
+    }
 }
 ```
 
-It's a way to read, write and delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. `save` takes a `CheckpointWriteCondition` as a third argument, stating what has to be true of the stored version before the write is allowed. The two-argument overload keeps its old meaning, an unconditional write, `any()`, that carries whatever version is already stored forward untouched, and every subscription model in this library calls it unless you wire up [checkpoint fencing](#checkpoint-fencing-blocking) for competing consumers. `writeVersion(subscriptionId)` reads back the version a condition is judged against. Occurrent ships with four pre-defined implementations:
+It's a way to read, write and delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. `save` takes a `CheckpointWriteCondition` as a third argument, stating what has to be true of the stored version before the write is allowed. The two-argument overload keeps its old meaning, an unconditional write, `any()`, that carries whatever version is already stored forward untouched, and every subscription model in this library calls it unless you wire up [checkpoint fencing](#checkpoint-fencing-blocking) for competing consumers. `writeVersion(subscriptionId)` reads back the version a condition is judged against, and `evaluatesWriteConditions()` answers whether this storage really accepts and refuses those conditions. That one defaults to `false`, so a storage written against an earlier release keeps compiling and keeps working without answering it, and every storage Occurrent ships answers `true`. The reactor twin has the same three members. Occurrent ships with four pre-defined implementations:
 
 1\. **NativeMongoCheckpointStorage**<br>
     Uses the vanilla MongoDB Java (sync) driver to store `Checkpoint`'s in MongoDB.
@@ -3555,7 +3558,7 @@ A released competing consumer no longer reports it still holds the lock. `hasLoc
 
 A node that has lost its competing-consumer lock can still try to write a checkpoint after another node has already taken over and written a later one. Without a fence, that write moves the checkpoint backward, and the new holder redelivers events it already processed. Since 0.33.0, `CompetingConsumerStrategy` can hand a subscription model a fencing token, and the model refuses a checkpoint write that carries an older one than what is already stored.
 
-If you use the Spring Boot starter and register a `CompetingConsumerStrategy` bean, you get this without doing anything else. The starter passes `strategy::fencingToken` at every place it builds a checkpoint-writing model, whatever your `CheckpointStorage` bean is. Registering two `CompetingConsumerStrategy` beans in the same application context turns the fence off for both, since the starter can no longer tell which one to ask.
+If you use the Spring Boot starter and register a `CompetingConsumerStrategy` bean, you get this without doing anything else. The starter passes `strategy::fencingToken` at every place it builds a checkpoint-writing model, whatever your `CheckpointStorage` bean is. Register more than one `CompetingConsumerStrategy` bean without marking one `@Primary` and the application refuses to start, with `AmbiguousCompetingConsumerStrategyException` naming the beans it found and what to do about them. Mark the one you want with `@Primary`, or leave only that one in the context. You are unlikely to have two, since the Mongo starter no longer contributes its default strategy once you register one of your own, whatever type it is. Before 0.33.0 a custom strategy of any type other than `SpringMongoLeaseCompetingConsumerStrategy` never reached the subscription model at all, which kept delivering under the starter's own lease instead of yours.
 
 If you wire your own subscription models, pass `strategy::fencingToken` as an extra constructor argument to whichever model writes the checkpoints, `DurableSubscriptionModel` in the example below:
 
@@ -3605,7 +3608,11 @@ public OptionalLong writeVersion(String subscriptionId) {
 }
 ```
 
-It is not a stopgap. It is the correct permanent answer for a store that genuinely cannot evaluate a condition, the same way an event store answers a capability it was not built with. Occurrent's own Mongo and Redis checkpoint storages do not need this recipe. They already evaluate every condition for real, apart from Redis Cluster, which still refuses a conditional write outright, covered below. If your store can evaluate a condition for real, the conformance suite in `occurrent-tck-subscription-blocking` checks the two rules that matter for it. `any()` has to leave whatever version is stored untouched, rather than clearing it or inferring one from the write. `notOlderThan(version)` has to accept when nothing is stored, since that is a checkpoint written before this condition existed, and every checkpoint saved by an earlier release has to stay readable.
+It is not a stopgap. It is the correct permanent answer for a store that genuinely cannot evaluate a condition, the same way an event store answers a capability it was not built with. Such a store leaves `evaluatesWriteConditions()` alone, because the default already answers `false` for it.
+
+Occurrent reads that answer at startup and refuses to run a store like this next to a `CompetingConsumerStrategy`, throwing `CheckpointStorageCannotFenceException`, rather than letting the first checkpoint write fail once a node holds its lease. There are two ways out. Answer `true` from `evaluatesWriteConditions()` if your store really does accept and refuse `notOlderThan` and `ifAbsent`, or set `occurrent.subscription.competing-consumer.fence-checkpoints=false` to keep a store that cannot. Every checkpoint is then written unconditionally, which is what 0.32.0 did, so a node that has lost its lease can move the checkpoint backward and the events between the two positions are delivered again. That stays inside the at-least-once contract.
+
+Occurrent's own Mongo and Redis checkpoint storages do not need this recipe. They already evaluate every condition for real, apart from Redis Cluster, which still refuses a conditional write outright, covered below. If your store can evaluate a condition for real, the conformance suite in `occurrent-tck-subscription-blocking` checks the two rules that matter for it. `any()` has to leave whatever version is stored untouched, rather than clearing it or inferring one from the write. `notOlderThan(version)` has to accept when nothing is stored, since that is a checkpoint written before this condition existed, and every checkpoint saved by an earlier release has to stay readable.
 
 **Redis Cluster does not support the fence.** `SpringRedisCheckpointStorage` keeps the checkpoint and its stored version in two separately named keys, and the Lua script that compares and writes both atomically is refused on Redis Cluster for touching keys in different slots. Asking for `notOlderThan` or `ifAbsent` against a cluster fails immediately on the first conditional write, not quietly later. A Redis Cluster deployment with no `CompetingConsumerStrategy` wired in is unaffected.
 
@@ -5306,28 +5313,9 @@ A fourth guard covers the window before anything is registered. `DomainEventFeed
 
 This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the write path (as an `InMemoryEventStore` listener, say), where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker.
 
-### Read-your-writes for a synchronous projection
+### Read-your-writes
 
 Register the projection on a synchronous subscription model and build the application service with it, and the read model updates inside the same transaction as the write. The projected state is then visible the moment `execute(...)` returns, with no eventual-consistency lag. This trades a little write latency for read-your-writes consistency, so reach for it when a command needs to see its own effect immediately.
-
-### Read-your-writes for an asynchronous projection {#projection-read-your-writes-async}
-
-Synchronous mode is one way to get read-your-writes. When the projection stays asynchronous but a client still needs to see its own write, wrap the `MaterializedView` with `Projections.recordingAppliedPosition(view, store, projectionId)` instead. The wrapped view records the event's global position after every write, so the recorded position never runs ahead of the state it describes, and a client that holds a position, one an `EventStore`'s `currentPosition()` returns right after the write, say, waits for the projection to reach it:
-
-```java
-AppliedProjectionPositionStore store = AppliedProjectionPositionStore.inMemory();
-MaterializedView<CourseEvent> enrolledStudentsView = Projections.recordingAppliedPosition(
-        Projections.materializedView(enrolledStudents, repository), store, "enrolled-students");
-
-eventStore.write(courseId, newEvents);
-long position = eventStore.currentPosition();
-
-boolean caughtUp = store.waitUntilApplied("enrolled-students", position, Duration.ofSeconds(5));
-```
-
-The example above uses `inMemory()` because it needs no setup, but a position that does not survive a restart defeats the point outside a test. The Spring Boot Mongo starters auto-configure a persistent `AppliedProjectionPositionStore` bean for you, and `@Projection(recordAppliedPosition = true)` resolves it automatically. See [`recordAppliedPosition`](#projection-annotation-applied-position). Calling `Projections.recordingAppliedPosition(...)` directly, as above, still works in a Spring Boot application. Inject that bean instead of building your own.
-
-`waitUntilApplied` polls the stored position rather than blocking on a notification, and returns `false` on timeout instead of throwing. The polls back off, 25 ms doubling up to 250 ms by default, so a projection that is already caught up still answers on the first poll while one that is behind is not asked over and over by every waiting caller. Pass your own `Backoff` to the four-argument overload to change that for a single call. The Spring Boot Mongo starters' auto-configured store is the only one that reads `occurrent.projection.applied-position.initial`, `.max` and `.multiplier`, instead of the interface default. A store you build yourself, including the `inMemory()` store in the example above, keeps the 25 ms to 250 ms default unless you pass a `Backoff` in code. `Backoff.none()` is rejected, since a wait with no delay between polls is a busy loop on the store. A position belonging to an event type outside the projection's selector is never reached, so a wait for such a position simply times out rather than failing, since the projection genuinely has nothing to show for an event it never handles. The recorded position is one per projection, not one per key the view stores a row under (a `courseId` here), so it answers "has this projection applied everything up to P" for the whole projection rather than for one course's own row. A command that writes to several courses can move the position past an event a specific course's row has not applied yet, and the whole-projection answer is what a client holding that command's returned position needs, not whether one particular row has caught up. An event with no global position, from a store that has position writing turned off, or a live feed the application fed with no metadata, makes the wrapped view throw rather than record nothing. See [ADR 111](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0111-a-projection-records-the-position-it-has-applied.md) for the full contract, including why the position is per projection and not per key.
 
 ### Reactor
 
@@ -5459,7 +5447,6 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the projection from a `PushSubscriptionModel` or `DomainEventFeed` bean instead, see [Push Subscription](#push-subscription-blocking). |
 | `subscriptionModel` / `subscriptionModelName` | Select the feed bean by type or name when `source = PUSH`. |
 | `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
-| `recordAppliedPosition` | `false` by default. `true` wraps the resolved store with [`Projections.recordingAppliedPosition`](#projection-read-your-writes-async), so a client can wait for this projection to catch up to a position it already holds. Needs an `AppliedProjectionPositionStore` bean, resolved the same way `store` resolves a read-model store bean. The Mongo starters contribute a zero-config default. Mutually exclusive with `mode = SYNCHRONOUS`. |
 
 `startAt`, `startAtPosition`, and `resumeBehavior` are mutually exclusive with `mode = SYNCHRONOUS`. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
 
@@ -5506,21 +5493,7 @@ On the MongoDB starter, leaving `store` and `storeName` unset with no matching b
 
 #### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
 
-`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes-for-a-synchronous-projection) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
-
-#### Read-your-writes (recordAppliedPosition) {#projection-annotation-applied-position}
-
-`recordAppliedPosition = true` keeps the projection asynchronous but lets a client wait for it to catch up to a position it already holds, [as described above](#projection-read-your-writes-async). The registrar wraps whichever store `store`/`storeName` resolves with `Projections.recordingAppliedPosition(...)`, keyed by the projection's `id`, and resolves an `AppliedProjectionPositionStore` bean for it, the unique bean of that type, or the Mongo starter's zero-config default. That default's poll pace comes from `occurrent.projection.applied-position.initial`, `.max` and `.multiplier`. Declaring one yourself, `AppliedProjectionPositionStore.inMemory()` for a single instance with nothing else to persist it in, works the same way, though those three properties then have nothing to configure:
-
-```java
-@Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING, recordAppliedPosition = true)
-org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledStudents() { ... }
-```
-
-```java
-long position = eventStore.currentPosition();
-boolean caughtUp = appliedPositionStore.waitUntilApplied("enrolled-students", position, Duration.ofSeconds(5));
-```
+`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
 
 #### Without the starter {#projection-annotation-without-starter}
 
@@ -5793,12 +5766,11 @@ val review = saga<ReviewEvent, ReviewCommand> {
     startsOn<ReviewStarted>()
     correlateAll { it.reviewId }
     step("awaiting-decision") {
-        on(anyOf(event<Approved>(2), event<Rejected>()), then = end) { received ->
-            if (received.none<Rejected>()) {
-                issue(Publish(received.initiating<ReviewStarted>().reviewId))
-            } else {
-                issue(Discard(received.initiating<ReviewStarted>().reviewId))
-            }
+        on(event<Rejected>(), then = end) { received ->
+            issue(Discard(received.initiating<ReviewStarted>().reviewId))
+        }
+        on(event<Approved>(2), then = end) { received ->
+            issue(Publish(received.initiating<ReviewStarted>().reviewId))
         }
     }
 }
@@ -5809,16 +5781,21 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
                 .startsOn(ReviewStarted.class)
                 .correlateAll(ReviewEvent::reviewId)
                 .step("awaiting-decision", step -> step
-                        .on(StepCondition.anyOf(StepCondition.event(Approved.class, 2), StepCondition.event(Rejected.class)),
+                        .on(StepCondition.event(Rejected.class),
                                 Continuation.end(),
-                                received -> received.none(Rejected.class)
-                                        ? List.of(new Publish(received.initiating(ReviewStarted.class).reviewId()))
-                                        : List.of(new Discard(received.initiating(ReviewStarted.class).reviewId()))))
+                                received -> List.of(new Discard(received.initiating(ReviewStarted.class).reviewId())))
+                        .on(StepCondition.event(Approved.class, 2),
+                                Continuation.end(),
+                                received -> List.of(new Publish(received.initiating(ReviewStarted.class).reviewId()))))
                 .build();
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`awaiting-decision` completes the moment either alternative is met. Two `Approved` events do it, and so does a single `Rejected`. `event<Approved>(2)` matches once the step's window holds two `Approved` events. `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. `anyOf` combines the two into one condition that fires on whichever alternative is met first. The reaction reads the whole window through `ReceivedEvents`, `received.none(Rejected.class)` here, to tell which alternative fired and choose the command.
+`awaiting-decision` completes the moment either branch is satisfied. `event<Approved>(2)` matches once the step's window holds two `Approved` events, and `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. Branches are evaluated in declaration order and the first satisfied one wins, so a step that reacts differently per outcome writes one branch per outcome and the tie-break is visible in the declaration rather than worked out inside a reaction.
+
+`anyOf` combines several conditions into a single one that is satisfied as soon as any of them is. Reach for it when the alternatives share a reaction. There is no way to ask a condition which of its children matched, so alternatives that need different commands are separate branches, as above.
+
+A reaction reads the window its own condition was evaluated over, not everything the instance has received. A count or a `none(...)` check inside a reaction therefore answers for this step's window alone, so an `Approved` left over from an earlier step cannot be counted as one of these two. `received.initiating<T>()` still reaches the start event whatever the window holds. A guard's `onlyIf` and a `timeout`'s reaction still read the whole retained history, which is what makes a count spanning several steps possible, and the deprecated `join`'s reaction keeps reading it too, so a saga written against 0.31.0 behaves exactly as it did.
 
 `allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
 
@@ -5917,13 +5894,17 @@ Saga<PurchaseEvent, FlowState<PurchaseEvent>, PurchaseCommand> purchase =
 
 A full payment that arrives as the second installment satisfies both branches. The window condition sees two `PaymentReceived` events, and the classic branch's guard also passes, since the payment alone covers the total. The classic branch wins, because it is declared first, so `collecting-payment` issues only `ReleaseGoods` and never reaches the window condition below it.
 
-Three things about a condition are easy to get wrong.
+Five things about a condition are easy to get wrong.
 
 Re-entering a step, including a `transitionTo` back into the step it is already in, restarts its window. Every branch in that step starts counting from zero again, so a classic branch's self-loop wipes a sibling condition's partial progress along with its own.
 
 A condition on the first step that names the start event's own type only counts events arriving after the start. The start delivery is what enters the step, and it does not also count toward that step's window, so a condition built from the start type never fires on the delivery that created the instance.
 
 There is no way to ask a condition for an event's absence, and no negation to build one out of. An `event(...)` match only ever asks whether enough matching events have arrived, so a condition only ever becomes more true as events arrive, never less, which is what lets it be checked fresh on every event rather than re-scanned. A step's `timeout` is what says an event did not arrive in time.
+
+`allOf` refuses two children that the same event can satisfy. When one `event(...)` matcher appears beneath more than one child, `allOf(...)` throws `IllegalArgumentException` naming the type they share, and since a saga is normally declared at startup that happens there rather than on a delivery. `allOf(event<A>(2), event<A>(3))` reads as five events and would be satisfied by three, and `allOf(event<A>(), anyOf(event<A>(), event<B>()))` reads as two and would be satisfied by one `A`. Ask for one `event(type, count)` with the total count instead. A supertype next to one of its subtypes stays legal, because `allOf(event<BaseEvent>(), event<A>())` is a reasonable way to ask for one `A` plus one event of any kind, and so do two predicates over the same type, because nothing can tell a copied predicate from a genuinely different test. `anyOf` permits a repeated alternative, since it is satisfied by exactly what it asks for.
+
+A predicate has to be a deterministic function of the event it is handed. Every condition is re-derived from the step's window on each arriving event, so a predicate runs against the same event again and again, and one that reads the clock, a random source, mutable state or a remote service can answer differently the second time. That breaks the "once matched, always matched" property the counting relies on, and it makes a replay reach a different outcome than the original run. Nothing can enforce this, so it is yours to keep.
 
 ### Correlation {#saga-correlation}
 
@@ -6337,7 +6318,6 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
 A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` only bounds history carried over from earlier steps. The current step's own events are never dropped mid-step, so a condition counting since the step was entered sees all of them even with `historyWindow(0)`. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
-A flow saga does not remember its whole history. The received log a condition, guard, or timeout reaction reads through `ReceivedEvents` keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition or guard that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` only bounds history carried over from earlier steps. The current step's own events are never dropped mid-step, so a condition counting since the step was entered sees all of them even with `historyWindow(0)`. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
 
 What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name. So a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
