@@ -6317,21 +6317,21 @@ static <E, C> Saga.Step<FlowState<E>, C> start(Saga<E, FlowState<E>, C> saga, E 
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout`. That is what `issuedCommands()` is for. It reads the commands back out of the effects, so a reaction that issued nothing is empty there even when the effects list is not:
+**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout`. That is what `issuedCommands()` is for. It reads the commands back out of the effects, so a reaction that issued nothing is empty there even when the effects list is not. A flow step's timer is named after the step, and `stepTimer` gives you that name:
 
 {% capture kotlin %}
 val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
 
 // The branch issues nothing, but leaving the step still cancels its timeout
 assertThat(step.issuedCommands()).isEmpty()
-assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"))
+assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout(stepTimer("awaiting-players")))
 {% endcapture %}
 {% capture java %}
 Saga.Step<FlowState<GameEvent>, CloseGame> step = lobby.step(started.state(), SagaInput.event(new PlayerJoined("game-1")));
 
 // The branch issues nothing, but leaving the step still cancels its timeout
 assertThat(step.issuedCommands()).isEmpty();
-assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout("step:awaiting-players"));
+assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout(stepTimer("awaiting-players")));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -6339,10 +6339,10 @@ Timers get the same split treatment as commands. `timerEffects()` reads the star
 
 ### Firing a timeout without waiting {#testing-saga-timeouts}
 
-Fire a timeout in a test by naming its timer, instead of waiting for time to pass. A flow step's timer is named after the step, with a `step:` prefix, so a step called `awaiting-players` fires as `step:awaiting-players`:
+Fire a timeout in a test by naming its timer, instead of waiting for time to pass:
 
 {% capture kotlin %}
-val step = lobby.step(started.state, SagaInput.timeout(SagaTimeout("game-1", "step:awaiting-players")))
+val step = lobby.step(started.state, SagaInput.timeout("game-1", stepTimer("awaiting-players")))
 
 assertAll(
     { assertThat(step.effects).containsExactly(SagaEffect.issue(CloseGame("game-1"))) },
@@ -6351,7 +6351,7 @@ assertAll(
 {% endcapture %}
 {% capture java %}
 Saga.Step<FlowState<GameEvent>, CloseGame> step =
-        lobby.step(started.state(), SagaInput.timeout(new SagaTimeout("game-1", "step:awaiting-players")));
+        lobby.step(started.state(), SagaInput.timeout("game-1", stepTimer("awaiting-players")));
 
 assertAll(
         () -> assertThat(step.effects()).containsExactly(SagaEffect.issue(new CloseGame("game-1"))),
@@ -6402,7 +6402,7 @@ Write the partial case first. A join that advances too early passes a test that 
 val afterBid = auction.step(started.state, SagaInput.event(BidPlaced("auction-1", 100)))
 assertThat(afterBid.state.currentStep()).isEqualTo("bidding")
 
-val closed = auction.step(afterBid.state, SagaInput.timeout(SagaTimeout("auction-1", "step:bidding")))
+val closed = auction.step(afterBid.state, SagaInput.timeout("auction-1", stepTimer("bidding")))
 assertThat(closed.effects).containsExactly(SagaEffect.issue(CloseAuction("auction-1")))
 {% endcapture %}
 {% capture java %}
@@ -6410,7 +6410,7 @@ Saga.Step<FlowState<AuctionEvent>, CloseAuction> afterBid = auction.step(started
 assertThat(afterBid.state().currentStep()).isEqualTo("bidding");
 
 Saga.Step<FlowState<AuctionEvent>, CloseAuction> closed =
-        auction.step(afterBid.state(), SagaInput.timeout(new SagaTimeout("auction-1", "step:bidding")));
+        auction.step(afterBid.state(), SagaInput.timeout("auction-1", stepTimer("bidding")));
 assertThat(closed.effects()).containsExactly(SagaEffect.issue(new CloseAuction("auction-1")));
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
