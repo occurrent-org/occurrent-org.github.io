@@ -6339,7 +6339,7 @@ Timers get the same split treatment as commands. `timerEffects()` reads the star
 
 ### Firing a timeout without waiting {#testing-saga-timeouts}
 
-Fire a timeout in a test by naming its timer, instead of waiting for time to pass. A flow step's timer is named after the step, and `stepTimer` gives you that name:
+Fire a timeout in a test by naming its timer, instead of waiting for time to pass. A flow step's timer is named after the step, and `stepTimer` from the flow DSL gives you that name:
 
 {% capture kotlin %}
 val step = lobby.step(started.state, SagaInput.timeout("game-1", stepTimer("awaiting-players")))
