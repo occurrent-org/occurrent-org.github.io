@@ -6317,7 +6317,7 @@ static <E, C> Saga.Step<FlowState<E>, C> start(Saga<E, FlowState<E>, C> saga, E 
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout`. That is what `issuedCommands()` is for. It reads the commands back out of the effects, so a reaction that issued nothing is empty there even when the effects list is not:
+**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout` for the timer the step armed, which `stepTimer` names for you. That is what `issuedCommands()` is for. It reads the commands back out of the effects, so a reaction that issued nothing is empty there even when the effects list is not:
 
 {% capture kotlin %}
 val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
