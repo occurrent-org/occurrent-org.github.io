@@ -136,6 +136,7 @@ permalink: /documentation
 * * * [The Flow DSL](#saga-flow-dsl)
 * * * * [Step Conditions](#saga-step-conditions)
 * * * [Correlation](#saga-correlation)
+* * * [Declared Event Types](#saga-event-types)
 * * * [Event Metadata](#saga-event-metadata)
 * * * [Effects Are Data](#saga-effects)
 * * * [Running a Saga](#running-a-saga)
@@ -5851,6 +5852,29 @@ Saga<SensorEvent, FlowState<SensorEvent>, RaiseAlarm> sensor =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+A predicate can also be given a name (the `predicateId` argument), and it needs one when the flow caps a step's events with `stepWindow`, described under [Delivery Contract](#saga-delivery-contract). A capped step keeps its counts in the instance's state so its older events can be dropped, and matching a count back to the `event(...)` that produced it after a restart or a redeploy takes a name, because a lambda is a different object every time the class loads:
+
+{% capture kotlin %}
+step("monitoring") {
+    on(event<ReadingTaken>(2, "above40") { it.celsius > 40 }, then = end) { received ->
+        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
+    }
+}
+{% endcapture %}
+{% capture java %}
+.step("monitoring", step -> step
+        .on(StepCondition.event(ReadingTaken.class, 2, "above40", (ReadingTaken reading) -> reading.celsius() > 40),
+                Continuation.end(),
+                received -> List.of(new RaiseAlarm(received.initiating(SensorArmed.class).sensorId()))))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+A capped flow with an `event(...)` whose predicate has no name is refused when the saga is built, and the message names the step. So are two `event(...)` conditions over the same event type that share a name while holding different predicates, since nothing else tells their counts apart. They may share a name only when both are handed the same predicate value, because two separately written lambdas are different objects even when the source text is identical. A guard's `onlyIf` never needs a name, since a guard is checked against the arriving event rather than counted over a window.
+
+Change the name whenever the predicate's meaning changes. Keeping `"above40"` while changing the test to `it.celsius > 80` is the one thing this cannot detect, and an instance still in that step keeps counting the events it matched under the old test. Changing the count an `event(...)` asks for is safe and needs no new name, because what is kept is the raw number of events that matched.
+
+A flow with no `stepWindow` needs none of this. `event(type, count, predicate)` is unchanged, a predicate with no name costs nothing there, and such a step counts its window on every delivery exactly as it always did.
+
 A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side. Branches are evaluated in the order they are declared, and the first one satisfied wins, as already described [above](#saga-flow-dsl). Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first. It also releases them once two installments of any size have arrived, through a window condition declared second:
 
 {% capture kotlin %}
@@ -5922,6 +5946,33 @@ The builder checks the rules rather than trusting you to follow them. Every even
 
 Two things happen at run time rather than at build time, and both are deliberately quiet. A correlator that returns `null` means "this event belongs to no instance", and the event is skipped. So is an event that correlates to an instance that does not exist yet, unless its type is a start type, which is what stops a mid-process event from starting a saga at the wrong point.
 
+
+### Declared Event Types {#saga-event-types}
+
+A saga's event types are also its subscription filter. Occurrent takes the types you registered through `startsOn`, `evolve`, `react`, a step's `on(...)` and an `event(...)` condition, asks the `CloudEventTypeMapper` for the CloudEvent type of each one, and subscribes on those.
+
+A sealed type is expanded into the concrete types it permits, all the way down. A saga declaring a sealed `OrderEvent` subscribes on `OrderEvent`, `OrderPlaced` and `PaymentReserved`, so it receives the concrete events stored under that hierarchy (before 0.33.0 the filter asked only for `OrderEvent`'s own CloudEvent type, so with the mappers Occurrent ships the saga received nothing).
+
+Where the concrete types cannot be found, `build()` throws `IllegalArgumentException` naming the type. That covers an interface or an abstract class that is not sealed, and a sealed hierarchy with a level below the declared type that is neither sealed nor final, `non-sealed` in Java, `open class` or `abstract class` in Kotlin. A `sealed class` you can instantiate is no exception, because a sealed declaration says its subtypes are knowable whether or not events are stored under the root's own name.
+
+The remedy to prefer when you own the events is to seal every level, since the saga then keeps working when you add an event type:
+
+{% capture kotlin %}
+sealed interface OrderEvent
+sealed class Payment : OrderEvent          // was open class or abstract class
+data class PaymentReserved(val orderId: String) : Payment()
+{% endcapture %}
+{% capture java %}
+public sealed interface OrderEvent permits Payment { }
+// was non-sealed class Payment implements OrderEvent
+public sealed class Payment implements OrderEvent permits PaymentReserved { }
+public final class PaymentReserved extends Payment { }
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+When the hierarchy is not yours to seal, or is deliberately open, declare the concrete types instead, one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
+
+Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs none of this. If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one type string, declaring the supertype worked before 0.33.0 and now throws. Declaring the concrete types keeps it working, since they all map to the same string.
 
 ### Event Metadata {#saga-event-metadata}
 
@@ -6317,7 +6368,34 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
-A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` only bounds history carried over from earlier steps. The current step's own events are never dropped mid-step, so a condition counting since the step was entered sees all of them even with `historyWindow(0)`. The initiating event is always retained regardless of the window, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
+A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`. The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
+
+`stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. There is no cap unless you set one, so an instance that stays in a step while a large number of correlated events arrive keeps all of them, whatever `historyWindow` says. The minimum is 1.
+
+{% capture kotlin %}
+saga<OrderEvent, OrderCommand> {
+    historyWindow(20)
+    stepWindow(50)
+    // startsOn, correlateAll and the steps as above
+}
+{% endcapture %}
+{% capture java %}
+FlowSaga.<OrderEvent, OrderCommand>builder()
+        .historyWindow(20)
+        .stepWindow(50)
+        // startsOn, correlateAll and the steps as above
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Set both and an instance keeps at most `historyWindow + 2 * stepWindow + 1` events at any one moment. `stepWindow` is doubled because a transition keeps the events of the step being left so that step's reaction can read them, and the step being entered then fills its own cap before anything is dropped.
+
+A step condition still completes on the same event it would have without the cap, because its counts are kept in the instance's state instead of being counted from the events again. What reads less is everything that reads the events directly, a guard's `onlyIf`, a `timeout` reaction, and a window condition's reaction. A retry guard counting `PaymentFailed` across a self-looping step therefore needs its threshold to fit inside `stepWindow`, the same requirement `historyWindow` already has.
+
+Two things stay true at any cap of 1 or more. `received.initiating<T>()` reaches the start event, which is kept as the first retained event and never counts against the cap, and the event that fired a branch is the last element of `received.asList()`.
+
+Before a flow can cap its steps, every `event(...)` condition with a predicate needs a name for that predicate. [Step Conditions](#saga-step-conditions) has the details.
+
+Changing what a capped step waits on while instances are still in it, whether that is an event type or a predicate's name, makes those instances refuse their next delivery with an `IllegalStateException` naming the step. Retrying does not help, because the events those counts would be rebuilt from are gone. Put the previous condition declaration back until those instances have moved on, or delete the instance. An instance still inside the cap counts its window again and continues.
 
 What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name. So a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
@@ -6638,6 +6716,10 @@ You can of course subscribe to an individual event, such as `DomainEvent2`. But 
 For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` but handle them as a `DomainEvent`:
 
 {% include macros/annotation/event-types-example.md %}
+
+The filter Occurrent derives from a sealed type names the declared type as well as the concrete types it permits. That only matters if you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto the type string of the type it was declared with, because such a subscription used to receive nothing at all. No mapper Occurrent ships stores an event under a sealed interface's own type, so nothing changes for the default setup.
+
+The hierarchy has to be sealed or final all the way down. A subscription on an interface or an abstract class that is not sealed, or on an array, is refused at startup, and so is one on a sealed hierarchy with a level below the declared type that is neither sealed nor final, `non-sealed` in Java, `open class` or `abstract class` in Kotlin. The message names the type and points you at `eventTypes()`. `@Saga` and `@Projection` derive their filter the same way, and the saga DSL refuses the same shapes when the saga is built, which [Declared Event Types](#saga-event-types) covers.
 
 #### Event Metadata
 
