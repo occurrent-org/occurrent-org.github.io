@@ -5514,12 +5514,11 @@ val review = saga<ReviewEvent, ReviewCommand> {
     startsOn<ReviewStarted>()
     correlateAll { it.reviewId }
     step("awaiting-decision") {
-        on(anyOf(event<Approved>(2), event<Rejected>()), then = end) { received ->
-            if (received.none<Rejected>()) {
-                issue(Publish(received.initiating<ReviewStarted>().reviewId))
-            } else {
-                issue(Discard(received.initiating<ReviewStarted>().reviewId))
-            }
+        on(event<Rejected>(), then = end) { received ->
+            issue(Discard(received.initiating<ReviewStarted>().reviewId))
+        }
+        on(event<Approved>(2), then = end) { received ->
+            issue(Publish(received.initiating<ReviewStarted>().reviewId))
         }
     }
 }
@@ -5530,16 +5529,21 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
                 .startsOn(ReviewStarted.class)
                 .correlateAll(ReviewEvent::reviewId)
                 .step("awaiting-decision", step -> step
-                        .on(StepCondition.anyOf(StepCondition.event(Approved.class, 2), StepCondition.event(Rejected.class)),
+                        .on(StepCondition.event(Rejected.class),
                                 Continuation.end(),
-                                received -> received.none(Rejected.class)
-                                        ? List.of(new Publish(received.initiating(ReviewStarted.class).reviewId()))
-                                        : List.of(new Discard(received.initiating(ReviewStarted.class).reviewId()))))
+                                received -> List.of(new Discard(received.initiating(ReviewStarted.class).reviewId())))
+                        .on(StepCondition.event(Approved.class, 2),
+                                Continuation.end(),
+                                received -> List.of(new Publish(received.initiating(ReviewStarted.class).reviewId()))))
                 .build();
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`awaiting-decision` completes the moment either alternative is met. Two `Approved` events do it, and so does a single `Rejected`. `event<Approved>(2)` matches once the step's window holds two `Approved` events. `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. `anyOf` combines the two into one condition that fires on whichever alternative is met first. The reaction reads the whole window through `ReceivedEvents`, `received.none(Rejected.class)` here, to tell which alternative fired and choose the command.
+`awaiting-decision` completes the moment either branch is satisfied. `event<Approved>(2)` matches once the step's window holds two `Approved` events, and `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. Branches are evaluated in declaration order and the first satisfied one wins, so a step that reacts differently per outcome writes one branch per outcome and the tie-break is visible in the declaration rather than worked out inside a reaction.
+
+`anyOf` combines several conditions into a single one that is satisfied as soon as any of them is. Reach for it when the alternatives share a reaction. There is no way to ask a condition which of its children matched, so alternatives that need different commands are separate branches, as above.
+
+A reaction reads the window its own condition was evaluated over, not everything the instance has received. A count or a `none(...)` check inside a reaction therefore answers for this step's window alone, so an `Approved` left over from an earlier step cannot be counted as one of these two. `received.initiating<T>()` still reaches the start event whatever the window holds. A guard's `onlyIf` and a `timeout`'s reaction still read the whole retained history, which is what makes a count spanning several steps possible, and the deprecated `join`'s reaction keeps reading it too, so a saga written against 0.31.0 behaves exactly as it did.
 
 `allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
 
@@ -5638,13 +5642,17 @@ Saga<PurchaseEvent, FlowState<PurchaseEvent>, PurchaseCommand> purchase =
 
 A full payment that arrives as the second installment satisfies both branches. The window condition sees two `PaymentReceived` events, and the classic branch's guard also passes, since the payment alone covers the total. The classic branch wins, because it is declared first, so `collecting-payment` issues only `ReleaseGoods` and never reaches the window condition below it.
 
-Three things about a condition are easy to get wrong.
+Five things about a condition are easy to get wrong.
 
 Re-entering a step, including a `transitionTo` back into the step it is already in, restarts its window. Every branch in that step starts counting from zero again, so a classic branch's self-loop wipes a sibling condition's partial progress along with its own.
 
 A condition on the first step that names the start event's own type only counts events arriving after the start. The start delivery is what enters the step, and it does not also count toward that step's window, so a condition built from the start type never fires on the delivery that created the instance.
 
 There is no way to ask a condition for an event's absence, and no negation to build one out of. An `event(...)` match only ever asks whether enough matching events have arrived, so a condition only ever becomes more true as events arrive, never less, which is what lets it be checked fresh on every event rather than re-scanned. A step's `timeout` is what says an event did not arrive in time.
+
+`allOf` refuses two children that the same event can satisfy. When one `event(...)` matcher appears beneath more than one child, `allOf(...)` throws `IllegalArgumentException` naming the type they share, and since a saga is normally declared at startup that happens there rather than on a delivery. `allOf(event<A>(2), event<A>(3))` reads as five events and would be satisfied by three, and `allOf(event<A>(), anyOf(event<A>(), event<B>()))` reads as two and would be satisfied by one `A`. Ask for one `event(type, count)` with the total count instead. A supertype next to one of its subtypes stays legal, because `allOf(event<BaseEvent>(), event<A>())` is a reasonable way to ask for one `A` plus one event of any kind, and so do two predicates over the same type, because nothing can tell a copied predicate from a genuinely different test. `anyOf` permits a repeated alternative, since it is satisfied by exactly what it asks for.
+
+A predicate has to be a deterministic function of the event it is handed. Every condition is re-derived from the step's window on each arriving event, so a predicate runs against the same event again and again, and one that reads the clock, a random source, mutable state or a remote service can answer differently the second time. That breaks the "once matched, always matched" property the counting relies on, and it makes a replay reach a different outcome than the original run. Nothing can enforce this, so it is yours to keep.
 
 ### Correlation {#saga-correlation}
 
