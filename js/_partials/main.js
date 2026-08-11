@@ -96,8 +96,6 @@ if (document.location.pathname.includes("/documentation")) {
         "push-subscription-reactive-life-cycle" : "0.32.0",
         "synchronous-subscription-life-cycle" : "0.32.0",
         "replay-batching" : "0.33.0",
-        "projection-read-your-writes-async" : "0.33.0",
-        "projection-annotation-applied-position" : "0.33.0",
         "checkpoint-fencing-blocking" : "0.33.0"
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
