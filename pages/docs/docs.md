@@ -6317,7 +6317,7 @@ static <E, C> Saga.Step<FlowState<E>, C> start(Saga<E, FlowState<E>, C> saga, E 
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout`. That is what `issuedCommands()` is for. It reads the commands back out of the effects, so a reaction that issued nothing is empty there even when the effects list is not. A flow step's timer is named after the step, and `stepTimer` gives you that name:
+**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout`. That is what `issuedCommands()` is for. It reads the commands back out of the effects, so a reaction that issued nothing is empty there even when the effects list is not:
 
 {% capture kotlin %}
 val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
@@ -6339,7 +6339,7 @@ Timers get the same split treatment as commands. `timerEffects()` reads the star
 
 ### Firing a timeout without waiting {#testing-saga-timeouts}
 
-Fire a timeout in a test by naming its timer, instead of waiting for time to pass:
+Fire a timeout in a test by naming its timer, instead of waiting for time to pass. A flow step's timer is named after the step, and `stepTimer` gives you that name:
 
 {% capture kotlin %}
 val step = lobby.step(started.state, SagaInput.timeout("game-1", stepTimer("awaiting-players")))
