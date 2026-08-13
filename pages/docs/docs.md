@@ -3613,9 +3613,11 @@ It is not a stopgap. It is the correct permanent answer for a store that genuine
 
 Occurrent reads that answer at startup and refuses to run a store like this next to a `CompetingConsumerStrategy`, throwing `CheckpointStorageCannotFenceException`, rather than letting the first checkpoint write fail once a node holds its lease. There are two ways out. Answer `true` from `evaluatesWriteConditions()` if your store really does accept and refuse `notOlderThan` and `ifAbsent`, or set `occurrent.subscription.competing-consumer.fence-checkpoints=false` to keep a store that cannot. Every checkpoint is then written unconditionally, which is what 0.32.0 did, so a node that has lost its lease can move the checkpoint backward and the events between the two positions are delivered again. That stays inside the at-least-once contract.
 
-Occurrent's own Mongo and Redis checkpoint storages do not need this recipe. They already evaluate every condition for real, apart from Redis Cluster, which still refuses a conditional write outright, covered below. If your store can evaluate a condition for real, the conformance suite in `occurrent-tck-subscription-blocking` checks the two rules that matter for it. `any()` has to leave whatever version is stored untouched, rather than clearing it or inferring one from the write. `notOlderThan(version)` has to accept when nothing is stored, since that is a checkpoint written before this condition existed, and every checkpoint saved by an earlier release has to stay readable.
+Occurrent's own Mongo and Redis checkpoint storages do not need this recipe. They already evaluate every condition for real, Redis Cluster included, covered below. If your store can evaluate a condition for real, the conformance suite in `occurrent-tck-subscription-blocking` checks the two rules that matter for it. `any()` has to leave whatever version is stored untouched, rather than clearing it or inferring one from the write. `notOlderThan(version)` has to accept when nothing is stored, since that is a checkpoint written before this condition existed, and every checkpoint saved by an earlier release has to stay readable.
 
-**Redis Cluster does not support the fence.** `SpringRedisCheckpointStorage` keeps the checkpoint and its stored version in two separately named keys, and the Lua script that compares and writes both atomically is refused on Redis Cluster for touching keys in different slots. Asking for `notOlderThan` or `ifAbsent` against a cluster fails immediately on the first conditional write, not quietly later. A Redis Cluster deployment with no `CompetingConsumerStrategy` wired in is unaffected.
+**Redis Cluster supports the fence too.** `SpringRedisCheckpointStorage` keeps the checkpoint and its stored version in two differently named keys, and Cluster refuses a script that touches keys in different slots. The version key's name carries a hash tag built from the checkpoint key's own hash, so Cluster places both in the same slot and `notOlderThan` and `ifAbsent` work there exactly as they do on a standalone or replicated server. The version key also carries a SHA-256 digest of the subscription id after that tag, so two ids that happen to share a hash tag, two tenant-scoped ids under the same `{tenant}` say, still get their own version key rather than silently sharing one fencing version.
+
+One subscription id shape is still refused outright, an `IllegalArgumentException` from `save` for `notOlderThan` or `ifAbsent`. It is the shape Cluster itself falls back to hashing the whole id for (no brace pair, an unmatched brace, or an empty pair like `{}`), where that whole id is also either empty or contains a closing brace somewhere in it, for example `""`, `"{}orders"` or `"a}b{c"`. `any()` and `delete` never refuse an id like this, since `any()` writes only the checkpoint key, and an id of this shape can only ever have had a checkpoint written through `any()` in the first place, so there is no version key left to strand. A Redis Cluster deployment with no `CompetingConsumerStrategy` wired in is unaffected either way.
 
 **One thing to know before rolling this out on a cluster already running competing consumers.** During the rolling upgrade from 0.32.0 to 0.33.0, a node still on 0.32.0 releases its lock by deleting the lock document, so the next node to take it over starts at version 0 again. A 0.33.0 node's checkpoint write then offers `notOlderThan(0)` against a checkpoint already stamped with a higher version and is refused. That refusal repeats, once per unit of the stored version, each cycle costing one lease period and one re-run of whatever the handler did before the refusal, until every node in the deployment runs 0.33.0. From then on the version keeps climbing instead of resetting, and the fence holds. If a subscription is stuck cycling and you want it to stop sooner, `CheckpointStorage.delete(subscriptionId)` clears the checkpoint and its stored version together, at the cost of replaying everything since. [ADR 116](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0116-a-checkpoint-write-from-a-lease-that-has-moved-on-is-refused.md) has the full design, and the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.33.0.md) covers implementing `CheckpointStorage` yourself in more detail.
 
@@ -5796,7 +5798,7 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
 
 `anyOf` combines several conditions into a single one that is satisfied as soon as any of them is. Reach for it when the alternatives share a reaction. There is no way to ask a condition which of its children matched, so alternatives that need different commands are separate branches, as above.
 
-A reaction reads the window its own condition was evaluated over, not everything the instance has received. A count or a `none(...)` check inside a reaction therefore answers for this step's window alone, so an `Approved` left over from an earlier step cannot be counted as one of these two. `received.initiating<T>()` still reaches the start event whatever the window holds. A guard's `onlyIf` and a `timeout`'s reaction still read the whole retained history, which is what makes a count spanning several steps possible, and the deprecated `join`'s reaction keeps reading it too, so a saga written against 0.31.0 behaves exactly as it did.
+A reaction reads the window its own condition was evaluated over, not everything the instance has received. A count or a `none(...)` check inside a reaction therefore answers for this step's window alone, so an `Approved` left over from an earlier step cannot be counted as one of these two. `received.initiating<T>()` still reaches the start event whatever the window holds. A guard's `onlyIf` and a `timeout`'s reaction still read the whole retained history, which is what makes a count spanning several steps possible. The deprecated `join`'s reaction no longer does. It reads the same narrowed window a condition's reaction does, the events received since the step it fired from was entered, so a `join` past a saga's first step no longer sees an earlier step's events at all, not even a repeat of its own expectation type. A first-step `join`'s reaction also stops seeing the start event through `count`, `all`, `first`, `any`, `none` or `asList`, though `received.initiating<T>()` still reaches it either way.
 
 `allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
 
@@ -5973,6 +5975,34 @@ public final class PaymentReserved extends Payment { }
 When the hierarchy is not yours to seal, or is deliberately open, declare the concrete types instead, one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
 Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs none of this. If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one type string, declaring the supertype worked before 0.33.0 and now throws. Declaring the concrete types keeps it working, since they all map to the same string.
+
+### Setting an Explicit Filter {#saga-explicit-filter}
+
+Sealing the hierarchy or declaring the concrete types is not always an option, so a saga can set its own filter instead of having one derived from `eventTypes()`. `Saga.Builder.filter(Filter)` and `FlowSaga.Builder.filter(Filter)` both take one, both Kotlin `saga { }` blocks expose it as `filter(...)`, and the lower-level `Saga.create(...)` factory takes one as a trailing argument. With a filter set, nothing is derived, so the refusal above never fires, whatever the hierarchy underneath the declared type looks like:
+
+{% capture java %}
+Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
+        .correlateAll(OrderEvent::orderId)
+        .startsOn(OrderEvent.class)
+        .react(OrderEvent.class, (state, event) -> ...)
+        .filter(Filter.type("order-event"))
+        .build();
+{% endcapture %}
+{% capture kotlin %}
+saga<OrderEvent, OrderCommand> {
+    correlateAll { it.orderId }
+    startsOn<OrderEvent>()
+    react<OrderEvent> { state, event -> ... }
+    filter(Filter.type("order-event"))
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+This is also the way out when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, since reflection cannot tell that mapper apart from the default one, and declaring the concrete types would not help either, as they all collapse to the same string anyway.
+
+Three things become yours to get right once you set a filter, since none of them are checked for you anymore. The filter has to admit the saga's start events, because a filter that excludes them means no instance is ever created. It also has to stay inside what your `CloudEventConverter` can turn into a domain event, since every CloudEvent it admits is converted before the saga sees it, and one that fails to convert fails that delivery rather than being skipped. And the refusal above is switched off for every event type the saga declares, not only the one you could not enumerate, so a filter set for an unrelated reason, narrowing by subject say, also stops you being told about a sealed hierarchy reopened somewhere else in the same saga.
+
+A flow saga pays one more cost for a broad filter. It appends every correlated event it receives to the instance's retained history before it checks which branch handles the type, so a filter wider than the types the flow names grows that history, and under a `stepWindow` cap those events take slots the step's own events would otherwise hold.
 
 ### Event Metadata {#saga-event-metadata}
 
