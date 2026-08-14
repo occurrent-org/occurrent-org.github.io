@@ -1,7 +1,7 @@
 {% capture java %}
 // If you're using an event store to store the events, you can do like this: 
 
-List<OrderEvent> currentEvents = ...
+List<OrderEvent> currentEvents = ... // typically loaded from an event store, or supplied directly in a test
 OrderCommand command = new CancelOrder("order-1");
 
 List<OrderEvent> newEvents = orderDecider.decideOnEventsAndReturnEvents(currentEvents, command);
@@ -11,7 +11,7 @@ Decision<OrderState, List<OrderEvent>> decision = orderDecider.decideOnEvents(cu
 
 // Or if you store state instead of events:
 
-OrderState currentState = ...
+OrderState currentState = ... // typically loaded from a state store such as an RDBMS row, or supplied directly in a test
 OrderCommand command = ...
 
 List<OrderEvent> newEvents = orderDecider.decideOnStateAndReturnEvents(currentState, command);
@@ -21,7 +21,7 @@ Decision<OrderState, List<OrderEvent>> decision = orderDecider.decideOnState(cur
 
 // You can even apply multiple commands at the same time:
 
-List<OrderEvent> currentEvents = ...
+List<OrderEvent> currentEvents = ... // typically loaded from an event store, or supplied directly in a test
 OrderCommand command1 = new PlaceOrder("order-1", "product-42", 3);
 OrderCommand command2 = new CancelOrder("order-1");
 
@@ -35,8 +35,8 @@ import org.occurrent.dsl.decider.decide
 import org.occurrent.dsl.decider.component1
 import org.occurrent.dsl.decider.component2
 
-val currentEvents : List<OrderEvent> = ...
-val currentState : OrderState? = ...
+val currentEvents : List<OrderEvent> = ... // typically loaded from an event store, or supplied directly in a test
+val currentState : OrderState? = ... // typically loaded from a state store such as an RDBMS row, or supplied directly in a test
 val command : OrderCommand = CancelOrder(orderId = "order-1")
 
 // We use destructuring here to get the "newState" and "newEvents" from the Decision instance returned by decide
@@ -48,6 +48,9 @@ val (newState, newEvents) = orderDecider.decide(state = currentState, command = 
 
 // And you could of course also just use the actual "Decision" if you like
 val decision : Decision<OrderState, List<OrderEvent>> = orderDecider.decide(events = currentEvents, command = command)
+
+// The same works starting from state instead of events
+val decisionFromState : Decision<OrderState, List<OrderEvent>> = orderDecider.decide(state = currentState, command = command)
 
 // You can also supply multiple commands at the same time, then all of them will succeed or fail atomically
 val command1 = PlaceOrder(orderId = "order-2", productId = "product-42", quantity = 1)
