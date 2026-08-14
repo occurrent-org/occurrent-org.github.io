@@ -4089,7 +4089,7 @@ First add the dependency:
 
 {% include macros/decider/maven.md %}
 
-To use a decider, you model your commands, events and state as explicit data structures instead of functions. Here's an order that can be placed and cancelled:
+To use a decider, you model your commands, events and state as explicit data structures. (Elsewhere in Occurrent you can represent a command as a plain function instead, see [Command Philosophy](#command-philosophy).) Here's an order that can be placed and cancelled:
 
 {% include macros/decider/example_events_state_cmd.md %}
 
