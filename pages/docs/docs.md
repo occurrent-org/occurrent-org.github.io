@@ -4083,7 +4083,7 @@ Because the starter wires a Spring-backed `TransactionExecutor` by default, the 
 
 # Decider
 
-A [decider](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) bundles three functions: `initialState`, `decide`, and `evolve`. `initialState` returns the state a decider starts from, before any event has been applied. `decide` takes a command and the current state, checks your business rules and invariants, and returns the resulting events. `evolve` takes the current state and an event and returns the updated state. Together they give you a structured way to implement decision logic for a business entity (typically an aggregate) or a use case.
+A [decider](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) is an object built from three functions: `initialState`, `decide`, and `evolve`. `initialState` returns the state a decider starts from, before any event has been applied. `decide` takes a command and the current state, checks your business rules and invariants, and returns the resulting events. `evolve` takes the current state and an event and returns the updated state. Together they give you a structured way to implement decision logic for a business entity (typically an aggregate) or a use case.
 
 First add the dependency:
 
