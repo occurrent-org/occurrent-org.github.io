@@ -5978,14 +5978,16 @@ Java records and Kotlin data classes are final already, so an ordinary sealed hi
 
 ### Setting an Explicit Filter {#saga-explicit-filter}
 
-Sealing the hierarchy or declaring the concrete types is not always an option, so a saga can set its own filter instead of having one derived from `eventTypes()`. `Saga.Builder.filter(Filter)` and `FlowSaga.Builder.filter(Filter)` both take one, both Kotlin `saga { }` blocks expose it as `filter(...)`, and the lower-level `Saga.create(...)` factory takes one as a trailing argument. With a filter set, nothing is derived, so the refusal above never fires, whatever the hierarchy underneath the declared type looks like:
+A saga can also select on more than its declared event types, or subscribe on something a derived selector cannot express at all. Two builder members cover the two cases: `narrowingFilter(Filter)` adds a condition on top of the derived selector, `replacementFilter(Filter)` replaces it outright. `FlowSaga.Builder` has both, both Kotlin `saga { }` blocks expose them under the same names, and the lower-level `Saga.create(...)` factory takes a replacement only, as its trailing argument.
+
+`narrowingFilter(Filter)` is combined (ANDed) with the selector `eventTypes()` derives, so the saga keeps asking for its own declared types and also requires your condition, on subject, source, data or time:
 
 {% capture java %}
 Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
         .correlateAll(OrderEvent::orderId)
         .startsOn(OrderEvent.class)
         .react(OrderEvent.class, (state, event) -> ...)
-        .filter(Filter.type("order-event"))
+        .narrowingFilter(Filter.subject("order-1"))
         .build();
 {% endcapture %}
 {% capture kotlin %}
@@ -5993,16 +5995,38 @@ saga<OrderEvent, OrderCommand> {
     correlateAll { it.orderId }
     startsOn<OrderEvent>()
     react<OrderEvent> { state, event -> ... }
-    filter(Filter.type("order-event"))
+    narrowingFilter(Filter.subject("order-1"))
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-This is also the way out when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, since reflection cannot tell that mapper apart from the default one, and declaring the concrete types would not help either, as they all collapse to the same string anyway.
+Because a selector is still derived, the hierarchy check from [Declared Event Types](#saga-event-types) still runs under a narrowing.
 
-Three things become yours to get right once you set a filter, since none of them are checked for you anymore. The filter has to admit the saga's start events, because a filter that excludes them means no instance is ever created. It also has to stay inside what your `CloudEventConverter` can turn into a domain event, since every CloudEvent it admits is converted before the saga sees it, and one that fails to convert fails that delivery rather than being skipped. And the refusal above is switched off for every event type the saga declares, not only the one you could not enumerate, so a filter set for an unrelated reason, narrowing by subject say, also stops you being told about a sealed hierarchy reopened somewhere else in the same saga.
+`replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. This is the way out when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, since reflection cannot tell that mapper apart from the default one, and declaring the concrete types would not help either, as they all collapse to the same string:
 
-A flow saga pays one more cost for a broad filter. It appends every correlated event it receives to the instance's retained history before it checks which branch handles the type, so a filter wider than the types the flow names grows that history, and under a `stepWindow` cap those events take slots the step's own events would otherwise hold.
+{% capture java %}
+Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
+        .correlateAll(OrderEvent::orderId)
+        .startsOn(OrderEvent.class)
+        .react(OrderEvent.class, (state, event) -> ...)
+        .replacementFilter(Filter.type("order-event"))
+        .build();
+{% endcapture %}
+{% capture kotlin %}
+saga<OrderEvent, OrderCommand> {
+    correlateAll { it.orderId }
+    startsOn<OrderEvent>()
+    react<OrderEvent> { state, event -> ... }
+    replacementFilter(Filter.type("order-event"))
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Setting a replacement switches off the hierarchy check for every event type the saga declares, not only for one whose concrete types you could not enumerate. An array or a primitive declared type is still refused. The check belongs to `Saga.Builder`, `FlowSaga.Builder` and `Saga.create(...)` alone, so a saga you implement directly by hand, rather than through a builder or the factory, never runs it at any `eventTypes()`, and a declared type whose concrete types cannot all be found then leaves it subscribing on a filter that misses events its own handlers would take. Declare the concrete types there, the same thing a builder would otherwise have insisted on. `Saga.create(...)` takes a replacement but not a narrowing, since the saga it returns is an anonymous implementation with nothing left to set afterwards. Implement `Saga` yourself for a narrowing, the same route the factory's own javadoc already sends you down for `onStart` and `isTerminal`.
+
+Both members leave two things for you to get right, since neither is checked for you. The condition has to admit the saga's start events, because one that excludes them means no instance is ever created. It also has to admit the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running. A `replacementFilter` adds two more of its own. Every CloudEvent it admits is converted to a domain event before the saga sees it, so keep it inside what your `CloudEventConverter` can turn into an event, since one it cannot convert fails that delivery rather than being skipped. And a flow saga appends every correlated event it receives to the instance's retained history before it looks at which branch handles it, so a replacement wider than the flow's own types grows that history, taking slots a `stepWindow` cap would otherwise reserve for the step's own events. A saga that declares no event types and sets no replacement derives a selector matching everything, so a narrowing on it is the whole selector, and the conversion obligation above then falls on that narrowing too.
+
+On a flow saga, either member can also change what a guard sees. A guard's `onlyIf` reads `ReceivedEvents`, so a selector that excludes an event type changes what `received.none(Rejected.class)` or `received.any(Rejected.class)` answers, and a branch can fire that would not have fired otherwise. This is not a narrowing-only risk. A narrowing can only remove matches, so that is the only direction it can move the answer. A replacement can be wider or narrower than the declared types, and does the same thing whenever it is narrower.
 
 ### Event Metadata {#saga-event-metadata}
 
