@@ -4109,7 +4109,7 @@ Some benefits of using deciders:
 5. `evolve` being a pure function of state and event is also what makes [snapshots](#snapshotting-a-decider) possible. When a long stream makes full replay slow, a snapshot caches the state at a version, so later commands only replay what was written after it.
 6. Multiple commands can be applied to a decider atomically, so a use case that issues more than one command either fully succeeds or fully fails, never half-applied. That atomicity comes from the event store's own conditional write (see [Write Condition](#write-condition)), not a database transaction or other infrastructure, so `decide` and `evolve` stay plain, pure functions.
 7. Deciders compose. Write one small decider per feature, then widen it to a shared type with `adapt` or combine several into one with `compose`, instead of building one large decider that handles every command and event type in your application (see [Combining Deciders](#combining-deciders)).
-8. For an invariant that spans more than one stream, a plain decider isn't enough. Occurrent's `DcbDecider` handles that case (see [Coupling a Decider to a Boundary](#coupling-a-decider-to-a-boundary)).
+8. Deciders scale to invariants that span more than one stream too. Occurrent's `DcbDecider` couples the same `decide`/`evolve` pair to a boundary instead of a single stream (see [Coupling a Decider to a Boundary](#coupling-a-decider-to-a-boundary)).
 
 ## The `Decider` interface
 
