@@ -4093,7 +4093,7 @@ To use a decider, you model your commands, events and state as explicit data str
 
 {% include macros/decider/example_events_state_cmd.md %}
 
-You don't have to implement `org.occurrent.dsl.decider.Decider` yourself. Pass your `decide` and `evolve` functions to `Decider.create(..)` and it builds one for you:
+Pass your `decide` and `evolve` functions to `Decider.create(..)` and it builds a `Decider` for you:
 
 {% include macros/decider/example_create.md %}
 
