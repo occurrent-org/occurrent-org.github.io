@@ -4083,25 +4083,35 @@ Because the starter wires a Spring-backed `TransactionExecutor` by default, the 
 
 # Decider
 
-As of version 0.17.0, Occurrent has basic support for [Deciders](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider). 
-A decider is a model that can be used as a structured way of implementing decision logic for a business entity (typically aggregate) or use case/command.
-Some benefits of using deciders are:
+A [decider](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) is a model that can be used as a structured way of implementing decision logic for a business entity (typically aggregate) or use case/command. Some benefits of using deciders are:
 1. You don't need to implement turning events into state yourself.
 2. You get a good structure for defining your aggregate/use case.
 3. A decider can return either the new events, the new state, or both events and state (called `Decision` in Occurrent), for a specific command.
 4. Occurrent's decider implementation supports sending multiple commands to a decider atomically.
 5. Deciders are combinable. You can widen a decider to broader command and event types with `adapt`, and combine several feature deciders into one with `compose` (see [Combining Deciders](#combining-deciders)).
+6. For an invariant that spans more than one stream, a plain decider isn't enough. Occurrent's `DcbDecider` handles that case (see [Coupling a Decider to a Boundary](#coupling-a-decider-to-a-boundary)).
 
 The decider works through the stream to its current state on every command. When that stream grows long enough that the fold becomes too slow, you can accelerate it with a [snapshot](#snapshots), which applies only the events written since a saved state.
 
-To use a decider, you need to model your commands as explicit data structures instead of functions.
-
-
-To create a decider, first include the dependency:
+First add the dependency:
 
 {% include macros/decider/maven.md %}
 
-You can then either implement the `org.occurrent.dsl.decider.Decider` interface or use the default implementation (see more below). The interface is defined like this:
+To use a decider, you model your commands, events and state as explicit data structures instead of functions. Here's an order that can be placed and cancelled:
+
+{% include macros/decider/example_events_state_cmd.md %}
+
+You don't have to implement `org.occurrent.dsl.decider.Decider` yourself. Pass your `decide` and `evolve` functions to `Decider.create(..)` and it builds one for you:
+
+{% include macros/decider/example_create.md %}
+
+You now have a `Decider` instance. Call any of its default methods to get back the new state, the new events, or both:
+
+{% include macros/decider/example_usage.md %}
+
+## The `Decider` interface
+
+`Decider.create(..)` builds an implementation of `org.occurrent.dsl.decider.Decider` for you. Implement the interface directly if you'd rather write your own class:
 
 ```java
 public interface Decider<C, S, E> {
@@ -4118,39 +4128,16 @@ public interface Decider<C, S, E> {
 }
 ```
 
-where:
-
-| Parameter Type | Description                                          |
-|----------------|------------------------------------------------------|
-| C              | The type of the commands that the decider can handle |
-| S              | The state that the decider works with                |
-| E              | The type of events that the decider returns          |
-
-
-The interface contains four methods:
+In the `orderDecider` example above, `C` is `OrderCommand`, `S` is `OrderState`, and `E` is `OrderEvent`. The four methods:
 
 | Method name  | Description                                                                                                                                                          |
 |--------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | initialState | Returns the initial state of the decider, for example `null` or something like "`NotStarted`" (a domain specific state implemented by you), depending on your domain |
-| decide       | A function that takes a command and the current state and returns a list of new events that represents the changes the occurred after the commands was handled       |
-| evolve       | A method that takes the current state and an event, and return an update state after applying this event                                                             |
-| isTerminal   | An optional method that can be implemented/overridden to tell the Decider to stop evolving the state if the Decider has reached a specific state                     |
+| decide       | Takes a command and the current state, and returns the new events produced by handling that command                                                                 |
+| evolve       | Takes the current state and an event, and returns the updated state after applying that event                                                                       |
+| isTerminal   | Optional. Override it to tell the decider to stop evolving once it reaches a terminal state                                                                         |
 
-It's highly recommended to read [this](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) blog post to get a better understanding of the rationale behind Deciders. 
-
-But you don't actually need to implement this interface yourself, instead you can create a default implementation by passing in functions to `Decider.create(..)`.
-
-Imagine that you have commands, events and state defined like this:
-
-{% include macros/decider/example_events_state_cmd.md %}
-
-Then you can create a decider like this:
-
-{% include macros/decider/example_create.md %}
-
-Now that you have an instance of `Decider`, you can then call any of the many default methods to return either the name state, the new events, or both. For example:
-
-{% include macros/decider/example_usage.md %}
+Read [this blog post](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) for the rationale behind deciders.
 
 ## Using an ApplicationService with Decider's
 
