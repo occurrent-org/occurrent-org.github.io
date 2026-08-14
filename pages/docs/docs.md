@@ -4084,7 +4084,7 @@ Because the starter wires a Spring-backed `TransactionExecutor` by default, the 
 # Decider
 
 A [decider](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) is a model that can be used as a structured way of implementing decision logic for a business entity (typically aggregate) or use case/command. Some benefits of using deciders are:
-1. You don't need to implement turning events into state yourself.
+1. You write `evolve`, but not the loop that runs it across every event to rebuild state.
 2. You get a good structure for defining your aggregate/use case.
 3. A decider can return either the new events, the new state, or both events and state (called `Decision` in Occurrent), for a specific command.
 4. Occurrent's decider implementation supports sending multiple commands to a decider atomically.
@@ -4139,9 +4139,9 @@ In the `orderDecider` example above, `C` is `OrderCommand`, `S` is `OrderState`,
 
 Read [this blog post](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) for the rationale behind deciders.
 
-## Using an ApplicationService with Decider's
+## Using an ApplicationService with Deciders
 
-It's possible to integrate [Decider's](#decider) with an [ApplicationService](#application-service) to easily load existing events from an [event store](#eventstore).
+It's possible to integrate [Deciders](#decider) with an [ApplicationService](#application-service) to easily load existing events from an [event store](#eventstore).
 
 ### Java<a id="application-service-decider-java"></a>
 
@@ -4150,6 +4150,7 @@ To use the existing [ApplicationService](#application-service) infrastructure wi
 ```java
 ApplicationService<Event> applicationService = ...
 Command command = ...
+Decider<Command, State, Event> decider = ...
 
 var deciderApplicationService = new DeciderApplicationService<>(applicationService);
 var writeResult = deciderApplicationService.execute("streamId", command, decider);
@@ -4164,7 +4165,7 @@ var writeResult = applicationService.execute("streamId", events -> decider.decid
 
 ### Kotlin<a id="application-service-decider-kotlin"></a>
 
-The `org.occurrent:occurrent-decider` module contains Kotlin extension functions, located in the `org.occurrent.dsl.decider.ApplicationServiceDeciderExtensions.kt` file, that allows you to easily integrate deciders
+The `org.occurrent:occurrent-decider` module contains Kotlin extension functions, located in the `org.occurrent.dsl.decider.ApplicationServiceDeciderExtensions.kt` file, that allow you to easily integrate deciders
 with existing [ApplicationService](#application-service) infrastructure. Here's an example:
 
 ```kotlin
@@ -4175,6 +4176,7 @@ val applicationService = ...
 val decider = ... 
 
 // Then you can pass the decider and command to the application service instance 
+val command = ...
 val writeResult = applicationService.execute(streamId, command, decider)
 ```
 
