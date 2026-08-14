@@ -4085,11 +4085,13 @@ Because the starter wires a Spring-backed `TransactionExecutor` by default, the 
 
 A [decider](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) is a model that can be used as a structured way of implementing decision logic for a business entity (typically aggregate) or use case/command. Some benefits of using deciders are:
 1. You write `evolve`, but not the loop that runs it across every event to rebuild state.
-2. You get a good structure for defining your aggregate/use case.
-3. A decider can return either the new events, the new state, or both events and state (called `Decision` in Occurrent), for a specific command.
-4. Occurrent's decider implementation supports sending multiple commands to a decider atomically.
-5. Deciders are combinable. You can widen a decider to broader command and event types with `adapt`, and combine several feature deciders into one with `compose` (see [Combining Deciders](#combining-deciders)).
-6. For an invariant that spans more than one stream, a plain decider isn't enough. Occurrent's `DcbDecider` handles that case (see [Coupling a Decider to a Boundary](#coupling-a-decider-to-a-boundary)).
+2. Decide and evolve stay separate. `decide` enforces your business rules and invariants, and only returns the resulting events once a command passes them, while `evolve` just applies those events to state, so the two responsibilities don't get tangled together in one class the way a typical aggregate does.
+3. A decider can hand back just the new events, just the new state, or both (a `Decision`), so a caller gets exactly what it needs instead of always getting everything.
+4. A decider isn't only for event-sourced systems. Because `decideOnStateAndReturnState` runs entirely against state, the same `decide`/`evolve` pair works just as well over a plain state store, an RDBMS row, for example.
+5. `evolve` being a pure function of state and event is also what makes [snapshots](#snapshotting-a-decider) possible, caching state at a version so later commands apply only the events written since.
+6. Multiple commands can be applied to a decider atomically, so a use case that issues more than one command either fully succeeds or fully fails, never half-applied. That atomicity comes from the event store's own conditional write (see [Write Condition](#write-condition)), not a database transaction or other infrastructure, so `decide` and `evolve` stay plain, pure functions.
+7. Deciders compose. Write one small decider per feature, then widen it to a shared type with `adapt` or combine several into one with `compose`, instead of building one large decider that handles every command and event type in your application (see [Combining Deciders](#combining-deciders)).
+8. For an invariant that spans more than one stream, a plain decider isn't enough. Occurrent's `DcbDecider` handles that case (see [Coupling a Decider to a Boundary](#coupling-a-decider-to-a-boundary)).
 
 The decider works through the stream to its current state on every command. When that stream grows long enough that the fold becomes too slow, you can accelerate it with a [snapshot](#snapshots), which applies only the events written since a saved state.
 
