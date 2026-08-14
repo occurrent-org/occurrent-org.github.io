@@ -1882,18 +1882,18 @@ dispatcher.dispatch(PlaceOrder(orderId, productId, quantity))
 A dispatcher usually handles a whole family of related commands, not just one, so the resolver typically branches over the command type instead of reading a single field:
 
 {% capture java %}
-public sealed interface OrderCommand permits PlaceOrder, ShipOrder {
+public sealed interface OrderCommand permits PlaceOrder, CancelOrder {
 }
 
 public record PlaceOrder(String orderId, String productId, int quantity) implements OrderCommand {
 }
 
-public record ShipOrder(String orderId) implements OrderCommand {
+public record CancelOrder(String orderId) implements OrderCommand {
 }
 
 StreamIdResolver<OrderCommand> streamIdResolver = command -> switch (command) {
     case PlaceOrder c -> c.orderId();
-    case ShipOrder c -> c.orderId();
+    case CancelOrder c -> c.orderId();
 };
 {% endcapture %}
 {% capture kotlin %}
@@ -1901,12 +1901,12 @@ sealed interface OrderCommand
 
 data class PlaceOrder(val orderId: String, val productId: String, val quantity: Int) : OrderCommand
 
-data class ShipOrder(val orderId: String) : OrderCommand
+data class CancelOrder(val orderId: String) : OrderCommand
 
 val streamIdResolver = StreamIdResolver<OrderCommand> { command ->
     when (command) {
         is PlaceOrder -> command.orderId
-        is ShipOrder -> command.orderId
+        is CancelOrder -> command.orderId
     }
 }
 {% endcapture %}
