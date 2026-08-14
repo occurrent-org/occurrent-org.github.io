@@ -4103,7 +4103,7 @@ You now have a `Decider` instance. Call any of its default methods to get back t
 
 Some benefits of using deciders:
 1. You write `evolve`, but not the loop that runs it across every event to rebuild state.
-2. Decide and evolve stay separate. `decide` enforces your business rules and invariants, and only returns the resulting events once a command passes them, while `evolve` just applies those events to state, so the two responsibilities don't get tangled together in one class the way a typical aggregate does.
+2. Decide and evolve stay separate. `decide` enforces your business rules and invariants, and only returns the resulting events when a command doesn't violate them, while `evolve` just applies those events to state, so the two responsibilities don't get tangled together in one class the way a typical aggregate does.
 3. A decider can hand back just the new events, just the new state, or both (a `Decision`), so a caller gets exactly what it needs instead of always getting everything.
 4. A decider isn't only for event-sourced systems. Because `decideOnStateAndReturnState` runs entirely against state, the same `decide`/`evolve` pair works just as well over a plain state store, an RDBMS row, for example.
 5. `evolve` being a pure function of state and event is also what makes [snapshots](#snapshotting-a-decider) possible. When a long stream makes full replay slow, a snapshot caches the state at a version, so later commands only replay what was written after it.
