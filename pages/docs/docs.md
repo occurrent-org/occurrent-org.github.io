@@ -4205,7 +4205,7 @@ types, and combine them into a larger decider without losing the type safety of 
 
 ### Widening a decider with `adapt`
 
-A feature decider is usually written over its own narrow types, for example `Decider<CourseCommand, CourseState, CourseEvent>`, while an
+Reach for `adapt` when a feature decider needs to work with your application's broader command and event types, either to pass it straight to an `ApplicationService`, or as the widening step before combining it with other feature deciders (see [Combining with `compose`](#combining-with-compose) below). A feature decider is usually written over its own narrow types, for example `Decider<CourseCommand, CourseState, CourseEvent>`, while an
 `ApplicationService` is over the broadest event type in your domain. `adapt` widens a decider to the shared supertypes, ignoring foreign
 events and treating foreign commands as no-ops.
 
