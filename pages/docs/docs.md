@@ -6072,7 +6072,11 @@ FlowSaga.<SensorEvent, RaiseAlarm>builder()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Once a step is capped it can no longer count its events again, because the oldest of them are thrown away as new ones arrive. So every `event(...)` check keeps its own progress in the instance's state instead, as a count of the events that have matched it so far. A capped step still completes on the same event it would have without the cap. What a cap does shrink is what a guard, a reaction and a `timeout` can read, which [Delivery Contract](#saga-delivery-contract) covers along with `historyWindow`, the separate limit on how many of an earlier step's events an instance keeps after moving on.
+Once you set a cap, a step can no longer count its events over again, because the oldest ones are thrown away as new ones arrive. Occurrent keeps a running count for each `event(...)` check in the instance's state instead, and adds to it as matching events arrive.
+
+A step with a cap still completes on the same event it would have completed on without one. What the cap does change is what a guard, a reaction and a `timeout` get to read, because they only see the events the instance still has.
+
+[Delivery Contract](#saga-delivery-contract) goes through what each of them sees. It also covers `historyWindow`, which is a separate limit on how many of an earlier step's events an instance keeps after moving on.
 
 A count in state is worth keeping only if it can be matched back to the check it was counted for after a restart or a redeploy. The event type does part of that. A predicate cannot do the rest on its own, since a lambda is a different object every time the class loads, so `event(...)` takes a name for it, the `predicateId` argument:
 
