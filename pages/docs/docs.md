@@ -6078,7 +6078,7 @@ A step with a cap still completes on the same event it would have completed on w
 
 [Delivery Contract](#saga-delivery-contract) goes through what each of them sees. It also covers `historyWindow`, which is a separate limit on how many of an earlier step's events an instance keeps after moving on.
 
-A count in state is worth keeping only if it can be matched back to the check it was counted for after a restart or a redeploy. The event type does part of that. A predicate cannot do the rest on its own, since a lambda is a different object every time the class loads, so `event(...)` takes a name for it, the `predicateId` argument:
+When your application restarts, or you deploy a new version, Occurrent has to work out which check each stored count belongs to. It matches them on the event type and on a name you give the predicate, the `predicateId` argument. The name is needed because a lambda has no name of its own, so nothing about it would tell Occurrent that you changed what it tests:
 
 {% capture kotlin %}
 step("monitoring") {
@@ -6095,9 +6095,15 @@ step("monitoring") {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-So on a flow that sets `stepWindow`, name the predicate of every `event(...)` check. The count it asks for makes no difference, a check waiting for one event needs the name as much as one waiting for five, and `build()` throws an `IllegalStateException` naming the step and the event type otherwise. On a flow without a cap none of this applies, `event(type, count, predicate)` needs no name and a name given anyway does nothing.
+So on a flow that sets `stepWindow`, give every `event(...)` check that takes a predicate a name. It makes no difference how many events the check waits for, one needs a name as much as five does, and `build()` throws an `IllegalStateException` naming the step and the event type if you miss one.
 
-`build()` refuses one more thing under a cap, two `event(...)` checks over the same event type that share a name while testing different things, since nothing would tell their two counts apart. They may share one only when both hold the same predicate value. Two lambdas that look identical in the source are still two different values, so share a name only when you pass the same predicate variable to both. A guard's `onlyIf` needs no name at all, because a guard is checked against the event that just arrived rather than counted.
+None of this applies to a flow without a cap. There `event(type, count, predicate)` needs no name, and a name given anyway does nothing.
+
+`build()` refuses one more thing under a cap. Two `event(...)` checks over the same event type cannot share a name while testing different things, because Occurrent would have no way to tell their two counts apart.
+
+They can share a name when they use the same predicate, which means passing the same predicate variable to both. Two lambdas written out separately count as different predicates even when the source looks identical.
+
+A guard's `onlyIf` never needs a name, because a guard is checked against the event that just arrived instead of being counted.
 
 The thing to watch out for is keeping the name while changing what the predicate tests, since nothing can catch that for you. An instance that was already waiting in that step keeps the count it built up under the old test, so readings above 40 still count towards a step that now asks for readings above 80. Change the name along with the test:
 
@@ -6117,9 +6123,11 @@ step("monitoring") {
 }
 ```
 
-A new name is not free for the instances already waiting in that step, since their count was kept under the old one. The step counts its events again for them, which works while the cap has not dropped any of those events yet and refuses the delivery once it has. [Delivery Contract](#saga-delivery-contract) covers that case and what to do about it.
+A new name does have a consequence for the instances already waiting in that step, since their count was kept under the old one. Occurrent counts the step's events again for those instances.
 
-Changing only the count is safe and needs no new name, because what is kept is the plain number of events that matched, not the number the condition was asking for.
+That works as long as the cap has not thrown any of those events away, and the delivery fails once it has. [Delivery Contract](#saga-delivery-contract) covers that case and what to do about it.
+
+Changing only the count is safe and needs no new name. The stored count is how many events matched, not how many the check was waiting for, so it stays correct when you ask for a different number.
 
 ### Correlation {#saga-correlation}
 
