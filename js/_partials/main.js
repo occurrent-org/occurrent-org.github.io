@@ -97,6 +97,7 @@ if (document.location.pathname.includes("/documentation")) {
         "synchronous-subscription-life-cycle" : "0.32.0",
         "saga-event-types" : "0.33.0",
         "saga-explicit-filter" : "0.33.0",
+        "saga-step-conditions" : "0.33.0",
         "replay-batching" : "0.33.0",
         "checkpoint-fencing-blocking" : "0.33.0",
         "subscription-model-capabilities" : "0.33.0"
