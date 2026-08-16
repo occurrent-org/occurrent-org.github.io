@@ -1,48 +1,60 @@
 {% capture java %}
 // This example uses Java 21+
-var decider = Decider.<Command, State, Event>create(
+var orderDecider = Decider.<OrderCommand, OrderState, OrderEvent>create(
         null,
         (command, state) -> switch (command) {
-            case Command1 c1 -> {
-                if (s == null) {
-                    yield List.of(new Event1(c1.something()));
-                } else {
-                    yield List.of(new Event3(c1.message()));
+            case PlaceOrder c -> {
+                if (state != null) {
+                    throw new IllegalStateException("Order " + c.orderId() + " has already been placed");
                 }
+                yield List.of(new OrderPlaced(c.orderId(), c.productId(), c.quantity()));
             }
-           case Command2 c2 -> List.of(new MyEvent2(c2.somethingElse()));
+            case CancelOrder c -> {
+                if (state == null) {
+                    throw new IllegalStateException("Order " + c.orderId() + " has not been placed");
+                }
+                if (state.cancelled()) {
+                    throw new IllegalStateException("Order " + c.orderId() + " has already been cancelled");
+                }
+                yield List.of(new OrderCancelled(c.orderId()));
+            }
         },
         (state, event) -> switch (event) {
-            case Event1 e1 -> new State(e1.something());    
-            case Event2 e2 -> new State(s.something(), e2.message());    
-            case Event3 e3 -> new State(s.something(), e3.somethingElse(), s.message());    
+            case OrderPlaced e -> new OrderState(e.orderId(), e.productId(), e.quantity(), false);
+            case OrderCancelled e -> new OrderState(state.orderId(), state.productId(), state.quantity(), true);
         }
 );
 
-// You can pass an optional Predicate as a fourth argument to Decider.create(..) if you like to specify the "isTerminal" condition, otherwise it always returns false by default.
+// You can pass an optional Predicate as a fourth argument to Decider.create(..), for example to stop evolving once an order is cancelled. It always returns false by default.
 {% endcapture %}
 
 {% capture kotlin %}
 // Importing this extension function makes creating deciders nicer from Kotlin
 import org.occurrent.dsl.decider.decider 
 
-val decider = decider<Command, State?, Event>(
-        initialState  = null,
-        decide = { cmd, state -> 
-            when (cmd) {
-              is Command1 -> listOf(if (cmd == null) Event1(c1.something()) else Event3(c1.message()))
-              is Command2 -> listOf(MyEvent2(c2.somethingElse()))
-           }
+val orderDecider = decider<OrderCommand, OrderState?, OrderEvent>(
+        initialState = null,
+        decide = { command, state ->
+            when (command) {
+                is PlaceOrder -> {
+                    check(state == null) { "Order ${command.orderId} has already been placed" }
+                    listOf(OrderPlaced(command.orderId, command.productId, command.quantity))
+                }
+                is CancelOrder -> {
+                    checkNotNull(state) { "Order ${command.orderId} has not been placed" }
+                    check(!state.cancelled) { "Order ${command.orderId} has already been cancelled" }
+                    listOf(OrderCancelled(command.orderId))
+                }
+            }
         },
-        evolve = { _, e ->
-            when (e) {
-                is Event1 -> State(e1.something())
-                is Event2 -> State(s.something(), e2.message())
-                is Event3 -> State(s.something(), e3.somethingElse(), s.message())
+        evolve = { state, event ->
+            when (event) {
+                is OrderPlaced -> OrderState(event.orderId, event.productId, event.quantity, cancelled = false)
+                is OrderCancelled -> state!!.copy(cancelled = true)
             }
         }
 )
 
-// You can also, optionally, define an "isTerminal" predicate as a fourth argument to the decider(..) function if you need to specify this condition, otherwise it always returns false by default.
+// You can also, optionally, define an "isTerminal" predicate as a fourth argument to the decider(..) function, for example to stop evolving once an order is cancelled. It always returns false by default.
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
