@@ -3255,7 +3255,7 @@ public void onMessage(byte[] body) {
 `accept(..)` never refuses an event and, by design, doesn't log anything either. It's fed from the write path as well as from a broker, so it can't refuse on your behalf the way `DomainEventFeed.accept(..)` does when nothing is registered, see [ADR 104](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0104-an-undeliverable-push-event-is-refused-not-acknowledged.md). That leaves a misconfigured queue binding, a missing declared event type, and a typo in a type mapping all looking identical to a saga or projection that received the event and simply chose not to react. Pass a `PushObserver` to the constructor to tell them apart:
 
 ```java
-PushSubscriptionModel pushModel = new PushSubscriptionModel(
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(),
         (cloudEvent, matched) -> {
             if (!matched) {
                 log.warn("No subscription matched event {} of type {}", cloudEvent.getId(), cloudEvent.getType());
@@ -3263,7 +3263,7 @@ PushSubscriptionModel pushModel = new PushSubscriptionModel(
         });
 ```
 
-The observer runs once per event, before delivery is attempted, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw. Combine it with a `DataFieldReader` through `new PushSubscriptionModel(dataFieldReader, observer)`. An observer that throws is caught and logged rather than propagated, so a broken observer can't turn an event that was actually delivered into a broker redelivery. The default, `PushObserver.noop()`, is what every other constructor uses, so nothing changes for existing code.
+Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` to get both a payload filter and an observer. The observer runs once per event, before delivery is attempted, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw. A `RuntimeException` or `AssertionError` it throws is caught and logged rather than propagated, so a broken observer can't turn an event that was actually delivered into a broker redelivery, and `PushSubscriptionModel` skips the match check entirely when no observer is configured, so `PushObserver.noop()`, the default every other constructor uses, costs existing code nothing.
 
 No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
