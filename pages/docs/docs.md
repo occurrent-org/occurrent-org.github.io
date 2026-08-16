@@ -135,6 +135,7 @@ permalink: /documentation
 * * * [The Core DSL](#saga-core-dsl)
 * * * [The Flow DSL](#saga-flow-dsl)
 * * * * [Step Conditions](#saga-step-conditions)
+* * * * * [Counted Conditions and `stepWindow`](#saga-counted-conditions)
 * * * [Correlation](#saga-correlation)
 * * * [Declared Event Types](#saga-event-types)
 * * * [Event Metadata](#saga-event-metadata)
@@ -5679,7 +5680,7 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-A step is an ordered list of branches like the one above, and the first one satisfied wins. Each branch waits for either a single event type or a condition over the events received since the step was entered. A step can also have a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps to a step you name, including one the flow has already been through, which is how you write a retry loop. The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
+A step holds a list of branches like the one above, tried in the order you declared them, and the first one satisfied wins. Each branch waits for either a single event type or a condition over the events received since the step was entered. A step can also have a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps to a step you name, including one the flow has already been through, which is how you write a retry loop. The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
 
 The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
 
@@ -5829,7 +5830,7 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
 
 `anyOf` combines several conditions into a single one that is satisfied as soon as any of them is. Use it when the alternatives share a reaction. A reaction cannot find out which of the alternatives completed the step, so when each alternative needs its own command, write them as separate branches instead, the way `awaiting-decision` does above.
 
-A reaction only sees the events that arrived after the saga entered the step it is parked in, not everything the instance has ever received. Those are the step's events, and they are the same ones the branch's condition was checked against.
+A reaction only sees the events that arrived after the saga entered the step, not everything the instance has ever received. Those are the step's events, and they are the same ones the branch's condition was checked against.
 
 So a `count` or a `none(...)` inside a reaction answers for this step alone. Here `awaiting-decision` follows a `triage` step, and its reaction asks whether any further changes were requested while it was waiting. The `ChangesRequested` that got the saga out of `triage` is not one of its events, so `none` stays true unless another one arrives during `awaiting-decision` itself:
 
@@ -5928,48 +5929,7 @@ Saga<SensorEvent, FlowState<SensorEvent>, RaiseAlarm> sensor =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A predicate can also be given a name, the `predicateId` argument, and it needs one when the flow caps how many events a step keeps with `stepWindow`, described under [Delivery Contract](#saga-delivery-contract). A capped step stores its counts in the instance's state so the older events can be thrown away, and after a restart or a redeploy that name is what matches a stored count back to the `event(...)` it came from. A lambda cannot do that job itself, since it is a different object every time the class loads:
-
-{% capture kotlin %}
-step("monitoring") {
-    on(event<ReadingTaken>(2, "above40") { it.celsius > 40 }, then = end) { received ->
-        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
-    }
-}
-{% endcapture %}
-{% capture java %}
-.step("monitoring", step -> step
-        .on(StepCondition.event(ReadingTaken.class, 2, "above40", (ReadingTaken reading) -> reading.celsius() > 40),
-                Continuation.end(),
-                received -> List.of(new RaiseAlarm(received.initiating(SensorArmed.class).sensorId()))))
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-So name every predicate in a capped flow, and give two predicates over the same event type two different names. `build()` refuses the saga otherwise, and the message names the step it found. Both refusals come down to the same thing. Without a name, nothing tells a redeploy that changed the predicate from one that left it alone, and with a shared name, nothing tells the two counts apart. Two `event(...)` conditions may share a name when you hand both the same predicate value, since a lambda written out twice is two different objects even when the source text matches. A guard's `onlyIf` needs no name at all, because a guard is checked against the event that just arrived rather than counted.
-
-Give the predicate a new name whenever you change what it tests. Nothing can catch that mistake for you. An instance parked in that step keeps the count it built up under the old test, so readings above 40 still count towards a step that now asks for readings above 80:
-
-```kotlin
-// Before
-step("monitoring") {
-    on(event<ReadingTaken>(2, "above40") { it.celsius > 40 }, then = end) { received ->
-        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
-    }
-}
-
-// After, the name changes along with the test
-step("monitoring") {
-    on(event<ReadingTaken>(2, "above80") { it.celsius > 80 }, then = end) { received ->
-        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
-    }
-}
-```
-
-Changing only the count is safe and needs no new name, because what is kept is the plain number of events that matched, not the number the condition was asking for.
-
-A flow with no `stepWindow` needs none of this. `event(type, count, predicate)` is unchanged, a predicate with no name costs nothing there, and such a step counts its events again on every delivery exactly as it always did.
-
-A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side. Branches are evaluated in the order they are declared, and the first one satisfied wins, as already described [above](#saga-flow-dsl). Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first. It also releases them once two installments of any size have arrived, through a condition branch declared second:
+A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch can be declared next to each other in the same step, so it can wait for one specific event and for a broader condition at the same time. Branches are tried in the order you declared them, and the earlier one wins when both are satisfied. Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first. It also releases them once two installments of any size have arrived, through a condition branch declared second:
 
 {% capture kotlin %}
 val purchase = saga<PurchaseEvent, PurchaseCommand> {
@@ -6014,11 +5974,75 @@ A full payment that arrives as the second installment satisfies both branches. T
 
 Five things about a condition are easy to get wrong.
 
-1. Entering a step throws away what it had counted so far, and a `transitionTo` back into the step the saga is already in counts as entering it. Every branch in that step starts from zero again, so a classic branch that loops back on itself wipes out the partial progress of the conditions next to it.
+1. Entering a step starts its events over from empty, and a `transitionTo` naming the step the saga is already in enters it again like any other target. So a classic branch that loops back on itself puts every condition declared next to it back to zero, however many matching events they had counted by then.
 2. A condition on the first step that names the start event's own type only counts events arriving after the start. The start event is what enters that step, so it never also counts towards it, and a condition built from the start type never fires on the delivery that created the instance.
 3. A condition cannot ask that an event is absent, and there is no negation to build such a question out of. `event(...)` only ever asks whether enough matching events have arrived, so a condition only ever gets closer to being satisfied as events arrive, never further away, and that is what lets it be checked afresh on each event instead of re-examining everything. A step's `timeout` is how you say an event did not arrive in time.
 4. `allOf` refuses two children that one event can satisfy at once. When the same `event(...)` appears under more than one child, `allOf(...)` throws `IllegalArgumentException` naming the type they share, and since a saga is normally declared at startup, that happens there rather than on a delivery. `allOf(event<A>(2), event<A>(3))` reads as five events and would be satisfied by three, and `allOf(event<A>(), anyOf(event<A>(), event<B>()))` reads as two and would be satisfied by one `A`. Ask for a single `event(type, count)` with the total instead. A supertype next to one of its subtypes stays legal, since `allOf(event<BaseEvent>(), event<A>())` is a reasonable way to ask for one `A` plus one event of any kind, and so do two predicates over the same type, since nothing can tell a copied predicate from a genuinely different test. `anyOf` allows a repeated alternative, because it is satisfied by exactly what it asks for.
-5. A predicate has to answer the same way every time it is handed the same event. Conditions are worked out again from the step's events on each arrival, so a predicate runs against the same event over and over, and one that reads the clock, a random source, mutable state or a remote service can answer differently the second time. That breaks the "once matched, always matched" rule the counting relies on, and it makes a replay reach a different outcome than the original run. Nothing can enforce this, so it is yours to keep.
+5. A predicate has to answer the same way every time it is handed the same event. The same event goes through it more than once, whenever a step works its conditions out from its events again and whenever a replay works through those events from the start, and one that reads the clock, a random source, mutable state or a remote service can answer differently the second time. That breaks the "once matched, always matched" rule the counting relies on, and it makes a replay reach a different outcome than the original run. Nothing can enforce this, so it is yours to keep.
+
+##### Counted Conditions and `stepWindow` {#saga-counted-conditions}
+
+A step works its conditions out by counting its own events, the ones that arrived since the saga entered it, and it counts them again on every delivery. It can do that because it keeps every event it receives for as long as the instance stays in it, however many arrive.
+
+`stepWindow` caps how many of those events a step keeps. Use it on a flow that can idle in one step while a large number of correlated events arrive, and where a `timeout` moving the instance on is not enough on its own. There is no cap unless you set one, and the smallest you can set is 1:
+
+{% capture kotlin %}
+saga<SensorEvent, RaiseAlarm> {
+    stepWindow(50)
+    // startsOn, correlateAll and the steps as above
+}
+{% endcapture %}
+{% capture java %}
+FlowSaga.<SensorEvent, RaiseAlarm>builder()
+        .stepWindow(50)
+        // startsOn, correlateAll and the steps as above
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Once a step is capped it can no longer count its events again, because the oldest of them are thrown away as new ones arrive. So every `event(...)` check keeps its own progress in the instance's state instead, as a count of the events that have matched it so far. A capped step still completes on the same event it would have without the cap. A cap does shrink what a guard, a reaction and a `timeout` can read, which [Delivery Contract](#saga-delivery-contract) covers along with `historyWindow`.
+
+A count in state is worth keeping only if it can be matched back to the check it was counted for after a restart or a redeploy. The event type does part of that. A predicate cannot do the rest on its own, since a lambda is a different object every time the class loads, so `event(...)` takes a name for it, the `predicateId` argument:
+
+{% capture kotlin %}
+step("monitoring") {
+    on(event<ReadingTaken>(2, "above40") { it.celsius > 40 }, then = end) { received ->
+        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
+    }
+}
+{% endcapture %}
+{% capture java %}
+.step("monitoring", step -> step
+        .on(StepCondition.event(ReadingTaken.class, 2, "above40", (ReadingTaken reading) -> reading.celsius() > 40),
+                Continuation.end(),
+                received -> List.of(new RaiseAlarm(received.initiating(SensorArmed.class).sensorId()))))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+So on a flow that sets `stepWindow`, name the predicate of every `event(...)` check. The count it asks for makes no difference, a check waiting for one event needs the name as much as one waiting for five, and `build()` throws an `IllegalStateException` naming the step and the event type otherwise. On a flow without a cap none of this applies, `event(type, count, predicate)` needs no name and a name given anyway does nothing.
+
+`build()` refuses one more thing under a cap, two `event(...)` checks over the same event type that share a name while testing different things, since nothing would tell their two counts apart. They may share one only when both hold the same predicate value. Two lambdas that look identical in the source are still two different values, so share a name only when you pass the same predicate variable to both. A guard's `onlyIf` needs no name at all, because a guard is checked against the event that just arrived rather than counted.
+
+The thing to watch out for is keeping the name while changing what the predicate tests, since nothing can catch that for you. An instance that was already waiting in that step keeps the count it built up under the old test, so readings above 40 still count towards a step that now asks for readings above 80. Change the name along with the test:
+
+```kotlin
+// Before
+step("monitoring") {
+    on(event<ReadingTaken>(2, "above40") { it.celsius > 40 }, then = end) { received ->
+        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
+    }
+}
+
+// After, the name changes along with the test
+step("monitoring") {
+    on(event<ReadingTaken>(2, "above80") { it.celsius > 80 }, then = end) { received ->
+        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
+    }
+}
+```
+
+A new name is not free for the instances already waiting in that step, since their count was kept under the old one. The step counts its events again for them, which works while the cap has not dropped any of those events yet and refuses the delivery once it has. [Delivery Contract](#saga-delivery-contract) covers that case and what to do about it.
+
+Changing only the count is safe and needs no new name, because what is kept is the plain number of events that matched, not the number the condition was asking for.
 
 ### Correlation {#saga-correlation}
 
@@ -6535,7 +6559,7 @@ A step condition still completes on the same event it would have without the cap
 
 Two things stay true at any cap of 1 or more. `received.initiating<T>()` reaches the start event, which is kept as the first retained event and never counts against the cap, and the event that fired a branch is the last element of `received.asList()`.
 
-Before a flow can cap its steps, every `event(...)` condition with a predicate needs a name for that predicate. [Step Conditions](#saga-step-conditions) has the details.
+Before a flow can cap its steps, every `event(...)` condition with a predicate needs a name for that predicate. [Counted Conditions and `stepWindow`](#saga-counted-conditions) has the details.
 
 Changing what a capped step waits on while instances are still in it, whether that is an event type or a predicate's name, makes those instances refuse their next delivery with an `IllegalStateException` naming the step. Retrying does not help, because the events those counts would be rebuilt from are gone. Put the previous condition declaration back until those instances have moved on, so they stop refusing deliveries. Delete the instance instead if you don't need to keep it running. An instance still inside the cap counts its window again and continues.
 
