@@ -190,6 +190,7 @@ permalink: /documentation
 * * [Competing Consumer Strategy Conformance](#competing-consumer-strategy-conformance)
 * * [The Reactive Bridge](#subscription-reactive-bridge)
 * [Upgrading](#upgrading)
+* * [Upgrading to 0.33.0](#upgrading-to-0-33-0)
 * * [Upgrading to 0.32.0](#upgrading-to-0-32-0)
 * * [Upgrading to 0.31.0](#upgrading-to-0-31-0)
 * * [Upgrading to 0.30.0](#upgrading-to-0-30-0)
@@ -3285,7 +3286,7 @@ Set one and the other keeps its default. A zero or negative value fails startup 
 
 Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass, or nowhere at all if you pass `null`, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
 
-Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`.
+Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`. With a single feed bean the name can be dropped, and the starter finds the bean on its own. Declaring the bean does not replace the default subscription model the starter contributes. The starter skips models without a start position, checkpoint or catch-up when it decides whether the application brought its own, so your event-store subscriptions keep the durable default and the feed runs beside it.
 
 A push source is rejected together with `mode = Mode.SYNCHRONOUS`, with `startAt`, `startAtGlobalPosition` and `resumeBehavior`, and with a `DcbProjection`. Those three attributes all answer "where in the log do I begin", and a broker queue is not a log you can seek in, so there is nothing for them to mean.
 
@@ -6545,6 +6546,10 @@ class OrderEventsConfig {
 
 Your listener calls `accept(cloudEvent)` on that bean and the saga takes it from there, using the same `correlateAll`, the same steps, the same timeouts, and the same state store it always did.
 
+`subscriptionModelName` is only needed when there is something to choose between. A `PushSubscriptionModel` feeds exactly one saga or projection, because your listener gets one acknowledgement decision per message and two consumers would have to share it. An application with several push sagas therefore declares several feed beans, and each `@Saga` names its own. With a single feed bean, as here, the name can be dropped and the starter finds the bean on its own. It refuses to guess between several, with a message naming them.
+
+Declaring the bean also does not replace the default subscription model the starter contributes. The starter skips models without a start position, checkpoint or catch-up when it decides whether the application brought its own subscription model, and a push feed has none of the three, so your event-store sagas and subscriptions keep the durable default and the feed runs beside it.
+
 By default the starter puts a [replay in front of the feed](#push-subscription-blocking), so a saga that has never run works through the event store's history first and only then starts taking live events. That is what you want when this application wrote the events and the broker is only how they reach the saga.
 
 ##### When the events are not in your event store
@@ -7901,6 +7906,18 @@ The reactor `IntrospectableSubscriptions`, in `occurrent-subscription-api-reacto
 # Upgrading
 
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
+
+## Upgrading to 0.33.0 {#upgrading-to-0-33-0}
+
+The `org.occurrent.UpgradeToOccurrent_0_33` recipe makes the mechanical changes for you. Run it before editing anything by hand.
+
+Two changes break compilation. `CheckpointStorage`, blocking and reactor both, gained a conditional write, so an implementation you wrote yourself has two more members to answer, the three-argument `save` and `writeVersion`. Code that only calls the storage keeps compiling, because the two-argument `save` stays as a default that delegates to the new one. The recipe stubs the two members on a Java implementation, each marked with a review comment, while a Kotlin implementation adds them by hand. And a saga timer's name is now a `TimerName` rather than a `String`, so constructing `SagaTimeout`, `StartTimeout`, `StartTimeoutAt` or `CancelTimeout` from a string name, or reading `timerName()` into a `String`, stops compiling. The recipe rewrites every construction it can prove and marks the rest.
+
+Five subscription-capability interfaces are also renamed. `ReplayAwareSubscriptionModel` becomes `ReplayAwareSubscriptions` and `IntrospectableSubscriptionModel` becomes `IntrospectableSubscriptions`, on both stacks, and the blocking `DelegatingSubscriptionModel` becomes `SubscriptionModelWrapper` together with its two methods. Their static lookup method goes from `of` to `findIn`. None of the five ever extended `SubscriptionModel`, which is the relationship the old names claimed. The recipe rewrites these too.
+
+A few behavior changes affect already-running code, with no compiler error to point at them. A saga that declares a sealed event type now receives the concrete events stored under its permitted subtypes, which the saga DSL in 0.32.0 silently missed. Checkpoint writes are fenced whenever a competing-consumer strategy is configured, so a write from a node whose lease has moved to another node is refused instead of overwriting the new holder's checkpoint, and a competing consumer that regains its lease resumes from the stored checkpoint instead of the position it had read before losing it. `ManualStartSubscriptionModel` and `ReactorDurableSubscriptionModel` now record a subscription's first-run start position with a single conditional write, so two nodes registering the same subscription for the first time can no longer both write with the later one silently winning. And the deprecated `join`'s reaction now reads the same events a condition branch's reaction reads, instead of everything the instance has kept.
+
+See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.33.0.md) for the full details and the steps the recipe cannot make for you.
 
 ## Upgrading to 0.32.0 {#upgrading-to-0-32-0}
 
