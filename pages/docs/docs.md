@@ -5665,7 +5665,7 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-A step is an ordered list of branches like the one above, and the first one satisfied wins. Each branch waits for either a single event type or a condition over the events received since the step was entered. A step can also carry a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps (a back-edge models a retry loop). The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
+A step is an ordered list of branches like the one above, and the first one satisfied wins. Each branch waits for either a single event type or a condition over the events received since the step was entered. A step can also have a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps to a step you name, including one the flow has already been through, which is how you write a retry loop. The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
 
 The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
 
@@ -5699,14 +5699,13 @@ Notice that `on<PlayerJoined>(then = end)` has no reaction at all. A branch, tim
 When there is a reaction, it returns what `issue` gives back rather than nothing. That is what makes the mistake below a compile error instead of a saga that silently does nothing at runtime, since a Kotlin lambda expecting `Unit` would have accepted the command and discarded it:
 
 ```kotlin
-// Does not compile: the command is produced and never issued
+// Does not compile, the command is produced and never issued
 on<PaymentReserved>(then = end) { ShipOrder(it.orderId) }
 ```
 
 You write reactions exactly as you always would, because `issue` and the timer calls already return the receiver. Conditionals included, as long as the reaction ends on a command, exactly as the branch above does.
 
 In the Kotlin DSL, when a reaction issues a command only in some cases and none in the others, say so with `nothing`. In Java a reaction returns the list of commands to issue, so returning an empty list issues nothing. It means there is nothing to issue, not that nothing happens. The branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
-In the Kotlin DSL, when a reaction issues a command only in some cases and none in the others, say so with `nothing`. In Java a reaction returns the list of commands to issue, so returning an empty list issues nothing. It means there is nothing to issue, not that nothing happens: the branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
 
 ```kotlin
 // Issue only when the payment was partial, otherwise nothing
@@ -5721,7 +5720,7 @@ on<PaymentReserved>(then = end) {
 }
 ```
 
-Kotlin's `when` expression works the same way as the `if` above. Every branch must end on a command or on `nothing`. Issuing no command is a real outcome worth stating rather than an omission, which is what the word is for.
+Kotlin's `when` expression works the same way as the `if` above. Every branch must end on a command or on `nothing`. Issuing no command is an outcome in its own right rather than an omission, which is what the word is for.
 
 ```kotlin
 on<PaymentReserved>(then = end) {
@@ -5749,10 +5748,9 @@ step("waiting-for-both-players") {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A `transitionTo` names any step, including the current one, which is how a flow expresses a loop. An auction stays open as long as bids keep arriving. Each `BidPlaced` transitions the `bidding` step back to itself, and an absolute timeout closes it once its end time passes. Re-entering the step re-arms its timeout, but because the deadline comes from the initiating event, the timeout still fires at the auction's original end time rather than sliding forward on every bid:
 Conditions combine, so a step can wait for an alternative or mix a count with one. [Step Conditions](#saga-step-conditions) below covers `allOf` and `anyOf`. The older `join(...)`, which waited for a list of `Expectation`s, does the same thing as `on(allOf(...))` and is deprecated in favor of it. Existing code keeps working.
 
-A `transitionTo` names any step, including the current one, which is how a flow expresses a loop. An auction stays open as long as bids keep arriving: each `BidPlaced` transitions the `bidding` step back to itself, and an absolute timeout closes it once its end time passes. Re-entering the step re-arms its timeout, but because the deadline is derived from the initiating event it stays pinned to the auction's end time rather than sliding forward on every bid:
+A `transitionTo` names any step, including the current one, which is how a flow expresses a loop. An auction stays open as long as bids keep arriving. Each `BidPlaced` transitions the `bidding` step back to itself, and an absolute timeout closes it once its end time passes. Re-entering the step re-arms its timeout, but because the deadline comes from the initiating event, the timeout still fires at the auction's original end time rather than sliding forward on every bid:
 
 {% capture kotlin %}
 val auction = saga<AuctionEvent, CloseAuction> {
@@ -5813,11 +5811,54 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> review =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-`awaiting-decision` completes the moment either branch is satisfied. `event<Approved>(2)` matches once the step's window holds two `Approved` events, and `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. Branches are evaluated in declaration order and the first satisfied one wins, so a step that reacts differently per outcome writes one branch per outcome and the tie-break is visible in the declaration rather than worked out inside a reaction.
+`awaiting-decision` completes the moment either branch is satisfied. `event<Approved>(2)` matches once two `Approved` events have arrived since the step was entered, and `event<Rejected>()` is the same call with its count left at the default of one, so it matches on the first `Rejected`. Branches are tried in the order you declared them and the first satisfied one wins. When each outcome needs a different reaction, give it its own branch, and the declaration order is what decides which one runs if both are satisfied at once.
 
-`anyOf` combines several conditions into a single one that is satisfied as soon as any of them is. Reach for it when the alternatives share a reaction. There is no way to ask a condition which of its children matched, so alternatives that need different commands are separate branches, as above.
+`anyOf` combines several conditions into a single one that is satisfied as soon as any of them is. Use it when the alternatives share a reaction. A reaction cannot find out which of the alternatives completed the step, so when each alternative needs its own command, write them as separate branches instead, the way `awaiting-decision` does above.
 
-A reaction reads the window its own condition was evaluated over, not everything the instance has received. A count or a `none(...)` check inside a reaction therefore answers for this step's window alone, so an `Approved` left over from an earlier step cannot be counted as one of these two. `received.initiating<T>()` still reaches the start event whatever the window holds. A guard's `onlyIf` and a `timeout`'s reaction still read the whole retained history, which is what makes a count spanning several steps possible. The deprecated `join`'s reaction no longer does. It reads the same narrowed window a condition's reaction does, the events received since the step it fired from was entered, so a `join` past a saga's first step no longer sees an earlier step's events at all, not even a repeat of its own expectation type. A first-step `join`'s reaction also stops seeing the start event through `count`, `all`, `first`, `any`, `none` or `asList`, though `received.initiating<T>()` still reaches it either way.
+A reaction only sees the events that arrived after the saga entered the step it is parked in, not everything the instance has ever received. Those are the step's events, and they are the same ones the branch's condition was checked against.
+
+So a `count` or a `none(...)` inside a reaction answers for this step alone. Here `awaiting-decision` follows a `triage` step, and its reaction asks whether any further changes were requested while it was waiting. The `ChangesRequested` that got the saga out of `triage` is not one of its events, so `none` stays true unless another one arrives during `awaiting-decision` itself:
+
+{% capture kotlin %}
+val reviewWithTriage = saga<ReviewEvent, ReviewCommand> {
+    startsOn<ReviewStarted>()
+    correlateAll { it.reviewId }
+    step("triage") {
+        on(event<ChangesRequested>(), then = next)
+    }
+    step("awaiting-decision") {
+        on(event<Approved>(2), then = end) { received ->
+            // Reads this step's events only, so triage's ChangesRequested is not among them
+            if (received.none<ChangesRequested>()) {
+                issue(Publish(received.initiating<ReviewStarted>().reviewId))
+            } else {
+                issue(Discard(received.initiating<ReviewStarted>().reviewId))
+            }
+        }
+    }
+}
+{% endcapture %}
+{% capture java %}
+Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> reviewWithTriage =
+        FlowSaga.<ReviewEvent, ReviewCommand>builder()
+                .startsOn(ReviewStarted.class)
+                .correlateAll(ReviewEvent::reviewId)
+                .step("triage", step -> step
+                        .on(StepCondition.event(ChangesRequested.class), Continuation.next()))
+                .step("awaiting-decision", step -> step
+                        .on(StepCondition.event(Approved.class, 2),
+                                Continuation.end(),
+                                // Reads this step's events only, so triage's ChangesRequested is not among them
+                                received -> received.none(ChangesRequested.class)
+                                        ? List.of(new Publish(received.initiating(ReviewStarted.class).reviewId()))
+                                        : List.of(new Discard(received.initiating(ReviewStarted.class).reviewId()))))
+                .build();
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`received.initiating<T>()` reaches the start event whichever step you are in, so building a command from an id on the start event always works.
+
+Two things do read everything the instance has kept, a guard's `onlyIf` and a `timeout`'s reaction, which is what lets them count across several steps. The deprecated `join`'s reaction used to as well, and no longer does. It now reads the same events a condition's reaction reads, so a `join` past a saga's first step sees nothing from an earlier step, not even another event of the type it was waiting for. A `join` on the first step also stops seeing the start event through `count`, `all`, `first`, `any`, `none` and `asList`, though `received.initiating<T>()` still reaches it.
 
 `allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
 
@@ -5873,7 +5914,7 @@ Saga<SensorEvent, FlowState<SensorEvent>, RaiseAlarm> sensor =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A predicate can also be given a name (the `predicateId` argument), and it needs one when the flow caps a step's events with `stepWindow`, described under [Delivery Contract](#saga-delivery-contract). A capped step keeps its counts in the instance's state so its older events can be dropped, and matching a count back to the `event(...)` that produced it after a restart or a redeploy takes a name, because a lambda is a different object every time the class loads:
+A predicate can also be given a name, the `predicateId` argument, and it needs one when the flow caps how many events a step keeps with `stepWindow`, described under [Delivery Contract](#saga-delivery-contract). A capped step stores its counts in the instance's state so the older events can be thrown away, and after a restart or a redeploy that name is what matches a stored count back to the `event(...)` it came from. A lambda cannot do that job itself, since it is a different object every time the class loads:
 
 {% capture kotlin %}
 step("monitoring") {
@@ -5890,13 +5931,31 @@ step("monitoring") {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A capped flow with an `event(...)` whose predicate has no name is refused when the saga is built, and the message names the step. So are two `event(...)` conditions over the same event type that share a name while holding different predicates, since nothing else tells their counts apart. They may share a name only when both are handed the same predicate value, because two separately written lambdas are different objects even when the source text is identical. A guard's `onlyIf` never needs a name, since a guard is checked against the arriving event rather than counted over a window.
+So name every predicate in a capped flow, and give two predicates over the same event type two different names. `build()` refuses the saga otherwise, and the message names the step it found. Both refusals come down to the same thing. Without a name, nothing tells a redeploy that changed the predicate from one that left it alone, and with a shared name, nothing tells the two counts apart. Two `event(...)` conditions may share a name when you hand both the same predicate value, since a lambda written out twice is two different objects even when the source text matches. A guard's `onlyIf` needs no name at all, because a guard is checked against the event that just arrived rather than counted.
 
-Change the name whenever the predicate's meaning changes. Keeping `"above40"` while changing the test to `it.celsius > 80` is the one thing this cannot detect, and an instance still in that step keeps counting the events it matched under the old test. Changing the count an `event(...)` asks for is safe and needs no new name, because what is kept is the raw number of events that matched.
+Give the predicate a new name whenever you change what it tests. Nothing can catch this one for you. An instance parked in that step keeps the count it built up under the old test, so readings above 40 still count towards a step that now asks for readings above 80:
 
-A flow with no `stepWindow` needs none of this. `event(type, count, predicate)` is unchanged, a predicate with no name costs nothing there, and such a step counts its window on every delivery exactly as it always did.
+```kotlin
+// Before
+step("monitoring") {
+    on(event<ReadingTaken>(2, "above40") { it.celsius > 40 }, then = end) { received ->
+        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
+    }
+}
 
-A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side. Branches are evaluated in the order they are declared, and the first one satisfied wins, as already described [above](#saga-flow-dsl). Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first. It also releases them once two installments of any size have arrived, through a window condition declared second:
+// After, the name changes along with the test
+step("monitoring") {
+    on(event<ReadingTaken>(2, "above80") { it.celsius > 80 }, then = end) { received ->
+        issue(RaiseAlarm(received.initiating<SensorArmed>().sensorId))
+    }
+}
+```
+
+Changing only the count is safe and needs no new name, because what is kept is the plain number of events that matched, not the number the condition was asking for.
+
+A flow with no `stepWindow` needs none of this. `event(type, count, predicate)` is unchanged, a predicate with no name costs nothing there, and such a step counts its events again on every delivery exactly as it always did.
+
+A step's branches are not only conditions, either. A plain `on<T>` branch and an `on(condition, ...)` branch sit in the same ordered list, so a step can wait for one specific event or a broader condition side by side. Branches are evaluated in the order they are declared, and the first one satisfied wins, as already described [above](#saga-flow-dsl). Here `collecting-payment` releases the goods the moment a single payment covers the total, through a classic guarded branch declared first. It also releases them once two installments of any size have arrived, through a condition branch declared second:
 
 {% capture kotlin %}
 val purchase = saga<PurchaseEvent, PurchaseCommand> {
@@ -5937,19 +5996,15 @@ Saga<PurchaseEvent, FlowState<PurchaseEvent>, PurchaseCommand> purchase =
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A full payment that arrives as the second installment satisfies both branches. The window condition sees two `PaymentReceived` events, and the classic branch's guard also passes, since the payment alone covers the total. The classic branch wins, because it is declared first, so `collecting-payment` issues only `ReleaseGoods` and never reaches the window condition below it.
+A full payment that arrives as the second installment satisfies both branches. The condition branch sees two `PaymentReceived` events, and the classic branch's guard is also true, since that payment alone covers the total. The classic branch wins because it is declared first, so `collecting-payment` issues only `ReleaseGoods` and never reaches the condition branch below it.
 
 Five things about a condition are easy to get wrong.
 
-Re-entering a step, including a `transitionTo` back into the step it is already in, restarts its window. Every branch in that step starts counting from zero again, so a classic branch's self-loop wipes a sibling condition's partial progress along with its own.
-
-A condition on the first step that names the start event's own type only counts events arriving after the start. The start delivery is what enters the step, and it does not also count toward that step's window, so a condition built from the start type never fires on the delivery that created the instance.
-
-There is no way to ask a condition for an event's absence, and no negation to build one out of. An `event(...)` match only ever asks whether enough matching events have arrived, so a condition only ever becomes more true as events arrive, never less, which is what lets it be checked fresh on every event rather than re-scanned. A step's `timeout` is what says an event did not arrive in time.
-
-`allOf` refuses two children that the same event can satisfy. When one `event(...)` matcher appears beneath more than one child, `allOf(...)` throws `IllegalArgumentException` naming the type they share, and since a saga is normally declared at startup that happens there rather than on a delivery. `allOf(event<A>(2), event<A>(3))` reads as five events and would be satisfied by three, and `allOf(event<A>(), anyOf(event<A>(), event<B>()))` reads as two and would be satisfied by one `A`. Ask for one `event(type, count)` with the total count instead. A supertype next to one of its subtypes stays legal, because `allOf(event<BaseEvent>(), event<A>())` is a reasonable way to ask for one `A` plus one event of any kind, and so do two predicates over the same type, because nothing can tell a copied predicate from a genuinely different test. `anyOf` permits a repeated alternative, since it is satisfied by exactly what it asks for.
-
-A predicate has to be a deterministic function of the event it is handed. Every condition is re-derived from the step's window on each arriving event, so a predicate runs against the same event again and again, and one that reads the clock, a random source, mutable state or a remote service can answer differently the second time. That breaks the "once matched, always matched" property the counting relies on, and it makes a replay reach a different outcome than the original run. Nothing can enforce this, so it is yours to keep.
+1. Entering a step throws away what it had counted so far, and a `transitionTo` back into the step the saga is already in counts as entering it. Every branch in that step starts from zero again, so a classic branch that loops back on itself wipes out the partial progress of the conditions next to it.
+2. A condition on the first step that names the start event's own type only counts events arriving after the start. The start event is what enters that step, so it never also counts towards it, and a condition built from the start type never fires on the delivery that created the instance.
+3. A condition cannot ask that an event is absent, and there is no negation to build such a question out of. `event(...)` only ever asks whether enough matching events have arrived, so a condition only ever gets closer to being satisfied as events arrive, never further away, and that is what lets it be checked afresh on each event instead of re-examining everything. A step's `timeout` is how you say an event did not arrive in time.
+4. `allOf` refuses two children that one event can satisfy at once. When the same `event(...)` appears under more than one child, `allOf(...)` throws `IllegalArgumentException` naming the type they share, and since a saga is normally declared at startup, that happens there rather than on a delivery. `allOf(event<A>(2), event<A>(3))` reads as five events and would be satisfied by three, and `allOf(event<A>(), anyOf(event<A>(), event<B>()))` reads as two and would be satisfied by one `A`. Ask for a single `event(type, count)` with the total instead. A supertype next to one of its subtypes stays legal, since `allOf(event<BaseEvent>(), event<A>())` is a reasonable way to ask for one `A` plus one event of any kind, and so do two predicates over the same type, since nothing can tell a copied predicate from a genuinely different test. `anyOf` allows a repeated alternative, because it is satisfied by exactly what it asks for.
+5. A predicate has to answer the same way every time it is handed the same event. Conditions are worked out again from the step's events on each arrival, so a predicate runs against the same event over and over, and one that reads the clock, a random source, mutable state or a remote service can answer differently the second time. That breaks the "once matched, always matched" rule the counting relies on, and it makes a replay reach a different outcome than the original run. Nothing can enforce this, so it is yours to keep.
 
 ### Correlation {#saga-correlation}
 
