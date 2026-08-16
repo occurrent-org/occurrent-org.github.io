@@ -3815,12 +3815,22 @@ is defined like this:
 ```java
 public interface CheckpointStorage {
     Mono<Checkpoint> read(String subscriptionId);
-    Mono<Checkpoint> save(String subscriptionId, Checkpoint checkpoint);
+    Mono<Checkpoint> save(String subscriptionId, Checkpoint checkpoint, CheckpointWriteCondition condition);
+    default Mono<Checkpoint> save(String subscriptionId, Checkpoint checkpoint) {
+        return save(subscriptionId, checkpoint, CheckpointWriteCondition.any());
+    }
     Mono<Void> delete(String subscriptionId);
+    Mono<Long> writeVersion(String subscriptionId);
+    default boolean evaluatesWriteConditions() {
+        return false;
+    }
+    default boolean evaluatesWriteConditionsFor(String subscriptionId) {
+        return evaluatesWriteConditions();
+    }
 }
 ```
 
-I.e. it's a way to read/write/delete the `Checkpoint` for a given subscription. Occurrent ships two pre-defined reactive implementations:
+It's a way to read, write and delete the `Checkpoint` for a given subscription. `save` takes a `CheckpointWriteCondition` as a third argument, stating what has to be true of the stored version before the write is allowed. The two-argument overload keeps its old meaning, an unconditional write, `any()`, that carries whatever version is already stored forward untouched. A condition that isn't met signals `Mono.error` with `CheckpointWriteConditionNotFulfilledException`, and a storage that can only ever evaluate `any()` refuses any other condition the same way but with `UnsupportedOperationException`, so check the storage's own documentation for which conditions it evaluates before depending on one. `writeVersion(subscriptionId)` reads back the version a condition is judged against, empty if none is stored, including for a storage that cannot evaluate conditions at all. `evaluatesWriteConditions()` answers whether a storage evaluates `notOlderThan` and `ifAbsent` for real rather than refusing them, defaulting to `false`, and both reactive storages Occurrent ships answer `true`. `evaluatesWriteConditionsFor(subscriptionId)` is the per-id refinement, defaulting to `evaluatesWriteConditions()`, for a storage whose answer depends on the id it's asked about rather than being the same for every one. `ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position. A `false` answer there leaves that write unconditional and logs a `WARN` rather than refusing to start. A `save` for that first position that completes without emitting a checkpoint is refused the same way, with `IllegalStateException` naming the storage and the position it tried to record, because nothing then shows whether the write reached storage. The blocking Spring Boot starter runs its own fencing check against `evaluatesWriteConditionsFor` at startup, but that check belongs to the blocking stack only and has no reactor equivalent. Occurrent ships two pre-defined reactive implementations:
 
 1\. **ReactorCheckpointStorage**<br>
     Uses the [project reactor](https://projectreactor.io/) driver to store `Checkpoint`'s in MongoDB.
