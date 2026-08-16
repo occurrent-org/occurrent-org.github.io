@@ -5873,7 +5873,7 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> reviewWithTriage =
 
 `received.initiating<T>()` reaches the start event whichever step you are in, so building a command from an id on the start event always works.
 
-Two things do read everything the instance has kept, a guard's `onlyIf` and a `timeout`'s reaction, which is what lets them count across several steps. The deprecated `join`'s reaction used to as well, and no longer does. It now reads the same events a condition's reaction reads, so a `join` past a saga's first step sees nothing from an earlier step, not even another event of the type it was waiting for. A `join` on the first step also stops seeing the start event through `count`, `all`, `first`, `any`, `none` and `asList`, though `received.initiating<T>()` still reaches it.
+A classic `on<T>` branch can take a guard too, an `onlyIf` predicate checked against the arriving event and everything the instance has kept so far, so the branch only fires when its event type matches and the guard is also true. That guard and a `timeout`'s reaction are the two things that do read everything the instance has kept, which is what lets them count across several steps. The deprecated `join`'s reaction used to as well, and no longer does. It now reads the same events a condition's reaction reads, so a `join` past a saga's first step sees nothing from an earlier step, not even another event of the type it was waiting for. A `join` on the first step also stops seeing the start event through `count`, `all`, `first`, `any`, `none` and `asList`, though `received.initiating<T>()` still reaches it.
 
 `allOf` is `anyOf`'s counterpart, satisfied only once every condition it lists is, rather than any single one. `event(...)`, `allOf`, and `anyOf` nest to any depth, so a step can combine a count with an alternative by putting one inside the other. Here `packing` completes once two items are packed and either a courier is assigned or a pickup slot is scheduled:
 
@@ -5971,6 +5971,42 @@ Saga<PurchaseEvent, FlowState<PurchaseEvent>, PurchaseCommand> purchase =
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 A full payment that arrives as the second installment satisfies both branches. The condition branch sees two `PaymentReceived` events, and the classic branch's guard is also true, since that payment alone covers the total. The classic branch wins because it is declared first, so `collecting-payment` issues only `ReleaseGoods` and never reaches the condition branch below it.
+
+The same test can be written either way. Here `amount > 100` on `PaymentReceived` appears first as a guard on a classic branch, then as a condition, and both fire on the very first event that satisfies it:
+
+{% capture kotlin %}
+// As a guard on a classic branch
+on<PaymentReceived>(then = end, onlyIf = { payment, _ -> payment.amount > 100 }) { payment ->
+    issue(ReleaseGoods(payment.purchaseId))
+}
+
+// The identical test, as a condition
+on(event<PaymentReceived>(1) { it.amount > 100 }, then = end) { received ->
+    issue(ReleaseGoods(received.initiating<PurchaseStarted>().purchaseId))
+}
+{% endcapture %}
+{% capture java %}
+// As a guard on a classic branch
+.on(PaymentReceived.class,
+        (payment, received) -> payment.amount() > 100,
+        Continuation.end(),
+        payment -> List.of(new ReleaseGoods(payment.purchaseId())))
+
+// The identical test, as a condition
+.on(StepCondition.event(PaymentReceived.class, 1, (PaymentReceived payment) -> payment.amount() > 100),
+        Continuation.end(),
+        received -> List.of(new ReleaseGoods(received.initiating(PurchaseStarted.class).purchaseId())))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+The guard here could have compared against `received.initiating<PurchaseStarted>().total` instead of a fixed number, the way `collecting-payment`'s guard above does. The condition version could not have written that same test, since its predicate only ever sees the one event it is testing. Four things differ between the two.
+
+1. A guard's predicate sees the arriving event and everything the instance has kept so far. A condition's predicate sees only the one event it is testing, so a test that needs another event, a running count, or the initiating event's own data has to be a guard.
+2. A guard is checked only when its own event type arrives. A condition is re-evaluated on every event the step receives, whatever type it is, because any of them could be the one that satisfies it.
+3. A condition's reaction gets the step's events, never `EventMetadata`. A classic branch's reaction can ask for it too, covered under [Event Metadata](#saga-event-metadata) below.
+4. A guard never needs a name. A condition predicate does, but only on a flow that caps its steps, covered under [Counted Conditions](#saga-counted-conditions) below.
+
+A pure test of one event's own contents that should combine, count, or survive a cap belongs in the condition. Everything else is a guard.
 
 Five things about a condition are easy to get wrong.
 
