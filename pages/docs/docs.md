@@ -5540,6 +5540,86 @@ On the MongoDB starter, leaving `store` and `storeName` unset with no matching b
 
 `mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
 
+#### Read-your-writes for an asynchronous projection {#projection-annotation-applied-appends}
+
+Every write and DCB append returns an `AppendId`, `Optional<AppendId>` on `WriteResult` and `DcbAppendResult`. Wire a projection to record which ones it's applied, and you can wait for a specific one after you write it, without paying for [synchronous mode](#projection-annotation-synchronous) on every write.
+
+Autowire the `AppliedAppendStore` bean the starter auto-configures, and call `waitUntilApplied` on it once you have the id:
+
+{% capture java %}
+WriteResult result = applicationService.execute(courseId, events -> enrollStudent(events, studentId));
+AppendId appendId = result.appendId().orElseThrow();
+
+appliedAppendStore.waitUntilApplied("enrolled-students", appendId, Duration.ofSeconds(5));
+{% endcapture %}
+{% capture kotlin %}
+val result = applicationService.execute(courseId) { events -> enrollStudent(events, studentId) }
+val appendId = result.appendId().orElseThrow()
+
+appliedAppendStore.waitUntilApplied("enrolled-students", appendId, Duration.ofSeconds(5))
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`appendId()` is empty when the write persisted no events. `orElseThrow()` is fine once you know yours did, check `isPresent()` first if it might not have.
+
+`waitUntilApplied` polls the store, returning `true` once the projection has recorded that append and `false` on timeout. A store it can't reach keeps it polling toward the timeout rather than answering early.
+
+##### Wiring it up
+
+Add `recordAppliedAppends = true` to the `@Projection` annotation:
+
+```java
+@Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING, recordAppliedAppends = true)
+org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledStudents() {
+    // ...
+}
+```
+
+That wraps the projection's store so every live event it applies gets recorded, on both the blocking and reactor stacks, and for a `DcbProjection` factory too.
+
+Startup refuses the projection when no `AppliedAppendStore` bean exists, and refuses the combination with `mode = SYNCHRONOUS`, since a synchronous projection already gives you read-your-writes with nothing to wait for.
+
+The MongoDB starters auto-configure a store for you, one document per projection id and append id pair, so `recordAppliedAppends = true` works with no store of your own to wire up. Off the Spring Boot starter, `AppliedAppendStore.inMemory()` gives you one for tests or a single-process application. Call `recordApplied(projectionId, appendId)` yourself wherever your own projection applies an event to do the same recording `@Projection` does for you here.
+
+##### Properties
+
+Configure the auto-configured store under `occurrent.projection.applied-append`:
+
+| Property | Default | Configures |
+|:---|:---|:---|
+| `collection` | `appliedAppends` | The MongoDB collection recorded appends live in. |
+| `retention` | `7d` | How long a record is kept before a TTL index evicts it. Storage housekeeping, not a correctness setting, a wait for an evicted append times out rather than answering wrong. |
+| `wait-backoff.initial` / `.max` / `.multiplier` | `25ms` / `250ms` / `2.0` | How `waitUntilApplied` paces its polls. |
+| `replay-poll.initial` / `.max` / `.multiplier` | `200ms` / `5s` / `2.0` | How the scheduled poll paces the check described below. |
+
+##### What a `true` answer means, and what it doesn't
+
+A `true` answer means the projection applied at least one event of that append since it last replayed. That's a membership answer, not a promise it's caught up to any particular point, and it says nothing about writes other callers made.
+
+The recorder writes after each event it applies, not after the whole append. A wait can return `true` before every event of a multi-event append has been applied.
+
+How long the rest takes to catch up depends on where the projection is:
+
+* Ordinary case: however long the same node needs to work through the rest of the append.
+* The node crashes mid-append: another node takes over once its lease expires, 20 seconds by default.
+* The subscription is paused or stopped: nothing more is applied until it starts again.
+
+A projection clears its own recorded appends before recording resumes, whenever it notices it's replaying. A wait for an append recorded before that clear times out, instead of answering `true` about a read model the rebuild already wiped.
+
+Recording stops the moment a replay is noticed, but the old records stay readable until the clear finishes. A wait running in between can be told `true` about an append whose read model the rebuild is discarding.
+
+Noticing isn't instant either. Most replays are caught the moment a live event arrives, checked against the subscription's own replay state.
+
+A replay whose every event is filtered out server-side never delivers a live event to check. A scheduled poll asks the same question instead, on the `replay-poll` schedule above.
+
+A replay that starts and finishes inside one poll interval, delivering nothing the projection handles, is missed by that poll too, so its old records survive it untouched. At the settled 5 second interval, that's a replay under 5 seconds delivering no matching event.
+
+Whether recording can tell a replay from live delivery at all depends on whether the subscription model implements [`ReplayAwareSubscriptions`](#subscription-model-capabilities).
+
+On the blocking stack, `findIn(..)` unwraps the wrapper chain to check, and a model nothing in the chain implements it for is treated as never replaying, silently. That's a deliberate choice, not an oversight, but it means a custom model that does replay without implementing the capability gets recorded straight through its own rebuild instead of cleared.
+
+On the reactor stack, the default MongoDB composition always knows, the auto-configuration that builds it supplies the answer itself. A custom or third-party reactive model that can't say gets the same silent fallback, except a warning is logged once, when the projection registers.
+
 #### Without the starter {#projection-annotation-without-starter}
 
 The starter is optional. `ProjectionRunner.project(...)` already takes a `StartAt` directly, so a plain (non-Spring) caller wiring its own catch-up-capable subscription model, for example a `CatchupSubscriptionModel`, gets the same behavior by computing the position itself:
