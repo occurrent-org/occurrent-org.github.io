@@ -5604,7 +5604,17 @@ How long the rest takes to catch up depends on where the projection is:
 * The node crashes mid-append: another node takes over once its lease expires, 20 seconds by default.
 * The subscription is paused or stopped: nothing more is applied until it starts again.
 
-A projection clears its own recorded appends before recording resumes, whenever it notices it's replaying. A wait for an append recorded before that clear times out, instead of answering `true` about a read model the rebuild already wiped.
+On Occurrent's own shipped composition, only `startAt = StartPosition.BEGINNING` or an explicit `startAtGlobalPosition` actually replays. Left unset (the annotation's own default, `StartPosition.DEFAULT`) or set to `NOW`, a projection never replays there, whatever its checkpoint holds.
+
+Rebuilding a read model this way takes two steps. Set `startAt = StartPosition.BEGINNING` (or a global position) so the projection replays, and clear its stored checkpoint too.
+
+The default `resumeBehavior` resumes from an existing checkpoint instead of replaying again. Wipe the read model without also clearing the checkpoint, and the projection resumes rather than replays, so it never clears its recorded appends either.
+
+A projection left at `StartPosition.DEFAULT` on Occurrent's own shipped composition needs a different rebuild step, since it never replays and so never clears its own records automatically. Wipe its read model, then call `AppliedAppendStore.clear(projectionId)` yourself.
+
+The starter logs a startup `WARN` naming any `recordAppliedAppends = true` projection this applies to, an explicit `NOW`, `DEFAULT` on the shipped composition, or a push projection with `catchup = NONE`, so you don't have to work out which case you're in by rereading its wiring.
+
+For a projection whose start position does replay, it clears its own recorded appends before recording resumes, whenever it notices it's replaying. A wait for an append recorded before that clear times out, instead of answering `true` about a read model the rebuild already wiped.
 
 Recording stops the moment a replay is noticed, but the old records stay readable until the clear finishes. A wait running in between can be told `true` about an append whose read model the rebuild is discarding.
 
@@ -5614,7 +5624,7 @@ A replay whose every event is filtered out server-side never delivers a live eve
 
 A replay that starts and finishes inside one poll interval, delivering nothing the projection handles, is missed by that poll too, so its old records survive it untouched. At the settled 5 second interval, that's a replay under 5 seconds delivering no matching event.
 
-Whether recording can tell a replay from live delivery at all depends on whether the subscription model implements [`ReplayAwareSubscriptions`](#subscription-model-capabilities).
+Even for a projection whose start position does replay, telling a replay apart from live delivery still depends on whether the subscription model implements [`ReplayAwareSubscriptions`](#subscription-model-capabilities).
 
 On the blocking stack, `findIn(..)` unwraps the wrapper chain to check, and a model nothing in the chain implements it for is treated as never replaying, silently. That's a deliberate choice, not an oversight, but it means a custom model that does replay without implementing the capability gets recorded straight through its own rebuild instead of cleared.
 
