@@ -3505,11 +3505,11 @@ RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(
         .build();
 ```
 
-The bridge acknowledges a message once `accept(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It never acknowledges on `RoutingOutcome.NOT_DELIVERABLE`, and never when `accept(...)` throws.
+The bridge acknowledges a message once `accept(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. On `RoutingOutcome.NOT_DELIVERABLE`, or when `accept(...)` throws, it does not acknowledge on the spot. That is not the whole ack matrix though, since one of the two things that happen next still ends in an acknowledgement.
 
-What happens on that unacknowledged path is `onDeliveryFailure(DeliveryFailurePolicy)`. `REDELIVER` is the default, and it calls `basicNack` with requeue so the broker redelivers. `PARK` needs a `parkingDestination(RabbitMqDestination)`, and the bridge refuses to start without one once you choose it.
+What happens on that not-yet-acknowledged path is `onDeliveryFailure(DeliveryFailurePolicy)`. `REDELIVER` is the default, and it calls `basicNack` with requeue so the broker redelivers, never acknowledging the original. `PARK` needs a `parkingDestination(RabbitMqDestination)`, and the bridge refuses to start without one once you choose it.
 
-Parking publishes the message to that destination with its own confirm, and only once that confirm arrives does the bridge acknowledge the original, the same sequencing as an ordinary delivery. A failed park therefore never acknowledges the original message either, so it's redelivered rather than lost. RabbitMQ's own dead-lettering is not used here instead, since `basicNack(requeue = false)` with no dead-letter exchange configured throws the message away outright, and even with one the broker republishes without confirms.
+Parking publishes the message to that destination with its own confirm, and only once that confirm arrives does the bridge acknowledge the original, the same sequencing as an ordinary delivery. So the full set that ends in an acknowledgement is `DELIVERED`, `FILTERED`, and a confirmed park, not just the first two. A failed park never acknowledges the original message, so it's redelivered rather than lost. RabbitMQ's own dead-lettering is not used here instead, since `basicNack(requeue = false)` with no dead-letter exchange configured throws the message away outright, and even with one the broker republishes without confirms.
 
 A single RabbitMQ queue preserves the order events were published in, so a projection that handles one stream in order needs nothing further here.
 
@@ -3545,9 +3545,11 @@ KafkaCloudEventBridge bridge = KafkaCloudEventBridge.builder(consumerConfig, pus
         .build();
 ```
 
-The bridge stages `record.offset() + 1` for a partition once that record resolves as `DELIVERED` or `FILTERED`, and commits every partition that made progress once a poll batch is walked. It never uses the no-argument `commitSync()`, which would commit the whole batch including records nothing processed yet.
+The bridge stages `record.offset() + 1` for a partition once that record resolves as `DELIVERED` or `FILTERED`, and it stages the same way for a delivery failure that resolves through a confirmed `PARK`, so all three commit that record's offset, not just the first two. It commits every partition that made progress once a poll batch is walked, and never uses the no-argument `commitSync()`, which would commit the whole batch including records nothing processed yet.
 
-On `NOT_DELIVERABLE` or a thrown exception, the same `DeliveryFailurePolicy` applies as on RabbitMQ. `REDELIVER` seeks the consumer back to the failed record's offset and stops processing that partition's remaining records for the poll, so a later record in the same batch is never committed past one that failed. `PARK` republishes to a `parkingDestination(KafkaDestination)`, waits for that publish's own broker acknowledgement, and only then stages the original record's offset, exactly as a delivered one would be.
+On `NOT_DELIVERABLE` or a thrown exception, the same `DeliveryFailurePolicy` applies as on RabbitMQ. `REDELIVER` seeks the consumer back to the failed record's offset and stops processing that partition's remaining records for the poll, so a later record in the same batch is never committed past one that failed, and nothing is staged for the failed one either. `PARK` republishes to a `parkingDestination(KafkaDestination)` and stages the original record's offset only once that publish's own broker acknowledgement arrives, exactly as a delivered one would be.
+
+That parking publish has a bound of its own, and the bound is not a guarantee of one attempt. `send()` can itself spend most of that bound just getting a usable view of the cluster, so the record can still reach the broker in the background after the bound has already elapsed and this bridge has already chosen `REDELIVER` for it. A duplicate park is possible in that case. It is accepted rather than guarded against, the same way every handler here already has to tolerate redelivery.
 
 A partitioned Kafka topic does not preserve order across streams the way a single RabbitMQ queue does. A projection that handles one stream at a time is fine under the default stream-id keying. One that depends on order across streams is not, regardless of which resolver you use.
 
