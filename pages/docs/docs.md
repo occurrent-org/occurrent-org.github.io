@@ -3426,7 +3426,7 @@ PushSubscriptionModel or DomainEventFeed
 your projection or saga
 ```
 
-No new subscription model is added. A broker holds the live tail plus whatever retention it keeps, which is not the event store's history and not addressable by an Occurrent position, so a broker-backed model could not honor `StartAt` or a replay. Replay stays the event store's job, through [`CatchupThenPushSubscriptionModel`](#push-subscription-blocking) or [`CatchupProjectionFeed`](#feeding-domain-events-instead-of-cloudevents), and live-resume stays the broker's job. Three modules cover the forwarding, one shared API and one per broker:
+No new subscription model is added. A broker holds the live tail plus whatever retention it keeps, which is not the event store's history and not addressable by an Occurrent position, so a broker-backed model could not honor `StartAt` or a replay. Replay stays the event store's job, through [`CatchupThenPushSubscriptionModel`](#push-subscription-blocking) or [`CatchupProjectionFeed`](#feeding-domain-events-instead-of-cloudevents), and live-resume stays the broker's job. Three modules cover the forwarding, one shared API and one per broker. The shared API dependency is below, and RabbitMQ's and Kafka's own dependencies are in their own subsections further down.
 
 {% include macros/broker/api/blocking/maven.md %}
 
