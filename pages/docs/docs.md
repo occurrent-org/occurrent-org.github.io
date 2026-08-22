@@ -3252,7 +3252,9 @@ public void onMessage(byte[] body) {
 
 ##### Observing pushed events {#push-subscription-blocking-observer}
 
-`accept(..)` never refuses an event and, by design, doesn't log anything either. It's fed from the write path as well as from a broker, so it can't refuse on your behalf the way `DomainEventFeed.accept(..)` does when nothing is registered, see [ADR 104](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0104-an-undeliverable-push-event-is-refused-not-acknowledged.md). That leaves a misconfigured queue binding, a missing declared event type, and a typo in a type mapping all looking identical to a saga or projection that received the event and simply chose not to react. Pass a `PushObserver` to the constructor to tell them apart:
+`accept(..)` never refuses an event and, by design, doesn't log anything either. It's fed from the write path as well as from a broker, so it can't refuse on your behalf the way `DomainEventFeed.accept(..)` does when nothing is registered, see [ADR 104](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0104-an-undeliverable-push-event-is-refused-not-acknowledged.md).
+
+A misconfigured queue binding, a missing declared event type, and a typo in a type mapping therefore all look identical to a saga or projection that received the event and chose not to react. Pass a `PushObserver` to the constructor to tell them apart:
 
 ```java
 PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(),
@@ -3263,7 +3265,21 @@ PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refu
         });
 ```
 
-Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` to get both a payload filter and an observer. The observer runs once per event, before delivery is attempted, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw. It shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about whether an event matched. A filter that throws a `RuntimeException` or `AssertionError` while being evaluated is reported to the observer as unmatched first, before that exception propagates. Any other `Error` skips the observer entirely and propagates straight out. A `RuntimeException` or `AssertionError` the observer itself throws is always caught and logged rather than propagated, whether it was told the real outcome or a filter's own failure, so a broken observer can't turn an event that was actually delivered into a broker redelivery. Any other `Error` it throws is not caught. Told the real outcome, that `Error` propagates on its own, and told about a filter's own failure instead, it's attached to that failure rather than replacing it. `PushSubscriptionModel` skips the match check entirely when no observer is configured, so `PushObserver.noop()`, the default every other constructor uses, costs existing code nothing. Feeding a batch through `accept(Iterable<CloudEvent>)` stops observing at the same event where an earlier handler's exception already stops routing, so an event after that point is neither observed nor delivered.
+Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` to get both a payload filter and an observer.
+
+The observer runs once per event, before delivery is attempted, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw.
+
+It shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about whether an event matched.
+
+A filter that throws a `RuntimeException` or `AssertionError` while being evaluated is reported to the observer as unmatched first, before that exception propagates. Any other `Error` skips the observer entirely and propagates straight out.
+
+A `RuntimeException` or `AssertionError` the observer itself throws is always caught and logged rather than propagated, whether it was told the real outcome or a filter's own failure, so a broken observer can't turn an event that was actually delivered into a broker redelivery.
+
+Any other `Error` the observer throws is not caught. Told the real outcome, that `Error` propagates on its own. Told about a filter's own failure instead, it's attached to that failure rather than replacing it.
+
+`PushSubscriptionModel` skips the match check entirely when no observer is configured, so `PushObserver.noop()`, the default every other constructor uses, costs existing code nothing.
+
+Feeding a batch through `accept(Iterable<CloudEvent>)` stops observing at the same event where an earlier handler's exception already stops routing, so an event after that point is neither observed nor delivered.
 
 No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
@@ -4100,7 +4116,11 @@ Mono<Void> onMessage(byte[] body) {
 
 As on the blocking side, one model feeds one consumer, and a second projection registering on it fails at startup. The reasoning is in the [blocking section](#push-subscription-blocking): a broker message carries one acknowledgement, so sharing a model would let one failing consumer strand the others. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
 
-It also takes an optional `PushObserver`, the same way and for the same reason as the [blocking model](#push-subscription-blocking-observer). `accept(..)` never refuses and stays silent by design, so an observer is the way to tell a misconfigured queue binding or a type-mapping typo apart from a saga or projection that simply chose not to react. The constructor shape and the observer contract, including how a filter's or the observer's own failure is reported, are the same on both stacks. One thing is reactor-only. The `Mono` `accept(CloudEvent)` returns is cold, so a resubscription to it observes and, if eligible, dispatches that same event again, the same way `accept(CloudEvent)`'s own delivery already does on a resubscription.
+The reactive model also takes an optional `PushObserver`, for the same reason as the [blocking model](#push-subscription-blocking-observer). `accept(..)` never refuses and stays silent by design, so an observer is how you tell a misconfigured queue binding or a type-mapping typo apart from a saga or projection that chose not to react.
+
+The constructor arguments and the observer contract are the same on both stacks, including how a filter's own failure and the observer's own failure are reported.
+
+One thing is reactor-only. The `Mono` that `accept(CloudEvent)` returns does nothing until something subscribes to it, so subscribing to it a second time observes that same event again and dispatches it again if it is still eligible, exactly as the delivery itself already does on a resubscription.
 
 The same limits apply as on the blocking side. A push subscription only ever sees the live tail, and a broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first (see [EventStore Queries](#eventstore-queries) or the [catch-up subscription](#catch-up-subscription-blocking) pattern), then attach the push feed to keep it current.
 
