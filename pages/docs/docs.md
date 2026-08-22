@@ -3533,6 +3533,27 @@ At the CloudEvent level the bridge has no way to read the filter your subscripti
 
 At the domain level `DomainEventFeed` is the only place that decision can be made, because `accept(metadata, event)` delivers unconditionally otherwise. So the domain bridge applies your feed's filter itself rather than trusting a coarse binding.
 
+##### Consuming from a broker {#broker-consuming}
+
+A bridge is the consuming half of the diagram above. It consumes from a queue or a topic, rebuilds each message into a `CloudEvent`, and hands that to the [`PushSubscriptionModel`](#push-subscription-blocking) or [`DomainEventFeed`](#feeding-domain-events-instead-of-cloudevents) the application already has:
+
+```java
+RabbitMqDomainEventBridge<OrderEvent> bridge =
+        RabbitMqDomainEventBridge.builder(rabbitConnection, feed, "order-status-queue")
+                .resolver(resolver)
+                .build();
+```
+
+Building a bridge starts a background consumer right away, so keep the reference and close it when the application shuts down.
+
+`RabbitMqCloudEventBridge` and `KafkaCloudEventBridge` hand the rebuilt `CloudEvent` straight to a `PushSubscriptionModel`, so a subscription registered there receives the same `CloudEvent` it would have received from a change stream.
+
+`RabbitMqDomainEventBridge<E>` and `KafkaDomainEventBridge<E>` hand it to a `DomainEventFeed<E>` instead, which decodes it with your `CloudEventConverter<E>` and delivers a domain event. A projection registered there receives an `OrderPlaced` rather than a `CloudEvent`.
+
+So the bridge to pick is the one that matches the consumer you already have. Both bridges read the same message, so a `CloudEventForwarder` publishing through a `CloudEventSink` feeds either one, and the [runnable example](#broker-example) below does exactly that while consuming with a domain bridge.
+
+Both brokers ship both bridges as plain classes you construct yourself, with no Spring Boot involved. [RabbitMQ](#broker-rabbitmq) and [Kafka](#broker-kafka) below show the wiring, the configuration each one requires, and how each one acknowledges a message.
+
 ##### RabbitMQ {#broker-rabbitmq}
 
 {% include macros/broker/rabbitmq/blocking/maven.md %}
