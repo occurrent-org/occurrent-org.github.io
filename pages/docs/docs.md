@@ -6813,7 +6813,9 @@ A projection, a snapshot view, a saga, a subscription and a query all say which 
 A sealed type is expanded into every concrete type it permits, all the way down, so it selects more than the type you named. A projection with one handler on a sealed `OrderEvent` asks for `OrderEvent`, `OrderPlaced` and `PaymentReserved`, and receives the concrete events stored under that hierarchy:
 
 {% capture java %}
-public sealed interface OrderEvent permits OrderPlaced, PaymentReserved { }
+public sealed interface OrderEvent permits OrderPlaced, PaymentReserved {
+    String orderId();
+}
 public record OrderPlaced(String orderId) implements OrderEvent { }
 public record PaymentReserved(String orderId) implements OrderEvent { }
 
@@ -6825,9 +6827,11 @@ Projection<Integer, OrderEvent, String> orderCount =
                 .build();
 {% endcapture %}
 {% capture kotlin %}
-sealed interface OrderEvent
-data class OrderPlaced(val orderId: String) : OrderEvent
-data class PaymentReserved(val orderId: String) : OrderEvent
+sealed interface OrderEvent {
+    val orderId: String
+}
+data class OrderPlaced(override val orderId: String) : OrderEvent
+data class PaymentReserved(override val orderId: String) : OrderEvent
 
 // One handler, and both OrderPlaced and PaymentReserved arrive
 val orderCount = projection<Int, OrderEvent, String>(initialState = 0) {
@@ -6861,7 +6865,8 @@ Each place derives its filter at a different moment, and that moment is where th
 | `@Subscription`, `@StreamSubscription`, `@SynchronousSubscription` and `@DcbSubscription` | Spring Boot startup |
 | The [subscription DSL](#subscription-dsl)'s `subscribe(..)`, and `filterFromEventTypes` under it | that call |
 | `DomainEventQueries.query(Class..)` and `query(Collection)` | each query |
-| A saga built with `Saga.Builder`, `FlowSaga.Builder` or `Saga.create(..)` | `build()` |
+| A saga built with `Saga.Builder` or `FlowSaga.Builder` | `build()` |
+| A saga made with the `Saga.create(..)` factory | that call |
 
 There are three remedies, and which one fits depends on who owns the events.
 
