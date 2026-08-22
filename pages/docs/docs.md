@@ -191,6 +191,7 @@ permalink: /documentation
 * * [Competing Consumer Strategy Conformance](#competing-consumer-strategy-conformance)
 * * [The Reactive Bridge](#subscription-reactive-bridge)
 * [Upgrading](#upgrading)
+* * [Upgrading to 0.34.0](#upgrading-to-0-34-0)
 * * [Upgrading to 0.33.0](#upgrading-to-0-33-0)
 * * [Upgrading to 0.32.0](#upgrading-to-0-32-0)
 * * [Upgrading to 0.31.0](#upgrading-to-0-31-0)
@@ -6295,8 +6296,6 @@ Saga<ShipmentEvent, FlowState<ShipmentEvent>, DispatchShipment> shipment =
 
 Use `anyOf` when the alternatives share a reaction. A reaction cannot find out which of the alternatives completed the step, so when each alternative needs its own command, write them as separate branches instead, the way `awaiting-decision` does above.
 
-The older `join(...)`, which waited for a list of `Expectation`s, does the same thing as `on(allOf(...))` and is deprecated in favor of it. Existing code keeps working.
-
 `event(...)` also takes a predicate alongside its count, so a match can depend on the arriving event's own data and not only its type. In the example below, `monitoring` completes the moment a reading exceeds a threshold:
 
 {% capture kotlin %}
@@ -6460,8 +6459,6 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> reviewWithTriage =
 A guard's `onlyIf` and a `timeout`'s reaction read everything the instance has kept instead, which is what lets a guard count across several steps.
 
 `received.initiating<T>()` is the exception, reaching the start event whichever step you are in and whichever callback you are writing, so building a command from an id on the start event always works.
-
-The deprecated `join`'s reaction used to read everything the instance has kept, and no longer does. It now reads the same events a condition branch's reaction reads, so a `join` past a saga's first step sees nothing from an earlier step, not even another event of the type it was waiting for. A `join` on the first step also stops seeing the start event through `count`, `all`, `first`, `any`, `none` and `asList`, though `received.initiating<T>()` still reaches it.
 
 ##### Counted Conditions and `stepWindow` {#saga-counted-conditions}
 
@@ -8323,6 +8320,24 @@ The reactor `IntrospectableSubscriptions`, in `occurrent-subscription-api-reacto
 # Upgrading
 
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
+
+## Upgrading to 0.34.0 {#upgrading-to-0-34-0}
+
+The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
+
+The flow saga's deprecated `join`, Kotlin's `expect<T>`, and `Expectation` are removed. That is the saga DSL itself, so it applies whether or not you run Spring Boot.
+
+`join` was already deprecated in 0.33.0 in favor of `on(StepCondition, ...)` with `allOf(...)`, and that replacement is what every caller now needs.
+
+The recipe rewrites every `join` call whose expectation list is a literal `List.of(...)` or `Arrays.asList(...)` of literal `Expectation.of(...)` calls. A duplicate-typed pair is collapsed to the higher of their counts, the same way `join` itself did, but only when both counts are integer literals.
+
+A list built from a variable or a method call, a duplicate-typed pair whose count is not a literal, and every Kotlin call site are left alone and stop compiling, so the compiler finds them for you.
+
+The next change only reaches a Spring Boot application. A `@Projection`, `@Saga` or `@Snapshot` bean's class-level advice, `@Transactional` or a custom aspect for example, no longer runs once at startup as a side effect of building its descriptor. That was never documented behavior, just an accident of CGLIB proxying the bean's factory method by default.
+
+A reactor factory returning `null` also now fails startup with `IllegalStateException` instead of `IllegalArgumentException`, matching what the blocking stack already threw. See [section 5 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#5-a-descriptor-factorys-class-level-advice-no-longer-runs-at-startup).
+
+See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) for the full details and the by-hand translation.
 
 ## Upgrading to 0.33.0 {#upgrading-to-0-33-0}
 
