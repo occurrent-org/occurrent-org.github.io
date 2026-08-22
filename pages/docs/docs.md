@@ -7910,9 +7910,17 @@ Most of the mechanical changes between Occurrent versions (type renames, package
 
 The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
 
-The flow saga's deprecated `join`, Kotlin's `expect<T>`, and `Expectation` are removed. `join` was already deprecated in 0.33.0 in favor of `on(StepCondition, ...)` with `allOf(...)`, and that replacement is what every caller now needs. The recipe rewrites every `join` call whose expectation list is a literal `List.of(...)`/`Arrays.asList(...)` of literal `Expectation.of(...)` calls, collapsing a duplicate-typed pair to the higher of their counts the same way `join` itself did, but only when both counts are integer literals. A list built from a variable or a method call, a duplicate-typed pair whose count is not a literal, and every Kotlin call site are left alone and stop compiling, so the compiler finds them for you.
+The flow saga's deprecated `join`, Kotlin's `expect<T>`, and `Expectation` are removed. That is the saga DSL itself, so it applies whether or not you run Spring Boot.
 
-A `@Projection`, `@Saga` or `@Snapshot` bean's class-level advice, `@Transactional` or a custom aspect for example, no longer runs once at startup as a side effect of building its descriptor. That was never documented behavior, an accident of CGLIB proxying the bean's factory method by default. A reactor factory returning `null` also now fails startup with `IllegalStateException` instead of `IllegalArgumentException`, matching what the blocking stack already threw. See [section 5 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#5-a-descriptor-factorys-class-level-advice-no-longer-runs-at-startup).
+`join` was already deprecated in 0.33.0 in favor of `on(StepCondition, ...)` with `allOf(...)`, and that replacement is what every caller now needs.
+
+The recipe rewrites every `join` call whose expectation list is a literal `List.of(...)` or `Arrays.asList(...)` of literal `Expectation.of(...)` calls. A duplicate-typed pair is collapsed to the higher of their counts, the same way `join` itself did, but only when both counts are integer literals.
+
+A list built from a variable or a method call, a duplicate-typed pair whose count is not a literal, and every Kotlin call site are left alone and stop compiling, so the compiler finds them for you.
+
+The next change only reaches a Spring Boot application. A `@Projection`, `@Saga` or `@Snapshot` bean's class-level advice, `@Transactional` or a custom aspect for example, no longer runs once at startup as a side effect of building its descriptor. That was never documented behavior, just an accident of CGLIB proxying the bean's factory method by default.
+
+A reactor factory returning `null` also now fails startup with `IllegalStateException` instead of `IllegalArgumentException`, matching what the blocking stack already threw. See [section 5 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#5-a-descriptor-factorys-class-level-advice-no-longer-runs-at-startup).
 
 See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) for the full details and the by-hand translation.
 
