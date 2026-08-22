@@ -3258,20 +3258,26 @@ A misconfigured queue binding, a missing declared event type, and a typo in a ty
 
 ```java
 PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(),
-        (cloudEvent, matched) -> {
-            if (!matched) {
-                log.warn("No subscription matched event {} of type {}", cloudEvent.getId(), cloudEvent.getType());
+        (cloudEvent, outcome) -> {
+            if (outcome != RoutingOutcome.DELIVERED && outcome != RoutingOutcome.FILTERED) {
+                log.warn("Event {} of type {} was not delivered: {}", cloudEvent.getId(), cloudEvent.getType(), outcome);
             }
         });
 ```
 
 Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` to get both a payload filter and an observer.
 
-The observer runs once per event, before delivery is attempted, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw.
+The observer runs once per event, once the matched registration's action has run rather than before, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw.
 
-It shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about whether an event matched.
+It shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about what happened to an event.
 
-A filter that throws a `RuntimeException` or `AssertionError` while being evaluated is reported to the observer as unmatched first, before that exception propagates. Any other `Error` skips the observer entirely and propagates straight out.
+`outcome` is `DELIVERED` when a running, unpaused subscription's filter accepted the event and its action ran, and `FILTERED` when that same subscription evaluated the event and declined it. Acknowledge a broker message on either of these, never on anything else.
+
+`outcome` is `UNAVAILABLE` when there was no running, unpaused subscription for the event to reach at all, whether because nothing is registered, the model is stopped, or the subscription is paused. Nothing ran and nothing threw.
+
+A filter that throws a `RuntimeException` or `AssertionError` while being evaluated never gets to answer whether it matched. `outcome` is `NOT_DELIVERABLE` instead, standing in for the answer that never came, and that exception still propagates after the observer has been told. Any other `Error` skips the observer entirely and propagates straight out.
+
+A broker bridge feeding this model from outside the process should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. Wrapped in a `CatchupThenPushSubscriptionModel` still replaying or draining, `acceptRedeliverable(..)` refuses such an event outright rather than buffering it, reported `DEFERRED`, safe to redeliver and never a reason to acknowledge.
 
 A `RuntimeException` or `AssertionError` the observer itself throws is always caught and logged rather than propagated, whether it was told the real outcome or a filter's own failure, so a broken observer can't turn an event that was actually delivered into a broker redelivery.
 
@@ -5393,7 +5399,7 @@ Three guards keep a projection from silently doing the wrong thing. `DomainEvent
 
 A fourth guard covers the time before anything is registered. `DomainEventFeed.accept(..)` throws an `IllegalStateException` when no projection is registered on the feed, and on the reactor stack the returned `Mono` fails with one. Refusing matters because you acknowledge the broker message once `accept` returns, and acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch. `catchUpAll()` refuses on a feed with no projection for the same reason.
 
-This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the write path (as an `InMemoryEventStore` listener, say), where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker, or pass it a [`PushObserver`](#push-subscription-blocking-observer) for a running account of every event and whether a subscription matched it.
+This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the write path (as an `InMemoryEventStore` listener, say), where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker, or pass it a [`PushObserver`](#push-subscription-blocking-observer) for a `RoutingOutcome` on every event it is asked to deliver.
 
 ### Read-your-writes
 
