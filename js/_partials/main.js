@@ -100,7 +100,8 @@ if (document.location.pathname.includes("/documentation")) {
         "saga-step-conditions" : "0.33.0",
         "replay-batching" : "0.33.0",
         "checkpoint-fencing-blocking" : "0.33.0",
-        "subscription-model-capabilities" : "0.33.0"
+        "subscription-model-capabilities" : "0.33.0",
+        "update-event-repair" : "0.34.0",
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
