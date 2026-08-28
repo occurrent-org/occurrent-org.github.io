@@ -3283,7 +3283,16 @@ The observer runs once per event, once the matched registration's action has run
 
 Neither `DEFERRED` nor `REFUSED` is ever reported as `FILTERED`, since acknowledging either one risks losing an event nothing actually declined.
 
-A caller acknowledging an externally sourced event may acknowledge on `DELIVERED` once `accept(..)` has returned normally, and on `FILTERED`. It must never acknowledge on `UNAVAILABLE`, `NOT_DELIVERABLE`, `DEFERRED` or `REFUSED`.
+A caller acknowledging an externally sourced event asks `outcome.mayAcknowledge()`, which answers true for `DELIVERED` once `accept(..)` has returned normally, and for `FILTERED`, and false for the other four.
+
+`outcome.disposition()` sorts all six outcomes into the four things a broker bridge can do with a message, so a bridge you write yourself switches on that rather than on the outcomes themselves:
+
+* `ACKNOWLEDGE` for `DELIVERED` and `FILTERED`.
+* `HOLD` for `DEFERRED` and `UNAVAILABLE`. Leave the message unacknowledged and offer it again later, without running it through your own retry or parking policy, because nothing about the message is broken.
+* `FAIL` for `NOT_DELIVERABLE`. This is the one your own failure policy decides.
+* `STOP` for `REFUSED`. Offering the message again gets the same answer, so stop consuming rather than redelivering.
+
+A switch over those four values stays correct if a later release adds an outcome, since a new outcome is sorted into one of the same four.
 
 The observer shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about which outcome applies, and no lifecycle transition arriving between the evaluation and this call can change what gets reported.
 
