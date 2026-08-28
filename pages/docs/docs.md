@@ -3259,7 +3259,7 @@ A misconfigured queue binding, a missing declared event type, and a typo in a ty
 ```java
 PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(),
         (cloudEvent, outcome) -> {
-            if (outcome != RoutingOutcome.DELIVERED && outcome != RoutingOutcome.FILTERED) {
+            if (!outcome.mayAcknowledge()) {
                 log.warn("Event {} of type {} was not delivered: {}", cloudEvent.getId(), cloudEvent.getType(), outcome);
             }
         });
@@ -3271,11 +3271,20 @@ The observer runs once per event, once the matched registration's action has run
 
 It shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about what happened to an event.
 
-`outcome` is `DELIVERED` when a running, unpaused subscription's filter accepted the event and its action ran, and `FILTERED` when that same subscription evaluated the event and declined it. Acknowledge a broker message on either of these, never on anything else.
+`outcome` is `DELIVERED` when a running, unpaused subscription's filter accepted the event and its action ran, and `FILTERED` when that same subscription evaluated the event and declined it. `outcome.mayAcknowledge()` answers true for those two and false for the other four, which is the check the example above makes.
 
 `outcome` is `UNAVAILABLE` when there was no running, unpaused subscription for the event to reach at all, whether because nothing is registered, the model is stopped, or the subscription is paused. Nothing ran and nothing threw.
 
 A filter that throws a `RuntimeException` or `AssertionError` while being evaluated never gets to answer whether it matched. `outcome` is `NOT_DELIVERABLE` instead, standing in for the answer that never came, and that exception still propagates after the observer has been told. Any other `Error` skips the observer entirely and propagates straight out.
+
+`outcome.disposition()` sorts all six outcomes into the four things a broker bridge can do with a message, so a bridge you write yourself switches on that rather than on the outcomes themselves:
+
+* `ACKNOWLEDGE` for `DELIVERED` and `FILTERED`.
+* `HOLD` for `DEFERRED` and `UNAVAILABLE`. Leave the message unacknowledged and offer it again later, without running it through your own retry or parking policy, because nothing about the message is broken.
+* `FAIL` for `NOT_DELIVERABLE`. This is the one your own failure policy decides.
+* `STOP` for `REFUSED`. Offering the message again gets the same answer, so stop consuming rather than redelivering.
+
+A switch over those four values stays correct if a later release adds an outcome, since a new outcome is sorted into one of the same four.
 
 A broker bridge feeding this model from outside the process should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. Wrapped in a `CatchupThenPushSubscriptionModel` still replaying or draining, `acceptRedeliverable(..)` refuses such an event outright rather than buffering it, reported `DEFERRED`, safe to redeliver and never a reason to acknowledge.
 
