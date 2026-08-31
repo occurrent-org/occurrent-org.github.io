@@ -6890,7 +6890,7 @@ Four keys move to a `mongodb`-qualified key on the prefix they already had. Each
 | `occurrent.subscription.collection` | `occurrent.subscription.mongodb.collection` |
 | `occurrent.subscription.restart-on-change-stream-history-lost` | `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` |
 
-Each old key still works during the deprecation window. Setting both the old and the new key is fine as long as they agree, so a leftover environment variable does not break an otherwise-migrated configuration.
+Each old key still works for now, and every one of them is removed in the release after next. Setting both the old and the new key is fine as long as they agree, so a leftover environment variable does not break an otherwise-migrated configuration.
 
 Setting both to values that disagree fails startup, and the error names both keys.
 
