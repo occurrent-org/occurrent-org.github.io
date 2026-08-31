@@ -3267,15 +3267,22 @@ PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refu
 
 Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` to get both a payload filter and an observer.
 
-The observer runs once per event, once the matched registration's action has run rather than before, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw.
+The observer runs once per event, once the matched registration's action has run, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw.
 
-It shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about what happened to an event.
+`outcome` is a `RoutingOutcome` rather than a boolean, because "the filter declined this event" and "there was nothing here able to receive it" are different problems that call for opposite acknowledgement decisions. It has six values.
 
-`outcome` is `DELIVERED` when a running, unpaused subscription's filter accepted the event and its action ran, and `FILTERED` when that same subscription evaluated the event and declined it. `outcome.mayAcknowledge()` answers true for those two and false for the other four, which is the check the example above makes.
+| Outcome | What happened |
+|:---|:---|
+| `DELIVERED` | A running, unpaused subscription's filter accepted the event. |
+| `FILTERED` | That same subscription evaluated the event and declined it, so redelivering it would loop forever against the same registration. |
+| `UNAVAILABLE` | No running, unpaused subscription was there to reach the event at all, whether nothing is registered, the model is stopped, or the subscription is paused, and nothing was thrown. |
+| `NOT_DELIVERABLE` | The filter itself failed before it could decide, or a registered action refused the event before attempting dispatch without promising the refusal is permanent. The exception propagates either way. |
+| `DEFERRED` | A catch-up-then-live target is not ready yet, so the event is always safe to offer again. |
+| `REFUSED` | A registered action refused the event before attempting dispatch, and promised that refusing is permanent. |
 
-`outcome` is `UNAVAILABLE` when there was no running, unpaused subscription for the event to reach at all, whether because nothing is registered, the model is stopped, or the subscription is paused. Nothing ran and nothing threw.
+Neither `DEFERRED` nor `REFUSED` is ever reported as `FILTERED`, since acknowledging either one risks losing an event nothing actually declined.
 
-A filter that throws a `RuntimeException` or `AssertionError` while being evaluated never gets to answer whether it matched. `outcome` is `NOT_DELIVERABLE` instead, standing in for the answer that never came, and that exception still propagates after the observer has been told. Any other `Error` skips the observer entirely and propagates straight out.
+A caller acknowledging an externally sourced event asks `outcome.mayAcknowledge()`, which answers true for `DELIVERED` once `accept(..)` has returned normally, and for `FILTERED`, and false for the other four. That is the check the example above makes.
 
 `outcome.disposition()` sorts all six outcomes into the four things a broker bridge can do with a message, so a bridge you write yourself switches on that rather than on the outcomes themselves:
 
@@ -3284,13 +3291,19 @@ A filter that throws a `RuntimeException` or `AssertionError` while being evalua
 * `FAIL` for `NOT_DELIVERABLE`. This is the one your own failure policy decides.
 * `STOP` for `REFUSED`. Offering the message again gets the same answer, so stop consuming rather than redelivering.
 
+Offering the message again is not always enough on its own. A replay finishes by itself, but a stopped model, a paused subscription and a stopped catch-up target all wait for someone to start them again, so a bridge that only redelivers keeps getting the same answer until that happens.
+
 A switch over those four values stays correct if a later release adds an outcome, since a new outcome is sorted into one of the same four.
 
 A broker bridge feeding this model from outside the process should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. Wrapped in a `CatchupThenPushSubscriptionModel` still replaying or draining, `acceptRedeliverable(..)` refuses such an event outright rather than buffering it, reported `DEFERRED`, safe to redeliver and never a reason to acknowledge.
 
+The observer shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about which outcome applies, and no lifecycle transition arriving between the evaluation and this call can change what gets reported.
+
+A filter that throws a `RuntimeException` or `AssertionError` while being evaluated never gets to answer whether it matched. That failure is reported to the observer as `NOT_DELIVERABLE` rather than `FILTERED`, standing in for the answer that never came, and the exception still propagates once the observer has been told. Any other `Error` skips the observer entirely and propagates straight out.
+
 A `RuntimeException` or `AssertionError` the observer itself throws is always caught and logged rather than propagated, whether it was told the real outcome or a filter's own failure, so a broken observer can't turn an event that was actually delivered into a broker redelivery.
 
-Any other `Error` the observer throws is not caught. Told the real outcome, that `Error` propagates on its own. Told about a filter's own failure instead, it's attached to that failure rather than replacing it.
+Any other `Error` the observer throws is not caught. Told the real outcome, that `Error` propagates on its own. Told about a filter's own failure instead, it's attached to that failure through `Throwable#addSuppressed(Throwable)` rather than replacing it.
 
 `PushSubscriptionModel` skips the match check entirely when no observer is configured, so `PushObserver.noop()`, the default every other constructor uses, costs existing code nothing.
 
