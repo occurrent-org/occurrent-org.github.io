@@ -3260,8 +3260,8 @@ A misconfigured queue binding, a missing declared event type, and a typo in a ty
 ```java
 PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(),
         (cloudEvent, outcome) -> {
-            if (outcome == RoutingOutcome.UNAVAILABLE) {
-                log.warn("No subscription could receive event {} of type {}", cloudEvent.getId(), cloudEvent.getType());
+            if (!outcome.mayAcknowledge()) {
+                log.warn("Event {} of type {} was not delivered: {}", cloudEvent.getId(), cloudEvent.getType(), outcome);
             }
         });
 ```
@@ -3283,7 +3283,7 @@ The observer runs once per event, once the matched registration's action has run
 
 Neither `DEFERRED` nor `REFUSED` is ever reported as `FILTERED`, since acknowledging either one risks losing an event nothing actually declined.
 
-A caller acknowledging an externally sourced event asks `outcome.mayAcknowledge()`, which answers true for `DELIVERED` once `accept(..)` has returned normally, and for `FILTERED`, and false for the other four.
+A caller acknowledging an externally sourced event asks `outcome.mayAcknowledge()`, which answers true for `DELIVERED` once `accept(..)` has returned normally, and for `FILTERED`, and false for the other four. That is the check the example above makes.
 
 `outcome.disposition()` sorts all six outcomes into the four things a broker bridge can do with a message, so a bridge you write yourself switches on that rather than on the outcomes themselves:
 
@@ -3292,7 +3292,11 @@ A caller acknowledging an externally sourced event asks `outcome.mayAcknowledge(
 * `FAIL` for `NOT_DELIVERABLE`. This is the one your own failure policy decides.
 * `STOP` for `REFUSED`. Offering the message again gets the same answer, so stop consuming rather than redelivering.
 
+Offering the message again is not always enough on its own. A replay finishes by itself, but a stopped model, a paused subscription and a stopped catch-up target all wait for someone to start them again, so a bridge that only redelivers keeps getting the same answer until that happens.
+
 A switch over those four values stays correct if a later release adds an outcome, since a new outcome is sorted into one of the same four.
+
+A broker bridge feeding this model from outside the process should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. Wrapped in a `CatchupThenPushSubscriptionModel` still replaying or draining, `acceptRedeliverable(..)` refuses such an event outright rather than buffering it, reported `DEFERRED`, safe to redeliver and never a reason to acknowledge.
 
 The observer shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about which outcome applies, and no lifecycle transition arriving between the evaluation and this call can change what gets reported.
 
@@ -3602,9 +3606,9 @@ The bridge calls `acceptRedeliverable(...)` rather than `accept(...)`. It's the 
 
 The bridge acknowledges a message once `acceptRedeliverable(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It does not acknowledge immediately for any other outcome, nor when `acceptRedeliverable(...)` throws.
 
-It holds and paces `DEFERRED` and `UNAVAILABLE`, applies its configured `DeliveryFailurePolicy` to `NOT_DELIVERABLE`, and stops consuming for good on `REFUSED`. Those aren't the only acknowledgements though, because one of the two things that can happen next still ends in one.
+It leaves a `DEFERRED` or `UNAVAILABLE` message unacknowledged and lets its own poll offer it again later, applies its configured `DeliveryFailurePolicy` to `NOT_DELIVERABLE`, and stops consuming for good on `REFUSED`.
 
-`onDeliveryFailure(DeliveryFailurePolicy)` decides which. `REDELIVER` is the default, and it calls `basicNack` with requeue so the broker redelivers, never acknowledging the original. `PARK` needs a `parkingDestination(RabbitMqDestination)`, and the bridge refuses to start without one once you choose it.
+`onDeliveryFailure(DeliveryFailurePolicy)` picks that policy. `REDELIVER` is the default, and it calls `basicNack` with requeue so the broker redelivers, never acknowledging the original. `PARK` needs a `parkingDestination(RabbitMqDestination)`, and the bridge refuses to start without one once you choose it.
 
 Parking publishes the message to that destination with its own confirm, and only once that confirm arrives does the bridge acknowledge the original, the same sequencing as an ordinary delivery. So the full set that ends in an acknowledgement is `DELIVERED`, `FILTERED`, and a confirmed park.
 
