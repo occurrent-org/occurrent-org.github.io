@@ -3518,7 +3518,7 @@ public interface CloudEventSink {
 }
 ```
 
-Deciding where an event goes happens inside the sink rather than next to it, so a wrapper that already makes that decision replaces it along with the publishing itself.
+A `CloudEventSink` decides where the event goes as part of publishing it, so a wrapper that already makes that decision takes over both jobs and needs no `DestinationResolver`.
 
 Nothing else in this section changes when you do this. The forwarder, the checkpoint, and the at-least-once guarantee described under [What's guaranteed](#broker-guarantees) all work the same regardless of whose `CloudEventSink` is on the other end.
 
@@ -3664,7 +3664,7 @@ On `NOT_DELIVERABLE` or a thrown exception, the same `DeliveryFailurePolicy` app
 
 `PARK` republishes to a `parkingDestination(KafkaDestination)` and stages the original record's offset only once that publish's own broker acknowledgement arrives, exactly as a delivered one would be.
 
-That parking publish has a time limit of its own, and the limit is not a promise that the publish is attempted once. `send()` can itself spend most of that time just getting a usable view of the cluster, so the record can still reach the broker in the background after the limit has elapsed and this bridge has already chosen `REDELIVER` for it.
+That parking publish has a time limit of its own, and hitting the limit does not cancel the publish. `send()` can itself spend most of that time just getting a usable view of the cluster, so the record can still reach the broker in the background after the limit has elapsed and this bridge has already chosen `REDELIVER` for it.
 
 A duplicate park is possible in that case. It is accepted rather than guarded against, the same way every handler here already has to tolerate redelivery.
 
