@@ -769,8 +769,8 @@ A store that writes `position` looks for one of those events when it starts and 
 query behind that check is answered by the `position` index, so it costs nothing on a store that was never damaged.
 
 The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`. A store never
-repairs its own history, because the damage sits there inertly while a wrong repair does not, and because some of it
-cannot be repaired safely at all.
+repairs its own history. A damaged event stays exactly as it is until someone repairs it, while a wrong repair writes
+a plausible value that nothing can take back, and some of the damage cannot be repaired safely at all.
 
 `report()` counts what is there and writes nothing. `run()` repairs, resumes from a checkpoint if it is killed, and
 only touches events that still look damaged, so running it twice is safe.
