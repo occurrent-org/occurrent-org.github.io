@@ -5656,7 +5656,7 @@ A replay whose every event is filtered out by the store never delivers a live ev
 
 That poll comes with the Spring Boot starter. Without it, call `pollForClear()` on the wrapper `recordingAppliedAppends(..)` returned, on a schedule of your own.
 
-A replay that starts and finishes inside one poll interval, delivering nothing the projection handles, is missed by that poll too, so its old records survive it untouched. At the settled 5 second interval, that means a replay under 5 seconds that delivers no matching event.
+A replay that starts and finishes inside one poll interval, delivering nothing the projection handles, is missed by that poll too, so its old records survive it untouched. The poll starts at 200ms and backs off to 5 seconds, so once it is there, that means a replay under 5 seconds that delivers no matching event.
 
 Even when the start position does replay, telling a replay apart from live delivery depends on the subscription model implementing [`ReplayAwareSubscriptions`](#subscription-model-capabilities).
 
