@@ -775,6 +775,10 @@ a plausible value that nothing can take back, and some of the damage cannot be r
 `report()` counts what is there and writes nothing. `run()` repairs, resumes from a checkpoint if it is killed, and
 only touches events that still look damaged, so running it twice is safe.
 
+Unlike the startup check, both of them read the whole collection, since finding an event whose tag array is missing
+cannot use an index. Run them during a quiet period on a large store, and run one at a time, because two runs at once
+share one checkpoint document and the first to finish deletes it while the other is still going.
+
 {% capture java %}
 MongoDatabase database = mongoClient.getDatabase("my-database");
 UpdateEventRepair repair = new UpdateEventRepair(database, "events", UpdateEventRepairOptions.defaults());
