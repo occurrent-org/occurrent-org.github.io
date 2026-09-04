@@ -114,6 +114,8 @@ if (document.location.pathname.includes("/documentation")) {
         "projection-annotation-applied-appends" : "0.34.0",
         "update-event-repair" : "0.34.0",
         "saga-quarantined-instances" : "0.34.0",
+        "deriving-the-event-filter" : "0.34.0",
+    
     
     
     
