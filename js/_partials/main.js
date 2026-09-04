@@ -113,6 +113,8 @@ if (document.location.pathname.includes("/documentation")) {
         "cdn-webjars" : "3.8.0",
         "projection-annotation-applied-appends" : "0.34.0",
         "update-event-repair" : "0.34.0",
+        "saga-quarantined-instances" : "0.34.0",
+    
     
     
     };

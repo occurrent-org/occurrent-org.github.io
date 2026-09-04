@@ -152,6 +152,7 @@ permalink: /documentation
 * * * [Running Across Multiple Instances](#saga-multi-instance)
 * * * [Side Effects and Compensation](#saga-side-effects)
 * * * [Observing Saga Instances](#observing-saga-instances)
+* * * * [Quarantined Instances](#saga-quarantined-instances)
 * [Spring Boot Starter](#spring-boot-starter)
 * * [Deferring Subscription Startup](#deferring-subscription-startup)
 * * [Reactive Spring Boot Starter](#reactive-spring-boot-starter)
@@ -7228,7 +7229,7 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
 
-A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
+A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it. The block ends when that instance is quarantined, which takes five minutes of failing on the same event by default. Where quarantine is switched off, which [Quarantined Instances](#saga-quarantined-instances) covers, the block lasts until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so other instances keep progressing and a stuck timer never blocks the poller. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
 A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`. The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
 
@@ -7350,7 +7351,11 @@ List<SagaInstance> stalled = instances.findByStatus(SagaStatus.ACTIVE, Instant.n
 
 `SagaInstances` reads the saga's state store, so it is not the event subscription answering these questions. `SagaSubscription.instances()` is a shortcut that hands you a view over the store the saga already runs against, which is also why it keeps working after you close the handle. Closing stops that instance's timer poller, but it does not close the store. With no handle at hand, in a separate admin process for instance, build one straight from the store with `SagaInstances.of(stateStore)`.
 
-A `SagaInstance` carries the id, the `SagaStatus` (`ACTIVE` or `COMPLETED`), the created, updated, and completed timestamps, when the next pending timer is due, and which step a flow saga is waiting in. `currentStep()` is `null` for a core saga, which names its states in your own state type rather than in a step the executor knows about.
+A `SagaInstance` carries the id, the `SagaStatus`, the created, updated, and completed timestamps, when the next pending timer is due, which step a flow saga is waiting in, and what the instance is failing on. `currentStep()` is `null` for a core saga, which names its states in your own state type rather than in a step the executor knows about.
+
+The status is `ACTIVE`, `COMPLETED`, or `QUARANTINED`. A quarantined instance stopped on an event it could not handle, so it is neither running nor finished, and [Quarantined Instances](#saga-quarantined-instances) below says what to do with one.
+
+`failure()` answers `null` for an instance that is failing on nothing. On an `ACTIVE` instance a non-null answer means an event has failed at least once and the instance is still expected to get through it. On a `QUARANTINED` one it means the instance stopped there.
 
 It leaves out the saga's own state and the executor's delivery bookkeeping on purpose. A read model shaped for querying belongs in the [Projection DSL](#views), and reaching into a saga's private state from outside ties your code to how that process happens to be written.
 
@@ -7358,7 +7363,11 @@ There is no way to write through this. Nothing here starts, advances, completes,
 
 `findByStatus` returns the instances in a status whose `updatedAt` falls strictly before the instant you pass, least recently updated first, at most `limit` of them. Pass `Instant.now()` to list everything in a status, or `Instant.now().minus(threshold)` to find the ones that have gone quiet. Stalest-first is what a stuck-instance check wants, because the worst offenders arrive first rather than last. `limit` caps how many instances you get back, there is no paging. Many instances can share the same millisecond `updatedAt`, and resuming a second query from "after that timestamp" would skip the rest of the instances saved in that same millisecond.
 
+`findByStatus(ACTIVE, ...)` does not return a quarantined instance, so a check for instances that have stopped moving has to ask for both statuses. Pass `Instant.now()` for the quarantined query rather than a threshold, because a quarantined instance's `updatedAt` stops at the moment it was quarantined and a threshold would hide the ones quarantined most recently.
+
 Enumeration is an optional store capability. A store implements `SagaStateStoreQueries` to support it, both shipped stores do, and `findByStatus` throws an `UnsupportedOperationException` on a store that does not. `find(sagaId)` works on any store, so a store you wrote yourself to run sagas never has to answer an ordered query it does not need.
+
+Enumerating instances is cheap. Listing flow-saga instances never deserializes their state or received events, so a periodic stuck-instance check costs little even with many instances. Rationale in [ADR 0070](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-saga-instance-observation.md).
 
 On the Spring stack the `@Saga` registrar publishes each saga's `SagaInstances` under a registry keyed by saga id:
 
@@ -7366,8 +7375,11 @@ On the Spring stack the `@Saga` registrar publishes each saga's `SagaInstances` 
 @Service
 class SagaDashboard(private val registry: SagaInstancesRegistry) {
 
-    fun stalled(sagaId: String, threshold: Duration): List<SagaInstance> =
-        registry.get(sagaId).findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100)
+    fun stalled(sagaId: String, threshold: Duration): List<SagaInstance> {
+        val instances = registry.get(sagaId)
+        return instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100) +
+                instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 100)
+    }
 
     fun sagaIds(): Set<String> = registry.sagaIds()
 }
@@ -7383,7 +7395,11 @@ class SagaDashboard {
     }
 
     List<SagaInstance> stalled(String sagaId, Duration threshold) {
-        return registry.get(sagaId).findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100);
+        SagaInstances instances = registry.get(sagaId);
+        List<SagaInstance> stalled = new ArrayList<>(
+                instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100));
+        stalled.addAll(instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 100));
+        return stalled;
     }
 }
 {% endcapture %}
@@ -7393,7 +7409,61 @@ class SagaDashboard {
 
 One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
 
-Enumerating instances is cheap. Listing flow-saga instances never deserializes their state or received events, so a periodic stuck-instance check costs little even with many instances. Rationale in [ADR 0070](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-saga-instance-observation.md).
+#### Quarantined Instances {#saga-quarantined-instances}
+
+A saga has one subscription and every instance of that saga is fed by it, so an event that one instance cannot handle holds up every other instance behind it. Quarantine puts a limit on how long that lasts.
+
+The runner times the failing rather than counting the attempts. The first failure of an event records when it started failing and rethrows, so the subscription redelivers it and the saga tries again. Once that same event has kept failing for that same instance for at least `SagaRunnerConfig.quarantineAfter`, five minutes by default, the instance moves to `SagaStatus.QUARANTINED` and the runner stops rethrowing. The subscription then acknowledges the event and delivers the rest to every other instance.
+
+A quarantined instance does nothing more. It skips every event addressed to it, its timers stay armed but never fire, and its redelivery watermarks stop moving, so nothing it skipped is recorded as handled.
+
+`failure()` holds what the instance stopped on, which is the failing event's redelivery key, its global position where the feed assigns one, the exception's class name and message, and when the failing started.
+
+{% capture kotlin %}
+val stopped = instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 50)
+
+for (instance in stopped) {
+    val failure = instance.failure()
+    println("${instance.sagaId()} stopped on ${failure?.input()} with ${failure?.failureType()}")
+}
+{% endcapture %}
+{% capture java %}
+List<SagaInstance> stopped = instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 50);
+
+for (SagaInstance instance : stopped) {
+    SagaFailure failure = instance.failure();
+    System.out.println(instance.sagaId() + " stopped on " + failure.input() + " with " + failure.failureType());
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Nothing brings an instance back out of quarantine yet. Read the failure, fix whatever caused it, and when you have decided not to recover the instance, `SagaStateStore.delete(...)` abandons it. A quarantined instance also fires no timeouts, so a saga that relies on a timeout to cancel or compensate does not get that timeout while quarantined.
+
+Quarantine has two limits. The first is that it needs a subscription model that can be resumed at a chosen position, which means `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel`, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. The wrapper alone is not enough. On any other model the runner switches quarantine off at startup and logs why, and one failing event goes back to blocking every other instance of that saga.
+
+That is deliberate. Quarantining an instance means returning normally, which acknowledges the event to whatever fed it, and on a push feed behind a broker bridge that is what stages the offset and moves past the record. The record would be gone from the broker, and nothing could hand that event to the saga a second time. Between an instance that blocks and an event that can never be asked for again, the runner keeps the event.
+
+The second limit is that an event the saga cannot recognise a redelivery of is never quarantined. The failure record identifies the failing event by its stream id with its stream version, or by its global position when it has no stream metadata. An event with neither cannot be told apart from its own redelivery, so the budget never elapses for it. `SagaRunnerConfig.redeliveryDetection` refuses such an event under `REQUIRED`, its default, before the saga sees it, so you only reach this after setting it to `BEST_EFFORT`.
+
+An event store that assigns no global position is not one of those. A store built with `withoutStreamPosition()` still gives every event a stream id and a stream version, so a saga on it quarantines like any other and `failure().position()` answers `null`.
+
+Set the budget to `null` and the runner never quarantines. It keeps rethrowing, and one failing event blocks the saga's other instances for as long as it keeps failing.
+
+{% capture kotlin %}
+val config = SagaRunnerConfig.defaults().withQuarantineAfter(null)
+{% endcapture %}
+{% capture java %}
+SagaRunnerConfig config = SagaRunnerConfig.defaults().withQuarantineAfter(null);
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+On the annotation path you never build a `SagaRunnerConfig`, so the budget is a property instead. Set it to zero to switch quarantine off, since a `Duration` property you leave out binds to its default rather than to null.
+
+```properties
+occurrent.saga.quarantine-after=0
+```
+
+The design, including why releasing an instance back into service is harder than it looks, is in [ADR 0134](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0134-a-saga-instance-that-keeps-failing-is-quarantined-at-its-own-position.md).
 
 # Spring Boot Starter
 
