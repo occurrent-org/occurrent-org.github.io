@@ -112,6 +112,8 @@ if (document.location.pathname.includes("/documentation")) {
         "dynamic-single-page-handler" : "3.7.0",
         "cdn-webjars" : "3.8.0",
         "projection-annotation-applied-appends" : "0.34.0",
+        "update-event-repair" : "0.34.0",
+    
     
     };
     Object.keys(addedTags).forEach(key => {
