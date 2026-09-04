@@ -102,15 +102,17 @@ if (document.location.pathname.includes("/documentation")) {
         "checkpoint-fencing-blocking" : "0.33.0",
         "subscription-model-capabilities" : "0.33.0",
         "push-subscription-blocking-observer" : "0.34.0",
-        "broker-subscriptions-blocking" : "0.34.0"
-        // "validator-nullability": "3.1.0",
-        // "shared-state": "3.2.0",
-        // "vue-directory-location": "3.5.0",
-        // "redirect-to-lowercase-path-plugin": "3.7.0",
-        // "rate-limiting": "3.7.0",
-        // "setting-the-host": "3.7.0",
-        // "dynamic-single-page-handler": "3.7.0",
-        // "cdn-webjars": "3.8.0",
+        "broker-subscriptions-blocking" : "0.34.0",
+        "validator-nullability" : "3.1.0",
+        "shared-state" : "3.2.0",
+        "vue-directory-location" : "3.5.0",
+        "redirect-to-lowercase-path-plugin" : "3.7.0",
+        "rate-limiting" : "3.7.0",
+        "setting-the-host" : "3.7.0",
+        "dynamic-single-page-handler" : "3.7.0",
+        "cdn-webjars" : "3.8.0",
+        "projection-annotation-applied-appends" : "0.34.0",
+    
     };
     Object.keys(addedTags).forEach(key => {
         // Skip labels whose section no longer exists, so a stale entry can't abort the rest of this script (which wires up the code tabs).
