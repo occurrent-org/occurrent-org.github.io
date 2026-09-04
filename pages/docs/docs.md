@@ -3250,6 +3250,65 @@ public void onMessage(byte[] body) {
 
 `accept(CloudEvent)` runs the registered handler synchronously, on the calling thread, when the event matches its filter. The handler's exception propagates back to the caller, which is what lets the listener decide whether to acknowledge the message or trigger a redelivery. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
 
+##### Observing pushed events {#push-subscription-blocking-observer}
+
+`accept(..)` never refuses an event and, by design, doesn't log anything either. It's fed from the write path as well as from a broker, so it can't refuse on your behalf the way `DomainEventFeed.accept(..)` does when nothing is registered, see [ADR 104](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0104-an-undeliverable-push-event-is-refused-not-acknowledged.md).
+
+A misconfigured queue binding, a missing declared event type, and a typo in a type mapping therefore all look identical to a saga or projection that received the event and chose not to react. Pass a `PushObserver` to the constructor to tell them apart:
+
+```java
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(),
+        (cloudEvent, outcome) -> {
+            if (!outcome.mayAcknowledge()) {
+                log.warn("Event {} of type {} was not delivered: {}", cloudEvent.getId(), cloudEvent.getType(), outcome);
+            }
+        });
+```
+
+Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` to get both a payload filter and an observer.
+
+The observer runs once per event, once the matched registration's action has run, whether or not a handler ends up running, and independent of whether that handler goes on to succeed or throw.
+
+`outcome` is a `RoutingOutcome` rather than a boolean, because "the filter declined this event" and "there was nothing here able to receive it" are different problems that call for opposite acknowledgement decisions. It has six values.
+
+| Outcome | What happened |
+|:---|:---|
+| `DELIVERED` | A running, unpaused subscription's filter accepted the event. |
+| `FILTERED` | That same subscription evaluated the event and declined it, so redelivering it would loop forever against the same registration. |
+| `UNAVAILABLE` | No running, unpaused subscription was there to reach the event at all, whether nothing is registered, the model is stopped, or the subscription is paused, and nothing was thrown. |
+| `NOT_DELIVERABLE` | The filter itself failed before it could decide, or a registered action refused the event before attempting dispatch without promising the refusal is permanent. The exception propagates either way. |
+| `DEFERRED` | A catch-up-then-live target is not ready yet, so the event is always safe to offer again. |
+| `REFUSED` | A registered action refused the event before attempting dispatch, and promised that refusing is permanent. |
+
+Neither `DEFERRED` nor `REFUSED` is ever reported as `FILTERED`, since acknowledging either one risks losing an event nothing actually declined.
+
+A caller acknowledging an externally sourced event asks `outcome.mayAcknowledge()`, which answers true for `DELIVERED` once `accept(..)` has returned normally, and for `FILTERED`, and false for the other four. That is the check the example above makes.
+
+`outcome.disposition()` sorts all six outcomes into the four things a broker bridge can do with a message, so a bridge you write yourself switches on that rather than on the outcomes themselves:
+
+* `ACKNOWLEDGE` for `DELIVERED` and `FILTERED`.
+* `HOLD` for `DEFERRED` and `UNAVAILABLE`. Leave the message unacknowledged and offer it again later, without running it through your own retry or parking policy, because nothing about the message is broken.
+* `FAIL` for `NOT_DELIVERABLE`. This is the one your own failure policy decides.
+* `STOP` for `REFUSED`. Offering the message again gets the same answer, so stop consuming rather than redelivering.
+
+Offering the message again is not always enough on its own. A replay finishes by itself, but a stopped model, a paused subscription and a stopped catch-up target all wait for someone to start them again, so a bridge that only redelivers keeps getting the same answer until that happens.
+
+A switch over those four values stays correct if a later release adds an outcome, since a new outcome is sorted into one of the same four.
+
+A broker bridge feeding this model from outside the process should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. Wrapped in a `CatchupThenPushSubscriptionModel` still replaying or draining, `acceptRedeliverable(..)` refuses such an event outright rather than buffering it, reported `DEFERRED`, safe to redeliver and never a reason to acknowledge.
+
+The observer shares the same filter evaluation `accept(..)` dispatches from, so the two can never disagree about which outcome applies, and no lifecycle transition arriving between the evaluation and this call can change what gets reported.
+
+A filter that throws a `RuntimeException` or `AssertionError` while being evaluated never gets to answer whether it matched. That failure is reported to the observer as `NOT_DELIVERABLE` rather than `FILTERED`, standing in for the answer that never came, and the exception still propagates once the observer has been told. Any other `Error` skips the observer entirely and propagates straight out.
+
+A `RuntimeException` or `AssertionError` the observer itself throws is always caught and logged rather than propagated, whether it was told the real outcome or a filter's own failure, so a broken observer can't turn an event that was actually delivered into a broker redelivery.
+
+Any other `Error` the observer throws is not caught. Told the real outcome, that `Error` propagates on its own. Told about a filter's own failure instead, it's attached to that failure through `Throwable#addSuppressed(Throwable)` rather than replacing it.
+
+`PushSubscriptionModel` skips the match check entirely when no observer is configured, so `PushObserver.noop()`, the default every other constructor uses, costs existing code nothing.
+
+Feeding a batch through `accept(Iterable<CloudEvent>)` stops observing at the same event where an earlier handler's exception already stops routing, so an event after that point is neither observed nor delivered.
+
 No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
 A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
@@ -4084,6 +4143,12 @@ Mono<Void> onMessage(byte[] body) {
 `accept(CloudEvent)` returns a `Mono<Void>` and runs the registered handler when the event matches its filter. A handler error propagates through that `Mono`, so the caller decides whether to acknowledge the message, retry it, or route it to the broker's failed-message queue, where the broker has one.
 
 As on the blocking side, one model feeds one consumer, and a second projection registering on it fails at startup. The reasoning is in the [blocking section](#push-subscription-blocking): a broker message carries one acknowledgement, so sharing a model would let one failing consumer strand the others. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
+
+The reactive model also takes an optional `PushObserver`, for the same reason as the [blocking model](#push-subscription-blocking-observer). `accept(..)` never refuses and stays silent by design, so an observer is how you tell a misconfigured queue binding or a type-mapping typo apart from a saga or projection that chose not to react.
+
+The constructor arguments and the observer contract are the same on both stacks, including how a filter's own failure and the observer's own failure are reported.
+
+One thing is reactor-only. The `Mono` that `accept(CloudEvent)` returns does nothing until something subscribes to it, so subscribing to it a second time observes that same event again and dispatches it again if it is still eligible, exactly as the delivery itself already does on a resubscription.
 
 The same limits apply as on the blocking side. A push subscription only ever sees the live tail, and a broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first (see [EventStore Queries](#eventstore-queries) or the [catch-up subscription](#catch-up-subscription-blocking) pattern), then attach the push feed to keep it current.
 
@@ -5356,7 +5421,7 @@ Three guards keep a projection from silently doing the wrong thing. `DomainEvent
 
 A fourth guard covers the time before anything is registered. `DomainEventFeed.accept(..)` throws an `IllegalStateException` when no projection is registered on the feed, and on the reactor stack the returned `Mono` fails with one. Refusing matters because you acknowledge the broker message once `accept` returns, and acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch. `catchUpAll()` refuses on a feed with no projection for the same reason.
 
-This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the write path (as an `InMemoryEventStore` listener, say), where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker.
+This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the write path (as an `InMemoryEventStore` listener, say), where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker, or pass it a [`PushObserver`](#push-subscription-blocking-observer), which is told how each event it is asked to deliver was routed.
 
 ### Read-your-writes
 
