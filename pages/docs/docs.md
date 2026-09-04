@@ -3470,6 +3470,12 @@ PushSubscriptionModel or DomainEventFeed
 your projection or saga
 ```
 
+A sink publishes and a bridge consumes. The sink takes an event out of the event store and puts it on the broker, the bridge takes a message off the broker and hands it to your projection or saga. A round trip uses one of each, so they are two halves of the same path rather than two options to pick between.
+
+Only the bridge touches the broker's topology. `CloudEventForwarder` and the sinks declare nothing at all, while a RabbitMQ bridge declares the queue it consumes from and binds that queue to the destinations it derived. Neither Kafka bridge creates a topic, it only subscribes.
+
+Nothing declares the exchange, so you create that yourself. `declareTopology(false)` on a RabbitMQ bridge turns the queue and binding declarations off too, for a deployment where a platform team owns all of it.
+
 No new subscription model is added. A broker holds the live tail plus whatever retention it keeps, which is not the event store's history and not addressable by an Occurrent position, so a broker-backed model could not honor `StartAt` or a replay.
 
 Replay stays the event store's job, through [`CatchupThenPushSubscriptionModel`](#push-subscription-blocking) or [`CatchupProjectionFeed`](#feeding-domain-events-instead-of-cloudevents), and live-resume stays the broker's job.
@@ -3480,13 +3486,17 @@ Three modules cover the forwarding, one shared API and one per broker. Add the s
 
 ##### Which level to use {#broker-cloudevent-vs-domain-event}
 
-Forward at the CloudEvent level to put the stored event on the wire unchanged, the same `CloudEvent` [`CloudEventForwarder`](#broker-forwarding) publishes and [`PushSubscriptionModel`](#push-subscription-blocking) consumes.
+There are two levels to forward at, and they differ in what travels on the wire.
 
-Forward at the domain level instead when the consuming side already has its own converter and applies domain events straight into a read model, so nothing is encoded and decoded for no reason.
+At the CloudEvent level the stored `CloudEvent` goes to the broker exactly as it was read. [`CloudEventForwarder`](#broker-forwarding) publishes it and a [`PushSubscriptionModel`](#push-subscription-blocking) consumes it.
 
-Either way, the Occurrent extensions travel as message headers, `streamid`, `streamversion`, `position` and `dcbtags` where the event has them. That is what [`EventMetadata`](#projection-event-metadata) is built from on the way back in.
+At the domain level `DomainEventForwarder` decodes each event with your `CloudEventConverter` first and hands the domain event to a `DomainEventSink<E>` you wrote, which publishes it in whatever format that sink uses.
 
-A message that drops them into the body instead produces an empty `EventMetadata` on the consumer, and a projection keyed on metadata now refuses that delivery outright rather than silently dropping it.
+Use the CloudEvent level unless you have a reason not to. It converts nothing, it keeps the id, source, subject and time the store recorded, and both bridges read what it publishes, so your projection can still receive domain events. The domain level is for a publisher that has to put your own format on the wire.
+
+Either way, the Occurrent extensions travel as message headers, `streamid`, `streamversion`, `position` and `dcbtags` where the event has them. [`EventMetadata`](#projection-event-metadata) on the consuming side is rebuilt from those headers.
+
+A sink that puts them in the body instead gives the consumer an empty `EventMetadata`, and a projection that reads metadata refuses that delivery outright rather than dropping it silently.
 
 ##### Forwarding events to a broker {#broker-forwarding}
 
@@ -3500,6 +3510,8 @@ forwarder.forward("order-status-forwarder");
 `DomainEventForwarder<E>` does the same, decoding each event once with your `CloudEventConverter<E>` before handing the domain event to a `DomainEventSink<E>`.
 
 Publication is at-least-once with no new mechanism behind it. `DurableSubscriptionModel` advances its checkpoint only after `forward`'s action returns, so a sink that throws keeps the checkpoint where it was and the event publishes again on the next run.
+
+That action is the call to `publish`, so the guarantee holds only as long as your sink does not return until the broker has confirmed the message. A sink that hands the event to a thread pool and returns straight away looks the same from here, and the checkpoint moves past an event nobody delivered.
 
 Do not pair `DomainEventForwarder` with `RabbitMqDomainEventSink` or `KafkaDomainEventSink`, the two shipped domain sinks described under [RabbitMQ](#broker-rabbitmq) and [Kafka](#broker-kafka). Those sinks convert a domain event straight to a `CloudEvent` and delegate to a `CloudEventSink`.
 
@@ -3528,19 +3540,65 @@ Nothing else in this section changes when you do this. The forwarder, the checkp
 
 ```java
 D destinationFor(CloudEvent cloudEvent);
-Optional<Set<D>> destinationsFor(SubscriptionFilter filter);
+Optional<Set<D>> destinationsFor(Filter filter);
+default Optional<Set<D>> destinationsFor(SubscriptionFilter subscriptionFilter);
 D catchAllDestination();
 ```
 
+`destinationFor(cloudEvent)` is the publishing side. A sink calls it for every event it publishes, and every part of the destination it gets back is filled in.
+
+`destinationsFor(filter)` is the consuming side. It answers which destinations a consumer has to bind to receive the events a `Filter` describes, and it is the overload you implement.
+
+An empty `Optional` from it means the resolver could not narrow the filter, not that no destination matches. The caller binds `catchAllDestination()` in that case, rather than reading the empty result as "listen to nothing".
+
+`destinationsFor(subscriptionFilter)` is a default method you do not implement. It hands the `Filter` inside an `AgnosticSubscriptionFilter` or a `StreamSubscriptionFilter` to the method above, and answers every other `SubscriptionFilter` with an empty `Optional`. That covers a `DcbSubscriptionFilter`, which holds DCB criteria rather than a `Filter`, and any `SubscriptionFilter` of your own, which is a type this interface knows nothing about.
+
+`catchAllDestination()` is the destination that receives every event the resolver could route. Binding it is always safe, because binding everything narrows nothing.
+
 The shipped resolvers derive both from the CloudEvent type through your `CloudEventTypeMapper`, the same mapping your application already uses to convert between a stored event and its domain class. A publisher and a consumer then agree by reading one mapping instead of two hand-written strings that nothing compares.
 
-`destinationsFor(filter)` is what lets a consumer bind only the routing keys or topics it needs, an exchange and routing key on RabbitMQ, a topic on Kafka, instead of taking everything and discarding most of it.
+On RabbitMQ that is one topic exchange, with the routing key derived from the type and the queue bound to the routing keys the consumer asked for:
 
-It only narrows on the event-type part of a filter, since that's the only part a routing key or a topic name can express. A stream id, a data field, or a time range stay invisible to the broker, so `SubscriptionFilterMatcher` still decides what your handler actually sees once the message arrives. Narrowing the binding never replaces that decision.
+```java
+CloudEventTypeMapper<OrderEvent> typeMapper = ReflectionCloudEventTypeMapper.simple(OrderEvent.class);
+RabbitMqTopicExchangeDestinationResolver resolver =
+        new RabbitMqTopicExchangeDestinationResolver("orders-exchange", typeMapper);
+
+// Publishing: the sink asks the resolver where each event goes.
+RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, resolver).build();
+
+// Consuming: bind the queue to the two types this projection handles.
+RabbitMqDomainEventBridge<OrderEvent> bridge =
+        RabbitMqDomainEventBridge.builder(rabbitConnection, feed, "order-status-queue")
+                .resolver(resolver)
+                .bindingFilter(Filter.type(Condition.in(
+                        typeMapper.getCloudEventType(OrderPlaced.class),
+                        typeMapper.getCloudEventType(OrderShipped.class))))
+                .build();
+```
+
+An `OrderPlaced` publishes to `orders-exchange` with routing key `OrderPlaced`, and the queue is bound to `OrderPlaced` and `OrderShipped`. Remove the `bindingFilter(...)` line, or pass a filter the resolver cannot narrow such as `Filter.streamId("order-1")`, and the queue is bound with routing key `#` instead, which is what `catchAllDestination()` returns.
+
+Kafka does the same with topics. `KafkaSharedTopicDestinationResolver`, the default, publishes everything to one topic, so a binding has nothing to narrow there. This example uses the per-type resolver instead:
+
+```java
+KafkaTopicPerTypeDestinationResolver resolver =
+        new KafkaTopicPerTypeDestinationResolver("orders.", typeMapper);
+
+KafkaCloudEventSink sink = KafkaCloudEventSink.builder(producerConfig, resolver).build();
+
+KafkaDomainEventBridge<OrderEvent> bridge =
+        KafkaDomainEventBridge.builder(consumerConfig, feed)
+                .resolver(resolver)
+                .bindingFilter(Filter.type(typeMapper.getCloudEventType(OrderShipped.class)))
+                .build();
+```
+
+An `OrderShipped` publishes to `orders.OrderShipped`, and the consumer subscribes to that one topic. Remove the `bindingFilter(...)` line and it subscribes to `catchAllDestination()` instead, which for this resolver is a pattern matching every topic under the `orders.` prefix.
+
+Narrowing a binding only ever changes what is delivered, never what is handled. A routing key or a topic name can express an event type and nothing else, so a stream id, a data field or a time range stays invisible to the broker, and `SubscriptionFilterMatcher` still decides what your handler sees once the message arrives.
 
 A binding you derive this way has to stay at least as inclusive as the subscription's own filter. A narrower one stops an event reaching a matcher that would have accepted it, and that's a lost event rather than a tuning mistake.
-
-Left unset, a bridge binds `catchAllDestination()`, which is always safe because binding everything narrows nothing.
 
 At the CloudEvent level the bridge has no way to read the filter your subscription was registered with, since `PushSubscriptionModel` exposes neither it nor its matcher. Pass the same filter to the bridge's `bindingFilter(...)` yourself if you want the narrowing.
 
