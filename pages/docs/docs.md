@@ -5651,7 +5651,7 @@ val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand>(initialSt
 {% endcapture %}
 {% capture java %}
 Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment =
-        Saga.<OrderEvent, OrderSagaState, OrderCommand>builder(null)
+        Saga.<OrderEvent, OrderSagaState, OrderCommand>builder()
                 .correlateAll(OrderEvent::orderId)
                 .startsOn(OrderPlaced.class)
                 .evolve(OrderPlaced.class, (state, e) -> new AwaitingPayment(e.orderId()))
@@ -6185,7 +6185,7 @@ A saga can also select on more than its declared event types, or subscribe on so
 `narrowingFilter(Filter)` is combined (ANDed) with the selector `eventTypes()` derives, so the saga keeps asking for its own declared types and also requires your condition, on subject, source, data or time:
 
 {% capture java %}
-Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
+Saga.<OrderEvent, OrderState, OrderCommand>builder()
         .correlateAll(OrderEvent::orderId)
         .startsOn(OrderEvent.class)
         .react(OrderEvent.class, (state, event) -> ...)
@@ -6207,7 +6207,7 @@ Because a selector is still derived, the hierarchy check from [Declared Event Ty
 `replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. This is the way out when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, since reflection cannot tell that mapper apart from the default one, and declaring the concrete types would not help either, as they all collapse to the same string:
 
 {% capture java %}
-Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
+Saga.<OrderEvent, OrderState, OrderCommand>builder()
         .correlateAll(OrderEvent::orderId)
         .startsOn(OrderEvent.class)
         .react(OrderEvent.class, (state, event) -> ...)
