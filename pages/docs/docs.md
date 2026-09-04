@@ -6187,7 +6187,13 @@ public final class PaymentReserved extends Payment { }
 
 When the hierarchy is not yours to seal, or is deliberately open, declare the concrete types instead, one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
-Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs none of this. If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one type string, declaring the supertype worked before 0.33.0 and now throws. Declaring the concrete types keeps it working, since they all map to the same string.
+Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs none of this.
+
+A `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string changes none of the above. The check walks the class hierarchy and never asks the mapper anything, so declaring the supertype is refused there too.
+
+Declaring the concrete types instead builds as long as each of them is final or sealed, and the saga receives its events. It receives more than it declared, because every type in the hierarchy maps to that one string and the filter matches all of them.
+
+That is the same filter `replacementFilter(Filter.type("order-event"))` sets outright, and setting it says what the saga listens to rather than leaving a reader to work it out from the mapper. It is also the only route left when the hierarchy is open, since a concrete class that is neither final nor sealed cannot be declared either. [Setting an Explicit Filter](#saga-explicit-filter) covers it.
 
 ### Setting an Explicit Filter {#saga-explicit-filter}
 
@@ -6215,7 +6221,7 @@ saga<OrderEvent, OrderCommand> {
 
 Because a selector is still derived, the hierarchy check from [Declared Event Types](#saga-event-types) still runs under a narrowing.
 
-`replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. This is the way out when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, since reflection cannot tell that mapper apart from the default one, and declaring the concrete types would not help either, as they all collapse to the same string:
+`replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. It is the route out for a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, for the reasons under [Declared Event Types](#saga-event-types):
 
 {% capture java %}
 Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
