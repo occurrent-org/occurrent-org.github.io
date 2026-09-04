@@ -3637,6 +3637,8 @@ RabbitMqTopicExchangeDestinationResolver resolver =
 RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, resolver).build();
 ```
 
+Occurrent never declares an exchange. `orders-exchange` has to exist before anything publishes to it, so you create it, or whoever owns your broker topology does. A bridge declares the queue it consumes from and binds that queue to the routing keys it derived, and that is the whole of what Occurrent creates on a broker.
+
 `RabbitMqCloudEventSink` publishes with publisher confirms and `mandatory = true`, waiting up to `acknowledgementTimeout(Duration)` (five seconds by default) for the broker to confirm.
 
 A confirm alone only proves the broker took the message, not that a queue was bound to receive it, so the sink also watches for `basic.return` and treats a returned message as a failed publish even though a confirm follows it.
