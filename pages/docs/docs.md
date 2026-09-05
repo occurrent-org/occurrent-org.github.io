@@ -5128,7 +5128,7 @@ NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
 {% capture kotlin %}
 data class NameState(val userId: String, val name: String)
 
-val view: View<NameState?, DomainEvent> = view(initialState = null) { state, event ->
+val view: View<NameState?, DomainEvent> = view { state, event ->
     when (event) {
         is NameDefined    -> NameState(event.userId(), event.name)
         is NameWasChanged -> state!!.copy(name = event.name)
@@ -5177,7 +5177,7 @@ To key on something only the delivery carries rather than the event body, derive
 On the Spring MongoDB stack, `View.materialized(...)` hands you a Mongo-backed `MaterializedView` in one call, over the same `MongoOperations` the rest of Occurrent uses. It stores each instance as a document keyed by the id you derive, retries an optimistic-locking clash with a backoff, and ignores a duplicate-key race by default. Point the blocking [subscription DSL](#subscription-dsl)'s `updateView` at it and the view catches up and then follows the live stream like any other subscription:
 
 ```kotlin
-val view: View<NameState?, DomainEvent> = view(initialState = null) { state, event ->
+val view: View<NameState?, DomainEvent> = view { state, event ->
     when (event) {
         is NameDefined    -> NameState(event.userId(), event.name)
         is NameWasChanged -> state!!.copy(name = event.name)
