@@ -5981,7 +5981,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 |:----------|:-------------|
 | `id` | The subscription id (required). |
 | `startAt` | `Projection.StartPosition.BEGINNING`, `NOW`, or `DEFAULT`. Same start-position idea as [`@Subscription`'s `startAt`](#subscription-start-position), but note the constant is named `BEGINNING` here, not `BEGINNING_OF_TIME`. |
-| `startAtPosition` | Start after a specific global or DCB position instead, to rewind a durable read model to a known-good point. Mutually exclusive with a non-default `startAt`. |
+| `startAtGlobalPosition` | Start after a specific global or DCB position instead, to rewind a durable read model to a known-good point. Mutually exclusive with a non-default `startAt`. |
 | `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](#subscription-start-position) as `@Subscription`. |
 | `startupMode` | `DEFAULT`, `WAIT_UNTIL_STARTED`, or `BACKGROUND`, the same [startup-mode idea](#subscription-startup-mode) as `@Subscription`. |
 | `capability` | `AGNOSTIC` (both stream and DCB events) or `STREAM` (stream events only). Only read for a `Projection` factory. A `DcbProjection` factory ignores it and always subscribes over its own `DcbCriteria`. |
@@ -5992,7 +5992,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | `subscriptionModel` / `subscriptionModelName` | Select the feed bean by type or name when `source = PUSH`. |
 | `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
 
-`startAt`, `startAtPosition`, and `resumeBehavior` are mutually exclusive with `mode = SYNCHRONOUS`. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
+`startAt`, `startAtGlobalPosition`, and `resumeBehavior` are mutually exclusive with `mode = SYNCHRONOUS`. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
 
 With both `store` and `storeName` unset, the store resolves by convention: the unique `MaterializedView` bean, then `ViewStateRepository`, then `CrudRepository`, then the Mongo default on the blocking stack. The reactive stack has no Mongo default, so an unset pair only resolves there if a unique `MaterializedView` or `ViewStateRepository` bean exists. Naming a `store` type or a `storeName` with no matching bean is an error, not a silent fall-through to convention.
 
@@ -6037,7 +6037,7 @@ On the MongoDB starter, leaving `store` and `storeName` unset with no matching b
 
 #### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
 
-`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtPosition`, and `resumeBehavior` don't apply in this mode.
+`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, `startAt`, `startAtGlobalPosition`, and `resumeBehavior` don't apply in this mode.
 
 #### Read-your-writes for an asynchronous projection {#projection-annotation-applied-appends}
 
