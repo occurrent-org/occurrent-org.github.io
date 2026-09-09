@@ -6839,6 +6839,16 @@ for (SagaInstance instance : stopped) {
 
 Nothing brings an instance back out of quarantine yet. Read the failure, fix whatever caused it, and when you have decided not to recover the instance, `SagaStateStore.delete(...)` abandons it. A quarantined instance also fires no timeouts, so a saga that relies on a timeout to cancel or compensate does not get that timeout while quarantined.
 
+Writing your own `SagaStateStore` takes two more members before quarantine works on an instance whose state can no longer be decoded, which is what a renamed event class or a changed converter produces. That instance is very often the one you most want quarantined, since it fails on every event addressed to it.
+
+`findWithoutState(sagaId)` reads an instance without decoding its state, answering an envelope whose `state()` is `null` and every other member populated, the way `findByStatus` already does. `compareAndSaveWithoutState(sagaId, envelope, expectedVersion)` writes one back under the same compare-and-set rule as `compareAndSave`, leaving the stored state where it is, so the state the instance stopped on is still there for whoever repairs the converter.
+
+Both are `default` methods that inherit to `find` and `compareAndSave`, so a store that ignores them compiles and runs sagas exactly as before. It just never quarantines an instance it cannot decode, because the runner's own read throws on that instance for the same reason yours does.
+
+Override both or neither. The runner saves what it read, so a store that answers the read without the state and then writes the envelope whole erases the state it was careful not to decode.
+
+`SpringMongoSagaStateStore` overrides both. `SagaStateStore.inMemory()` does not and does not need to, since it holds each envelope as an object rather than a document, so nothing there can fail to decode. `SagaInstances.find(sagaId)` reads through `findWithoutState` too, so looking one instance up by id costs what enumerating them costs and answers for an instance whose state no longer decodes.
+
 Quarantine has two limits. The first is that it needs a subscription model that can be resumed at a chosen position, which means `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel`, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. The wrapper alone is not enough. On any other model the runner switches quarantine off at startup and logs why, and one failing event goes back to blocking every other instance of that saga.
 
 That is deliberate. Quarantining an instance means returning normally, which acknowledges the event to whatever fed it, and on a push feed behind a broker bridge that is what stages the offset and moves past the record. The record would be gone from the broker, and nothing could hand that event to the saga a second time. Between an instance that blocks and an event that can never be asked for again, the runner keeps the event.
