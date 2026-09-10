@@ -768,6 +768,10 @@ means an append that should have been refused is accepted instead. None of it ra
 A store that writes `position` looks for one of those events when it starts and logs a warning naming the repair. The
 query behind that check is answered by the `position` index, so it costs nothing on a store that was never damaged.
 
+Set `requireRepairedEvents(true)` on the store's `EventStoreConfig` if you would rather it refused to start than kept
+accepting conditional appends against a damaged event until you have run the repair. It is off by default, so a store
+warns and starts unless you ask for this.
+
 The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`. A store never
 repairs its own history. A damaged event stays exactly as it is until someone repairs it, while a wrong repair writes
 a plausible value that nothing can take back, and some of the damage cannot be repaired safely at all.
