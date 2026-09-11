@@ -6813,7 +6813,11 @@ One timing constraint comes with the annotation path. A `@Saga` factory can only
 
 A saga has one subscription and every instance of that saga is fed by it, so an event that one instance cannot handle holds up every other instance behind it. Quarantine puts a limit on how long that lasts.
 
-The runner times the failing rather than counting the attempts. The first failure of an event records when it started failing and rethrows, so the subscription redelivers it and the saga tries again. Once that same event has kept failing for that same instance for at least `SagaRunnerConfig.quarantineAfter`, five minutes by default, the instance moves to `SagaStatus.QUARANTINED` and the runner stops rethrowing. The subscription then acknowledges the event and delivers the rest to every other instance.
+The runner times the failing rather than counting the attempts. An instance's first failure records when it started failing and rethrows, so the subscription redelivers the event and the saga tries again. Once that instance has kept failing for at least `SagaRunnerConfig.quarantineAfter`, five minutes by default, it moves to `SagaStatus.QUARANTINED` on whichever event it is failing on then and the runner stops rethrowing. The subscription then acknowledges the event and delivers the rest to every other instance.
+
+The clock belongs to the instance rather than to one event. An instance where two events both fail keeps the instant it started failing, so a second event can reach the budget on its first failure, and `failure()` names whichever event the instance stopped on.
+
+Every way of failing counts. Reading the CloudEvent, working out which instance it belongs to, `evolve`, `react`, your command dispatcher and the state store all do, and an `Error` counts like a `RuntimeException`. The exception is `OutOfMemoryError`, which says the JVM ran out of heap while some instance held the thread rather than anything about that instance, so it is rethrown and the instance keeps its state.
 
 A MongoDB outage does not count as one of those failures. `SpringMongoSagaStateStore` retries every read and write it makes, backing off from 100 ms up to 2 seconds and giving up after ten attempts, so a database that answers again before those run out never reaches the runner as a failure at all. What moves an instance toward quarantine is the saga failing to handle its event, not the store underneath it.
 
@@ -6822,6 +6826,8 @@ Pass your own [RetryStrategy](#retry-configuration-blocking) to the store's five
 A quarantined instance does nothing more. It skips every event addressed to it, its timers stay armed but never fire, and its redelivery watermarks stop moving, so nothing it skipped is recorded as handled.
 
 `failure()` holds what the instance stopped on, which is the failing event's redelivery key, its global position where the feed assigns one, the exception's class name and message, and when the failing started.
+
+One event that blocks the saga stops no instance at all. The runner asks your id extractor which instance an event belongs to before anything else happens, so a converter or an id extractor that throws gives it no instance to quarantine. Such an event gets the same budget, and past it the subscription is let through with an `ERROR` from `SagaExecution` naming the event and what stopped it. Nothing is written for it, so `findByStatus(QUARANTINED, ..)` does not list it and the log line is what you have. The event is untouched, and the runner confirms that before letting the subscription past, so repair the converter or the id extractor and feed the event to the saga again.
 
 {% capture kotlin %}
 val stopped = instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 50)
