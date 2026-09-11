@@ -5116,7 +5116,7 @@ A `View<S, E>` is a pure fold, an initial state and an `evolve` that applies one
 {% capture java %}
 record NameState(String userId, String name) {}
 
-View<NameState, DomainEvent> view = View.create(null, (state, event) -> switch (event) {
+View<NameState, DomainEvent> view = View.create((state, event) -> switch (event) {
     case NameDefined e    -> new NameState(e.userId(), e.name());
     case NameWasChanged e -> new NameState(state.userId(), e.name());
     default               -> state;
