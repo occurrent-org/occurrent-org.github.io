@@ -6635,7 +6635,7 @@ Four things have to hold for that block to end at the quarantine budget, five mi
 
 Where any of them is missing the block is the one every version up to 0.33.0 had. It ends when the retry succeeds, when you abandon the instance with `SagaStateStore.delete(sagaId)`, or when you stop the subscription, which stops the saga rather than only the block. [ADR 128](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0128-a-renamed-or-removed-step-refuses-its-parked-instances.md) has the full set of remedies for an instance parked this way.
 
-[Quarantined Instances](#saga-quarantined-instances) covers all four conditions, names the budget for both `SagaRunnerConfig` and `@Saga`, and says how to switch quarantine off.
+[Quarantined Instances](#saga-quarantined-instances) goes through each of them, names the budget for both `SagaRunnerConfig` and `@Saga`, and says how to switch quarantine off.
 
 What happens at the budget turns on whether the event reached an instance at all. Where the saga routed it, that instance is quarantined on whichever event it stopped on. Where it could not, because the converter or `correlateAll` threw, the event belongs to no instance, so nothing is quarantined and nothing is recorded for you to find later, and the skip is logged at `ERROR` naming the event. Either way the subscription moves past the event and the saga's other instances keep going.
 
@@ -6871,7 +6871,7 @@ Override both or neither. The runner saves what it read, so a store that answers
 
 `SpringMongoSagaStateStore` overrides both. `SagaStateStore.inMemory()` does not and does not need to, since it holds each envelope as an object rather than a document, so nothing there can fail to decode. `SagaInstances.find(sagaId)` reads through `findWithoutState` too, so looking one instance up by id costs what enumerating them costs and answers for an instance whose state no longer decodes.
 
-Quarantine has three limits. The first is that it needs a subscription model that can be resumed at a chosen position, which means `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel`, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. The wrapper alone is not enough. On any other model the runner switches quarantine off at startup and logs why, and one failing event goes back to blocking every other instance of that saga.
+Quarantine has three limits. The first is that it needs a subscription model that can be resumed at a chosen position, which means `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel`, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. The wrapper alone is not enough. A model makes that promise by implementing `HistoryRetainingSubscriptions`, which is the name the startup warning gives. On any other model the runner switches quarantine off at startup and logs why, and one failing event goes back to blocking every other instance of that saga.
 
 That is deliberate. Quarantining an instance means returning normally, which acknowledges the event to whatever fed it, and on a push feed behind a broker bridge that is what stages the offset and moves past the record. The record would be gone from the broker, and nothing could hand that event to the saga a second time. Between an instance that blocks and an event that can never be asked for again, the runner keeps the event.
 
@@ -6879,7 +6879,7 @@ The second limit is that an event the saga cannot recognise a redelivery of is n
 
 An event store that assigns no global position is not one of those. A store built with `withoutStreamPosition()` still gives every event a stream id and a stream version, so a saga on it quarantines like any other and `failure().position()` answers `null`.
 
-The third limit is that the model's promise is checked again for the one event in front of it. A model that can be resumed promises to hold every event it delivers, and the runner still asks about this event before letting the subscription past, so a model that promised wrongly is caught on the event it is about to acknowledge rather than after that event is gone. Where the answer is no, that event is not quarantined and the block lasts as it did before 0.34.0.
+The third limit is that the model's promise is checked again for the one event in front of it. A model that implements it promises to hold every event it delivers, and the runner still asks about this event before letting the subscription past, so a model that promised wrongly is caught on the event it is about to acknowledge rather than after that event is gone. Where the answer is no, that event is not quarantined and the block lasts as it did before 0.34.0.
 
 The question is what acknowledging the event would cost rather than what the source holds at this moment. So the answer stays yes for an event an operator has already erased, since answering no would strand the instance on an event nobody can supply.
 
