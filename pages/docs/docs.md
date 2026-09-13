@@ -6634,7 +6634,7 @@ Four things have to hold for that block to end at the quarantine budget, five mi
 
 Where any of them is missing the block is the one every version up to 0.33.0 had. It ends when the retry succeeds, when you abandon the instance with `SagaStateStore.delete(sagaId)`, or when you stop the subscription, which stops the saga rather than only the block. [ADR 128](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0128-a-renamed-or-removed-step-refuses-its-parked-instances.md) has the full set of remedies for an instance parked this way.
 
-[Quarantined Instances](#saga-quarantined-instances) covers all four conditions, names the budget for both `SagaRunnerConfig` and `@Saga`, and says how to switch quarantine off.
+[Quarantined Instances](#saga-quarantined-instances) goes through each of them, names the budget for both `SagaRunnerConfig` and `@Saga`, and says how to switch quarantine off.
 
 What happens at the budget turns on whether the event reached an instance at all. Where the saga routed it, that instance is quarantined on whichever event it stopped on. Where it could not, because the converter or `correlateAll` threw, the event belongs to no instance, so nothing is quarantined and nothing is recorded for you to find later, and the skip is logged at `ERROR` naming the event. Either way the subscription moves past the event and the saga's other instances keep going.
 
