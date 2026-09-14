@@ -103,7 +103,8 @@ if (document.location.pathname.includes("/documentation")) {
         "subscription-model-capabilities" : "0.33.0",
         "push-subscription-blocking-observer" : "0.34.0",
         "broker-subscriptions-blocking" : "0.34.0",
-        "projection-annotation-applied-appends" : "0.34.0"
+        "projection-annotation-applied-appends" : "0.34.0",
+        "deriving-the-event-filter" : "0.34.0"
         // "validator-nullability": "3.1.0",
         // "shared-state": "3.2.0",
         // "vue-directory-location": "3.5.0",
