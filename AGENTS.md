@@ -20,6 +20,10 @@ When you document a feature that ships in a release, add its id and version here
 
 Human-facing prose (documentation, news posts, PR descriptions) follows Johan's writing style: direct, concrete, no corporate filler. Do not use em-dashes, en-dashes, or semicolons in prose, recast with commas, periods, or parentheses. Johan drives this with the `johan-writing` skill.
 
+## Writing for people
+
+**Write `pages/docs/docs.md` and the news posts the way you would explain the change to another developer out loud.** Plain words, no term standing in for a plain statement the reader can act on, and nothing beyond what they need in order to act. A paragraph that needs a second reading gets rewritten, not extended.
+
 ## Release workflow
 
 Documentation for an unreleased Occurrent feature lives on its own branch, one branch and pull request per feature, and is held until the matching library release ships. `main` tracks the released site, so do not push feature documentation straight to `main`.
