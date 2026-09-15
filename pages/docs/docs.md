@@ -5116,19 +5116,19 @@ A `View<S, E>` is a pure fold, an initial state and an `evolve` that applies one
 {% capture java %}
 record NameState(String userId, String name) {}
 
-View<NameState, DomainEvent> view = View.create(null, (state, event) -> switch (event) {
+View<@Nullable NameState, DomainEvent> view = View.create((state, event) -> switch (event) {
     case NameDefined e    -> new NameState(e.userId(), e.name());
     case NameWasChanged e -> new NameState(state.userId(), e.name());
     default               -> state;
 });
 
 // Applying a list of events gives the current state, which is all a unit test needs
-NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
+@Nullable NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
 {% endcapture %}
 {% capture kotlin %}
 data class NameState(val userId: String, val name: String)
 
-val view: View<NameState?, DomainEvent> = view(initialState = null) { state, event ->
+val view: View<NameState?, DomainEvent> = view { state, event ->
     when (event) {
         is NameDefined    -> NameState(event.userId(), event.name)
         is NameWasChanged -> state!!.copy(name = event.name)
@@ -5139,6 +5139,8 @@ val view: View<NameState?, DomainEvent> = view(initialState = null) { state, eve
 val current: NameState? = view.evolveAll(nameDefined, nameWasChanged)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Neither example passes an initial state, so the fold starts from `null` and the state is typed nullable, `@Nullable NameState` in Java and `NameState?` in Kotlin. Pass one with `View.create(initialState, ...)` or `view(initialState) { }` when the fold has a natural starting value.
 
 A view can also handle the delivering event's metadata, its stream id and version, global position, and CloudEvent extensions, through the metadata-carrying `evolve(state, metadata, event)` (`View.create(initialState, (state, metadata, event) -> ...)` in Java, `view(initialState) { state, metadata, event -> ... }` in Kotlin). The event-only form applies the event with empty metadata. That lets a view key on the stream id or the global position without carrying either in the event payload. Metadata support was added in 0.31.0.
 
@@ -5177,7 +5179,7 @@ To key on something only the delivery carries rather than the event body, derive
 On the Spring MongoDB stack, `View.materialized(...)` hands you a Mongo-backed `MaterializedView` in one call, over the same `MongoOperations` the rest of Occurrent uses. It stores each instance as a document keyed by the id you derive, retries an optimistic-locking clash with a backoff, and ignores a duplicate-key race by default. Point the blocking [subscription DSL](#subscription-dsl)'s `updateView` at it and the view catches up and then follows the live stream like any other subscription:
 
 ```kotlin
-val view: View<NameState?, DomainEvent> = view(initialState = null) { state, event ->
+val view: View<NameState?, DomainEvent> = view { state, event ->
     when (event) {
         is NameDefined    -> NameState(event.userId(), event.name)
         is NameWasChanged -> state!!.copy(name = event.name)
@@ -5621,12 +5623,12 @@ There are two ways to write a saga, and both produce the same `Saga<E, S, C>`, s
 
 ### The Core DSL {#saga-core-dsl}
 
-The core DSL is `Saga.builder(initialState)` in Java and `saga(initialState) { }` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state when the fold needs one and take none when it starts from `null`, in which case the state is typed nullable, `@Nullable S` in Java and `S?` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
 
 Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
 
 {% capture kotlin %}
-val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand>(initialState = null) {
+val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand> {
     correlateAll { it.orderId }
     startsOn<OrderPlaced>()
     evolve<OrderPlaced> { _, e -> AwaitingPayment(e.orderId) }
@@ -5650,8 +5652,8 @@ val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand>(initialSt
 }
 {% endcapture %}
 {% capture java %}
-Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment =
-        Saga.<OrderEvent, OrderSagaState, OrderCommand>builder(null)
+Saga<OrderEvent, @Nullable OrderSagaState, OrderCommand> orderFulfillment =
+        Saga.<OrderEvent, OrderSagaState, OrderCommand>builder()
                 .correlateAll(OrderEvent::orderId)
                 .startsOn(OrderPlaced.class)
                 .evolve(OrderPlaced.class, (state, e) -> new AwaitingPayment(e.orderId()))
@@ -6185,7 +6187,7 @@ A saga can also select on more than its declared event types, or subscribe on so
 `narrowingFilter(Filter)` is combined (ANDed) with the selector `eventTypes()` derives, so the saga keeps asking for its own declared types and also requires your condition, on subject, source, data or time:
 
 {% capture java %}
-Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
+Saga.<OrderEvent, OrderState, OrderCommand>builder()
         .correlateAll(OrderEvent::orderId)
         .startsOn(OrderEvent.class)
         .react(OrderEvent.class, (state, event) -> ...)
@@ -6207,7 +6209,7 @@ Because a selector is still derived, the hierarchy check from [Declared Event Ty
 `replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. This is the way out when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, since reflection cannot tell that mapper apart from the default one, and declaring the concrete types would not help either, as they all collapse to the same string:
 
 {% capture java %}
-Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
+Saga.<OrderEvent, OrderState, OrderCommand>builder()
         .correlateAll(OrderEvent::orderId)
         .startsOn(OrderEvent.class)
         .react(OrderEvent.class, (state, event) -> ...)
