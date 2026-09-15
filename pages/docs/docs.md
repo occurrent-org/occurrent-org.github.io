@@ -3678,6 +3678,10 @@ RabbitMQ's own dead-lettering, where a rejected message is moved to another exch
 
 A single RabbitMQ queue preserves the order events were published in, so a projection that handles one stream in order needs nothing further here.
 
+Each bridge handles its deliveries on a thread of its own, one at a time and in the order the broker sent them. The RabbitMQ client runs every consumer on a connection from one shared pool of threads, so a bridge only hands a delivery over to its own thread there. A handler waiting on a database that is down holds up its own bridge and never another bridge built on the same `Connection`.
+
+`close()` waits up to `closeTimeout(Duration)`, thirty seconds by default, for a delivery already being handled. A delivery it didn't finish was never acknowledged, so RabbitMQ delivers it again.
+
 `RabbitMqDomainEventBridge<E>` and `RabbitMqDomainEventSink<E>` are the domain-level counterparts, built with the same builder shape and `RabbitMqDomainEventSink.using(cloudEventSink, cloudEventConverter)` respectively.
 
 ##### Kafka {#broker-kafka}
