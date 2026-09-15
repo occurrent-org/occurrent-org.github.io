@@ -6637,7 +6637,9 @@ Where any of them is missing the block is the one every version up to 0.33.0 had
 
 [Quarantined Instances](#saga-quarantined-instances) goes through each of them, names the budget for both `SagaRunnerConfig` and `@Saga`, and says how to switch quarantine off.
 
-What happens at the budget turns on whether the event reached an instance at all. Where the saga routed the event to an instance, the runner quarantines that instance, on whichever event the instance stopped on. Where the converter or `correlateAll` threw instead, the event belongs to no instance, so nothing is quarantined and nothing is recorded for you to find later, and the skip is logged at `ERROR` naming the event. Either way the subscription moves past the event and the saga's other instances keep going.
+Only an event that reached an instance can end the block. Where the saga routed the event to an instance, the runner quarantines that instance at the budget, on whichever event the instance stopped on, and the subscription moves past the event so the saga's other instances keep going.
+
+Where the converter or `correlateAll` threw instead, the runner never lets the subscription past the event, whatever the budget, because an event it cannot route may still belong to an instance and acknowledging it would lose it. Every instance of the saga waits behind it, the refusal is logged at `WARN` and then at `ERROR` once per budget naming the event, and once you repair the converter or `correlateAll` the event is applied in the order it was written.
 
 On the timer path the poller catches whatever the reaction throws, per instance, logs it, and leaves the timer due for the next poll, so a stuck timer never blocks the poller. Nothing isolates it from the saga's other instances, though. A poll fires at most `timerBatchLimit` instances, a hundred by default, and nothing in `findWithDueTimers` requires a store to give a different instance a turn, so once a hundred instances cannot fire their timers the saga can stop firing timers altogether. A hundred is enough rather than more than a hundred, since a batch full of them leaves no place for anything else. Raising `timerBatchLimit` is the only lever you have today, and [issue 1003](https://github.com/johanhaleby/occurrent/issues/1003) is where that is being fixed. The timer stays armed throughout and a successful fire restores the full poll rate, so an instance whose downstream comes back needs nothing done to it.
 
@@ -6829,7 +6831,7 @@ The runner times the failing rather than counting the attempts. An instance's fi
 
 The clock belongs to the instance rather than to one event. An instance where two events both fail keeps the instant it started failing, so a second event can reach the budget on its first failure, and `failure()` names whichever event the instance stopped on.
 
-Every way of failing counts. Reading the CloudEvent, working out which instance it belongs to, `evolve`, `react`, your command dispatcher and the state store all do, and an `Error` counts like a `RuntimeException`. The exception is `OutOfMemoryError`, which says the JVM ran out of heap while some instance held the thread rather than anything about that instance, so it is rethrown and the instance keeps its state.
+Every way of failing counts once the saga knows which instance the event belongs to. Checking for a redelivery, `evolve`, `react`, your command dispatcher and the state store all do, and an `Error` counts like a `RuntimeException`. The exception is `OutOfMemoryError`, which says the JVM ran out of heap while some instance held the thread rather than anything about that instance, so it is rethrown and the instance keeps its state.
 
 A MongoDB outage does not count as one of those failures. `SpringMongoSagaStateStore` retries every read and write it makes, backing off from 100 ms up to 2 seconds and giving up after ten attempts, so a database that answers again before those run out never reaches the runner as a failure at all. What moves an instance toward quarantine is the saga failing to handle its event, not the store underneath it.
 
@@ -6839,7 +6841,9 @@ A quarantined instance does nothing more. It skips every event addressed to it, 
 
 `failure()` holds what the instance stopped on, which is the failing event's redelivery key, its global position where the feed assigns one, the exception's class name and message, and when the failing started.
 
-One event that blocks the saga stops no instance at all. The runner asks your id extractor which instance an event belongs to before anything else happens, so a converter or an id extractor that throws gives it no instance to quarantine. Such an event gets the same budget, and past it the subscription is let through with an `ERROR` from `SagaExecution` naming the event and what stopped it. Nothing is written for it, so `findByStatus(QUARANTINED, ..)` does not list it and the log line is what you have. Letting the subscription past is not what removes the event, and the runner confirms that before it does so, so wherever your source still has the event, repair the converter or the id extractor and feed it to the saga again. That check asks what the acknowledgement costs rather than what the source holds right now, so it does not promise the event is there.
+One event that blocks the saga stops no instance at all. The runner asks your id extractor which instance an event belongs to before anything else happens, so a converter or an id extractor that throws gives it no instance to quarantine. Such an event is never let past, whatever the budget, because it may still belong to an instance and acknowledging it would lose it. Every instance of the saga waits behind it, and `SagaExecution` logs a `WARN` on the first failure and an `ERROR` once per budget after that, naming the event and what stopped it.
+
+Nothing is written for that event, so `findByStatus(QUARANTINED, ..)` does not list it. Repair the converter or the id extractor and the saga applies the event in the order it was written, with nothing to feed to it again.
 
 {% capture kotlin %}
 val stopped = instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 50)
