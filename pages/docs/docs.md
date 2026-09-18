@@ -6825,7 +6825,7 @@ One timing constraint comes with the annotation path. A `@Saga` factory can only
 
 #### Quarantined Instances {#saga-quarantined-instances}
 
-A saga has one subscription and every instance of that saga is fed by it, so an event that one instance cannot handle holds up every other instance behind it. Quarantine puts a limit on how long that lasts.
+A saga has one subscription and every instance of that saga is fed by it, so an event that one instance cannot handle holds up every other instance behind it for as long as your subscription model offers that event again. Quarantine puts a limit on how long that lasts.
 
 The runner times the failing rather than counting the attempts. An instance's first failure records when it started failing and rethrows, so a subscription model that offers the event again lets the saga try again. Once that instance has kept failing for at least `SagaRunnerConfig.quarantineAfter`, five minutes by default, it moves to `SagaStatus.QUARANTINED` on whichever event it is failing on then and the runner stops rethrowing. The subscription then acknowledges the event and delivers the rest to every other instance.
 
