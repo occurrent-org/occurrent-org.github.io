@@ -6629,7 +6629,7 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
 
-A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. A broker bridge need not, since `DeliveryFailurePolicy` is where its choice of what to do with a failed delivery is configured. The subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it.
+A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again. Whether it does is the model's own business, your listener's call on a push feed and a `DeliveryFailurePolicy` setting on a broker bridge. The subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it.
 
 Four things have to hold for that block to end at the quarantine budget, five minutes of that instance failing by default. The budget has to be set. The subscription model has to guarantee it holds every event it delivers. The event has to arrive with a stream id and version or a global position. And the model has to confirm, for that one event, that acknowledging it is not what would destroy the last copy of it.
 
