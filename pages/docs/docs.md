@@ -6887,7 +6887,7 @@ The third limit is that the model's promise is checked again for the one event i
 
 The question is what acknowledging the event would cost rather than what the source holds at this moment. So the answer stays yes for an event an operator has already erased, since answering no would strand the instance on an event nobody can supply.
 
-Set the budget to `null` and the runner never quarantines. It keeps rethrowing, and one failing event blocks the saga's other instances for as long as it keeps failing.
+Set the budget to `null` and the runner never quarantines. It keeps refusing the event, and one failing event blocks the saga's other instances for as long as your subscription model keeps offering it.
 
 {% capture kotlin %}
 val config = SagaRunnerConfig.defaults().withQuarantineAfter(null)
