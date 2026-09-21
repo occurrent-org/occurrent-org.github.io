@@ -6769,7 +6769,9 @@ A `SagaInstance` carries the id, the `SagaStatus`, the created, updated, and com
 
 The status is `ACTIVE`, `COMPLETED`, or `QUARANTINED`. A quarantined instance stopped on an event it could not handle, so it is neither running nor finished, and [Quarantined Instances](#saga-quarantined-instances) below says what to do with one.
 
-`failure()` answers `null` for an instance that is failing on nothing. On an `ACTIVE` instance a non-null answer means an event has failed at least once and the instance has not been quarantined, which can still be true after the budget has run out. On a `QUARANTINED` one it means the instance stopped there.
+`failure()` answers `null` for an instance that has no failure recorded. That does not mean the instance is not failing, because the runner records a failure only while a quarantine budget is in force, and it switches the budget off at startup on a subscription model that cannot guarantee it holds every event it delivers.
+
+On an `ACTIVE` instance a non-null answer means an event has failed at least once and the instance has not been quarantined, which can still be true after the budget has run out. On a `QUARANTINED` one it means the instance stopped there.
 
 It leaves out the saga's own state and the executor's delivery bookkeeping on purpose. A read model shaped for querying belongs in the [Projection DSL](#views), and reaching into a saga's private state from outside ties your code to how that process happens to be written.
 
@@ -6829,7 +6831,7 @@ A saga has one subscription and every instance of that saga is fed by it. An ins
 
 What the failing event holds up in the meantime is decided by whatever feeds the subscription, and the javadoc on `SagaStatus.QUARANTINED` says what that can be.
 
-The runner times the failing rather than counting the attempts. An instance's first failure tries to write down when it started failing, and rethrows whether or not that write succeeds, so a subscription model that offers the event again lets the saga try again. Where nothing was recorded, the next delivery decides on whatever the store holds then. Once that instance has kept failing for at least `SagaRunnerConfig.quarantineAfter`, five minutes by default, it can move to `SagaStatus.QUARANTINED` on whichever event it is failing on then, and when it does the runner stops rethrowing.
+The runner times the failing rather than counting the attempts. Where a quarantine budget is in force, an instance's first failure tries to write down when it started failing, and rethrows whether or not that write succeeds, so a subscription model that offers the event again lets the saga try again. Where nothing was recorded, the next delivery decides on whatever the store holds then. Once that instance has kept failing for at least `SagaRunnerConfig.quarantineAfter`, five minutes by default, it can move to `SagaStatus.QUARANTINED` on whichever event it is failing on then, and when it does the runner stops rethrowing.
 
 Reaching the budget is not enough on its own. The javadoc on `SagaStatus.QUARANTINED` lists what else has to hold, so an instance past its budget can still be `ACTIVE`. Read its status rather than working it out from the time.
 
