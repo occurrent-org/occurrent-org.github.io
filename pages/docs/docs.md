@@ -6835,7 +6835,7 @@ The clock belongs to the instance rather than to one event. An instance where tw
 
 Every way of failing counts once the saga knows which instance the event belongs to. Checking for a redelivery, `evolve`, `react`, your command dispatcher and the state store all do, and an `Error` counts like a `RuntimeException`. The exception is `OutOfMemoryError`, which says the JVM ran out of heap while some instance held the thread rather than anything about that instance, so it is rethrown and the instance keeps its state.
 
-A MongoDB outage does not count as one of those failures. `SpringMongoSagaStateStore` retries every read and write it makes, backing off from 100 ms up to 2 seconds and giving up after ten attempts, so a database that answers again before those run out never reaches the runner as a failure at all. What moves an instance toward quarantine is the saga failing to handle its event, not the store underneath it.
+A short MongoDB outage never reaches the runner as a failure. `SpringMongoSagaStateStore` retries every read and write it makes, backing off from 100 ms up to 2 seconds and giving up after ten attempts, so a database that answers again before those run out is not a failure at all. A longer outage does count, but the quarantine is written to that same database, so it quarantines nothing while the outage lasts.
 
 Pass your own [RetryStrategy](#retry-configuration-blocking) to the store's five-argument constructor to change that, or `RetryStrategy.none()` to have every failure reach the runner on the first attempt. A `@Saga` that declares no store of its own gets the default, since the Spring Boot starter builds the store the same way.
 
