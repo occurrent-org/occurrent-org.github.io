@@ -6827,7 +6827,7 @@ One timing constraint comes with the annotation path. A `@Saga` factory can only
 
 A saga has one subscription and every instance of that saga is fed by it, so an event that one instance cannot handle holds up every other instance behind it for as long as your subscription model offers that event again. Quarantine can put a limit on how long that lasts.
 
-The runner times the failing rather than counting the attempts. An instance's first failure writes down when it started failing and rethrows, so a subscription model that offers the event again lets the saga try again. Where that write loses a compare-and-set nothing is recorded and the next failure is a first failure again. Once that instance has kept failing for at least `SagaRunnerConfig.quarantineAfter`, five minutes by default, it can move to `SagaStatus.QUARANTINED` on whichever event it is failing on then, and when it does the runner stops rethrowing.
+The runner times the failing rather than counting the attempts. An instance's first failure writes down when it started failing and rethrows, so a subscription model that offers the event again lets the saga try again. Where that write loses a compare-and-set that delivery records nothing, and what the next one finds is whatever the writer that won left. Once that instance has kept failing for at least `SagaRunnerConfig.quarantineAfter`, five minutes by default, it can move to `SagaStatus.QUARANTINED` on whichever event it is failing on then, and when it does the runner stops rethrowing.
 
 Reaching the budget is not enough on its own. The javadoc on `SagaStatus.QUARANTINED` lists what else has to hold, so an instance past its budget can still be `ACTIVE`. Read its status rather than working it out from the time.
 
