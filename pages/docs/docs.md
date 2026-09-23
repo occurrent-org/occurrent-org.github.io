@@ -6582,11 +6582,7 @@ A saga that has run before picks up where it left off either way, because its pe
 
 ##### Forward the Occurrent extensions
 
-A saga recognizes a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. That pair, or the position, is the event's redelivery key. A broker delivers at least once, so an event with none of those would make the saga react a second time and issue its commands again on every redelivery.
-
-The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs, instead of acknowledging it. What happens to the event after that is up to your feed. Whatever the feed does, the listener that dropped the metadata sees the exception, and that listener is where it can be fixed.
-
-Occurrent's own stored events always have the extensions, so this only happens with events your listener forwards without them.
+A saga recognizes a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. A broker delivers at least once, so an event carrying none of those would make the saga react a second time and issue its commands again on every redelivery. The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs. The event goes unacknowledged, so the problem lands at the listener that dropped the metadata, which is where it can be fixed. Occurrent's own stored events always carry the extensions, so this is about what your listener forwards, not about the event store.
 
 Your feed might carry none of that redelivery metadata, another application's broker for example, while every command the saga issues is still safe to receive more than once. When both are true, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always carry the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
 
@@ -6632,37 +6628,7 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
 
-When a `SagaConcurrencyException` exhausts its compare-and-set retries on a live event, the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
-
-Whether the event is offered again, and which other events wait behind it, depends on what feeds the subscription. On a push feed your listener decides both. On a broker bridge the bridge's `DeliveryFailurePolicy` setting decides whether the event is offered again.
-
-When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka bridge delays at most the later records in that record's partition, and it delays nothing once it has parked the record under `PARK`. The RabbitMQ bridge delays no other message once it has requeued the failed one under `REDELIVER` or parked it under `PARK`.
-
-Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either bridge.
-
-An instance that keeps failing can be quarantined, which means it skips every later event addressed to it. That can happen once it has been failing for its quarantine budget, `SagaRunnerConfig.quarantineAfter`, five minutes by default.
-
-An instance that is not quarantined keeps failing for as long as the model keeps offering the event. That ends when the retry succeeds, when you abandon the instance with `SagaStateStore.delete(sagaId)`, or when you stop the subscription, which stops the whole saga rather than only the failing instance.
-
-[Quarantined Instances](#saga-quarantined-instances) says what else has to be true before an instance is quarantined, how to set the budget for both `SagaRunnerConfig` and `@Saga`, and how to switch quarantine off.
-
-Only an event the saga routed to an instance can be quarantined. When the converter or `correlate`/`correlateAll` throws, the saga cannot tell which instance the event belongs to, so there is no instance to quarantine.
-
-The runner refuses such an event on every delivery, whatever the budget, because it may still belong to an instance and acknowledging it would lose it. Nothing is written to the state store for it, so no `SagaInstance` shows it.
-
-The first refusal is logged at `WARN`. After that it is logged at `ERROR` once per interval for as long as the model keeps offering the event. The interval is the quarantine budget when one is configured and five minutes when none is. A model that does not offer the event again gets only the `WARN`.
-
-Where the model does offer the event again, fix the converter or the correlation and the saga applies the event in the order it was written, with nothing to feed it by hand.
-
-On the timer path the poller catches what the reaction throws, logs it at `WARN` and leaves the timer due, so one failing timer does not stop the poller. A failing timer never quarantines its instance and records no failure. An `OutOfMemoryError` is not caught per instance, so it ends that poll for every instance after it.
-
-A failing timer can still keep other instances' timers from firing. A poll fires at most `timerBatchLimit` instances, 100 by default, and `findWithDueTimers` does not require a store to give a different instance a turn. Once 100 instances keep failing their timers, every poll can pick those same 100, and then no other instance's timer fires.
-
-`timerBatchLimit` is set through the `SagaRunnerConfig` constructor, and there is no Spring Boot property for it. [Issue 1003](https://github.com/johanhaleby/occurrent/issues/1003) is where the missing turn-taking is being added.
-
-A failing timer stays armed, so once its reaction stops failing a later poll fires it and the instance needs nothing done to it.
-
-Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
+A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so a stuck timer never blocks the poller. Nothing isolates it from the saga's other instances, though. A poll fires at most `timerBatchLimit` instances, a hundred by default, and nothing in `findWithDueTimers` requires a store to give a different instance a turn, so once a hundred instances cannot fire their timers the saga can stop firing timers altogether. [Issue 1003](https://github.com/johanhaleby/occurrent/issues/1003) is where that is being fixed. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
 A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`. The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
 
