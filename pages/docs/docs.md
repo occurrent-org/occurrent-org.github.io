@@ -6586,7 +6586,7 @@ A saga recognizes a redelivered event by its `streamid` together with its `strea
 
 The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs, instead of acknowledging it. What happens to the event after that is up to your feed. Whatever the feed does, the listener that dropped the metadata sees the exception, and that listener is where it can be fixed.
 
-Occurrent's own stored events always have the extensions, so this is about what your listener forwards, not about the event store.
+Occurrent's own stored events always have the extensions, so this only happens with events your listener forwards without them.
 
 Your feed might carry none of that redelivery metadata, another application's broker for example, while every command the saga issues is still safe to receive more than once. When both are true, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always carry the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
 
@@ -6632,15 +6632,15 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
 
-A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
+When a `SagaConcurrencyException` exhausts its compare-and-set retries on a live event, the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
 
 Whether the event is offered again, and which other events wait behind it, depends on what feeds the subscription. On a push feed your listener decides both. On a broker bridge the bridge's `DeliveryFailurePolicy` setting decides whether the event is offered again.
 
-When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka bridge holds back at most that record's partition, and nothing once it has parked the record under `PARK`. The RabbitMQ bridge holds nothing back once it has requeued the message under `REDELIVER` or parked it under `PARK`.
+When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka bridge delays at most the later records in that record's partition, and it delays nothing once it has parked the record under `PARK`. The RabbitMQ bridge delays no other message once it has requeued the failed one under `REDELIVER` or parked it under `PARK`.
 
 Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either bridge.
 
-An instance that keeps failing can be quarantined instead, once it has been failing for the quarantine budget, five minutes by default.
+An instance that keeps failing can be quarantined, which means it skips every later event addressed to it. That can happen once it has been failing for its quarantine budget, `SagaRunnerConfig.quarantineAfter`, five minutes by default.
 
 An instance that is not quarantined keeps failing for as long as the model keeps offering the event. That ends when the retry succeeds, when you abandon the instance with `SagaStateStore.delete(sagaId)`, or when you stop the subscription, which stops the whole saga rather than only the failing instance.
 
