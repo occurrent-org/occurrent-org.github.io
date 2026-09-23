@@ -6881,6 +6881,21 @@ occurrent:
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java)
 to find which configuration properties that are supported.
 
+The settings that only apply to a MongoDB event store or a MongoDB subscription model have `mongodb` in their key:
+
+| Key | Default | Deprecated key it replaces |
+|:---|:---|:---|
+| `occurrent.event-store.mongodb.collection` | `events` | `occurrent.event-store.collection` |
+| `occurrent.event-store.mongodb.time-representation` | `DATE` | `occurrent.event-store.time-representation` |
+| `occurrent.subscription.mongodb.collection` | `subscriptions` | `occurrent.subscription.collection` |
+| `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` | `true` | `occurrent.subscription.restart-on-change-stream-history-lost` |
+
+The deprecated keys are the ones Occurrent used up to 0.33.0. They still work in 0.34.0 and will be removed two releases after it.
+
+You can set both the old and the new key as long as they have the same value. That way an old key you have not found yet, in an environment variable for example, does not break a configuration you have already migrated. If the two values differ, the application fails at startup with an error that names both keys.
+
+The `org.occurrent.UpgradeToOccurrent_0_34` OpenRewrite recipe renames the keys in your `.properties` and `.yaml` files, as described in [section 4 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb). It cannot see environment variables such as `OCCURRENT_EVENT_STORE_COLLECTION`, so search your deployment configuration for those yourself.
+
 ### Deferring Subscription Startup {#deferring-subscription-startup}
 
 By default the starter creates every subscription and starts it during context refresh, before your application is ready to receive requests. `occurrent.subscription.mode` controls whether that happens at all:
