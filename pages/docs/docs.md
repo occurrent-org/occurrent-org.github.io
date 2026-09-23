@@ -2136,7 +2136,7 @@ fun accountSnapshot(): SnapshotView<AccountState, AccountEvent> = snapshotView(A
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The subscription that keeps the snapshot up to date is filtered to the event types the `SnapshotView` registers handlers for, derived as described in [Deriving the Event Filter](#deriving-the-event-filter). A type that section lists as refused fails Spring Boot startup.
+The subscription that keeps the snapshot up to date is filtered to the event types the `SnapshotView` registers handlers for, derived as described in [Deriving the Event Filter](#deriving-the-event-filter). If the `SnapshotView` registers a handler for a type listed as refused in that section, Spring Boot startup fails.
 
 <div class="comment">The declarative <code>@Snapshot</code> annotation works on both the blocking and reactor stacks, for stream and DCB. The DSL executors below are the programmatic path when you would rather not use the annotation.</div>
 
@@ -5051,7 +5051,7 @@ subscriptions.subscribe("gameStarted", GameStarted.class, gameStarted -> {
 For this to work, your domain events must all "implement" a `DomainEvent` interface (or a sealed class in Kotlin). Note that `DomainEvent` is something you create yourself, 
 it's not something that is provided by Occurrent.
 
-`subscribe(..)` derives the subscription filter from the event types you name, as described in [Deriving the Event Filter](#deriving-the-event-filter). A type that section lists as refused makes the `subscribe(..)` call throw.
+`subscribe(..)` derives the subscription filter from the event types you name, as described in [Deriving the Event Filter](#deriving-the-event-filter). If you name a type listed as refused in that section, `subscribe(..)` throws.
 
 As of version 0.17.0 you can also get metadata (such as stream version, stream id and all other cloud event extension properties) when consuming an event:
 
@@ -5080,7 +5080,7 @@ GameStarted event1 = domainQueries.queryOne(GameStarted.class); // Find the firs
 GamePlayed event2 = domainQueries.queryOne(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")); // Find event with this id
 ```
 
-`query(GameStarted.class, GameEnded.class)` and the `Collection` overloads derive a filter from the types you list, as described in [Deriving the Event Filter](#deriving-the-event-filter). A type that section lists as refused makes each query that names it throw.
+`query(GameStarted.class, GameEnded.class)` and the `Collection` overloads derive a filter from the types you list, as described in [Deriving the Event Filter](#deriving-the-event-filter). If a query names a type listed as refused in that section, the query throws.
 
 Given a `null` or empty collection, these overloads return no events. [Empty Still Means Empty on a Query](#derived-filter-empty) says how that differs from a projection.
 
@@ -6170,7 +6170,7 @@ A saga's event types are also its subscription filter. Occurrent takes the types
 
 The types are expanded and checked as described in [Deriving the Event Filter](#deriving-the-event-filter). A saga declaring a sealed `OrderEvent` receives the concrete events stored under it (before 0.33.0 the filter asked only for `OrderEvent`'s own CloudEvent type, so with the mappers Occurrent ships the saga received nothing).
 
-A type that section lists as refused makes `build()` throw `IllegalArgumentException` naming the type.
+If a saga declares a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), `build()` throws `IllegalArgumentException` naming the type.
 
 To fix a refused declaration, [seal the hierarchy](#derived-filter-seal) or [declare the concrete types](#derived-filter-concrete). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
@@ -7115,7 +7115,7 @@ For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` 
 
 The filter Occurrent derives from a sealed type names the declared type as well as the concrete types it permits. That only matters if you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto the type string of the type it was declared with, because such a subscription used to receive nothing at all. No mapper Occurrent ships stores an event under a sealed interface's own type, so nothing changes for the default setup.
 
-A declared type that [Deriving the Event Filter](#deriving-the-event-filter) lists as refused fails Spring Boot startup. The message names the type and points you at `eventTypes()`. The same section has a table of when each of the other places refuses one.
+If you declare a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), Spring Boot startup fails. The message names the type and points you at `eventTypes()`. The same section has a table of when each of the other places refuses one.
 
 #### Event Metadata
 
