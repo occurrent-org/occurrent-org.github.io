@@ -776,7 +776,7 @@ it looks for a string `position` in the `position` index and finds none.
 The check only finds a damaged `position`, so a startup without the warning does not rule out the damage
 described under [what the repair cannot find](#update-event-repair-limits).
 
-To make the store refuse to start while the collection holds damaged events, set `requireRepairedEvents(true)` on its
+To make the store refuse to start when it finds a string `position`, set `requireRepairedEvents(true)` on its
 `EventStoreConfig.Builder`. It is off by default.
 
 The Spring Boot starters have no property for `requireRepairedEvents`, so there you define your own `EventStoreConfig`
@@ -854,10 +854,14 @@ from scratch. One dropped the `dcbtags` extension, leaving a document that no lo
 The other dropped the `position` of a plain stream event, leaving a document that looks like an event written before
 `position` existed.
 
-A store that finds events without a `position` at startup warns, or refuses to start, with a message that points at the
-[position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md).
-The same message tells you to read the repair runbook first if your application called `updateEvent` on 0.33.0 or
-earlier. The position backfill gives every event without a `position` a new one, so an event whose `position` an update
+A store that writes `position` also runs a separate startup check, for events with no `position` at all. It logs a
+warning when it finds one, or refuses to start when `requireBackfilledPosition(true)` is set on its
+`EventStoreConfig.Builder`.
+
+The warning and the refusal both point at the
+[position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md),
+and tell you to read the repair runbook first if your application called `updateEvent` on 0.33.0 or earlier.
+The position backfill gives every event without a `position` a new one, so an event whose `position` an update
 function dropped would get a position it never had, and that can't be undone.
 
 ##### Events the repair reports instead of fixing {#update-event-repair-unrecoverable}
@@ -880,9 +884,11 @@ gets its tag index back, which is a repair, while its position stays gone.
 
 `unrecoverableEventCount()` counts events rather than findings, so an event with two things wrong with it counts once.
 
-A run is clean only when both `unrecoverableEventCount()` and `eventsWithLostPosition()` are zero.
-The repair counts `eventsWithLostPosition()` from the collection when the run finishes, so it also counts events an
-earlier run already rebuilt the tag index of.
+`eventsWithLostPosition()` counts the events in the collection that have DCB tags and no `position` at all. A run is
+clean only when it and `unrecoverableEventCount()` are both zero.
+
+It's counted from the collection when the run finishes, so it includes events whose tag index an earlier run already
+rebuilt.
 
 ### Stream Filtering {#eventstore-stream-filtering}
 
