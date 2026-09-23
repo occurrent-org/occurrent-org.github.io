@@ -5235,6 +5235,10 @@ That safety has a limit though. Every event the filter admits is still converted
 
 When you need to select on more than the event type, for example a subject, a source, or a time range, set an explicit `filter(...)` on the builder.
 
+Leave out the initial state when the fold has no natural starting value. `Projection.<CourseSummary, CourseEvent, String>builder()` in Java and `projection<CourseSummary, CourseEvent, String> { }` in Kotlin start the fold from `null`, so the state is typed nullable, `@Nullable CourseSummary` in Java and `CourseSummary?` in Kotlin.
+
+The single-instance builders below take the same form, `singletonBuilder()` and `singletonProjection { }`, and so does a snapshot view, with `SnapshotView.builder()` and `snapshotView { }`.
+
 ### Single-instance projections
 
 Whether a projection needs an `id` comes down to how many views it maintains. A leaderboard built from every player's events is one view over the whole stream, so it is single-instance and needs no `id`. A per-player profile is one view per player, keyed by player id, so it needs an `id` to pick out which profile each event updates. Rule of thumb: a single view over all events is single-instance and takes no `id`, one view per subject is keyed and takes an `id`.
