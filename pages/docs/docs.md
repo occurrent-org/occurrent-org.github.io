@@ -3488,7 +3488,9 @@ occurrent.subscription.catchup-then-live.max-buffered-events=200000
 
 Set one and the other keeps its default. A zero or negative value fails startup rather than falling back.
 
-Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass, or nowhere at all if you pass `null`, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. The marker is per subscription id, so cancelling and then resubscribing under the same id skips the replay as well. Delete that id's checkpoint when you want the history read again. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
+Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass, or nowhere at all if you pass `null`, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
+
+The record that the catch-up finished is kept per subscription id, so cancelling and then resubscribing under the same id skips the replay as well. Delete that id's checkpoint when you want the history read again.
 
 Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`. With a single feed bean the name can be dropped, and the starter finds the bean on its own. Declaring the bean does not replace the default subscription model the starter contributes. The starter skips models without a start position, checkpoint or catch-up when it decides whether the application brought its own, so your event-store subscriptions keep the durable default and the feed runs beside it.
 
@@ -3641,15 +3643,13 @@ PushSubscriptionModel or DomainEventFeed
 your projection or saga
 ```
 
-A sink publishes and a bridge consumes. The sink takes an event out of the event store and puts it on the broker, the bridge takes a message off the broker and hands it to your projection or saga. A round trip uses one of each, so they are two halves of the same path rather than two options to pick between.
+A sink publishes and a bridge consumes. The sink takes an event out of the event store and puts it on the broker, the bridge takes a message off the broker and hands it to your projection or saga. A round trip uses one of each.
 
-Only the bridge touches the broker's topology. `CloudEventForwarder` and the sinks declare nothing at all, while a RabbitMQ bridge declares the queue it consumes from and binds that queue to the destinations it derived. Neither Kafka bridge creates a topic, it only subscribes.
+Only the bridge touches the broker's topology. `CloudEventForwarder` and the sinks declare nothing at all, while a RabbitMQ bridge declares the queue it consumes from and binds that queue to the destinations it derived. A Kafka bridge creates no topic and only subscribes.
 
-Nothing declares the exchange, so you create that yourself. `declareTopology(false)` on a RabbitMQ bridge turns the queue and binding declarations off too, for a deployment where a platform team owns all of it.
+`declareTopology(false)` on a RabbitMQ bridge turns the queue and binding declarations off, for a deployment where a platform team owns the whole topology.
 
-No new subscription model is added. A broker holds the live tail plus whatever retention it keeps, which is not the event store's history and not addressable by an Occurrent position, so a broker-backed model could not honor `StartAt` or a replay.
-
-Replay stays the event store's job, through [`CatchupThenPushSubscriptionModel`](#push-subscription-blocking) or [`CatchupProjectionFeed`](#feeding-domain-events-instead-of-cloudevents), and live-resume stays the broker's job.
+A replay always reads the event store, through [`CatchupThenPushSubscriptionModel`](#push-subscription-blocking) or [`CatchupProjectionFeed`](#feeding-domain-events-instead-of-cloudevents). A broker only has the messages it still retains, not the event store's history, and it can't find an event by its Occurrent position, so it can't support `StartAt` or a replay.
 
 Three modules cover the forwarding, one shared API and one per broker. Add the shared API first. RabbitMQ's and Kafka's own dependencies come with their own subsections below.
 
@@ -3682,15 +3682,17 @@ forwarder.forward("order-status-forwarder");
 
 `DomainEventForwarder<E>` does the same, decoding each event once with your `CloudEventConverter<E>` before handing the domain event to a `DomainEventSink<E>`.
 
-Publication is at-least-once with no new mechanism behind it. `DurableSubscriptionModel` advances its checkpoint only after `forward`'s action returns, so a sink that throws keeps the checkpoint where it was and the event publishes again on the next run. That holds for `forward(id)` and `forward(id, filter)`. The two overloads that take a `StartAt` start where you tell them instead of resuming from the checkpoint.
+Publication is at-least-once. `DurableSubscriptionModel` saves its checkpoint only after the sink's `publish` returns, so a sink that throws keeps the checkpoint where it was and the event is published again on the next run.
 
-That action is the call to `publish`, so the guarantee holds only as long as your sink does not return until the broker has confirmed the message. A sink that hands the event to a thread pool and returns straight away looks the same from here, and the checkpoint moves past an event nobody delivered.
+That holds for `forward(id)` and `forward(id, filter)`. The two overloads that take a `StartAt` start where you tell them instead of resuming from the checkpoint.
+
+The guarantee only applies when `publish` returns after the broker has confirmed the message. A sink that hands the event to a thread pool and returns straight away lets the checkpoint move past an event nobody delivered.
 
 Do not pair `DomainEventForwarder` with `RabbitMqDomainEventSink` or `KafkaDomainEventSink`, the two shipped domain sinks described under [RabbitMQ](#broker-rabbitmq) and [Kafka](#broker-kafka). Those sinks convert a domain event straight to a `CloudEvent` and delegate to a `CloudEventSink`.
 
-A forwarder that already decoded a stored `CloudEvent` into a domain event, only for a sink to convert it straight back, means one decode and one re-encode per event. The result also can't preserve the id, source, subject or time the store recorded.
+That pairing decodes every stored `CloudEvent` into a domain event and then encodes it straight back. The `CloudEvent` it builds keeps the id, source, subject and time the store recorded only if your `CloudEventConverter` happens to produce the same ones.
 
-Forward stored events with `CloudEventForwarder` and a `CloudEventSink` instead, which converts nothing. `DomainEventForwarder` is for a `DomainEventSink<E>` you implement yourself, one that genuinely publishes domain events through its own converter.
+Forward stored events with `CloudEventForwarder` and a `CloudEventSink` instead, which converts nothing. `DomainEventForwarder` is for a `DomainEventSink<E>` you implement yourself, one that publishes domain events through its own converter.
 
 ##### Bringing your own publisher {#broker-custom-sink}
 
@@ -3703,13 +3705,13 @@ public interface CloudEventSink {
 }
 ```
 
-A `CloudEventSink` decides where the event goes as part of publishing it, so a wrapper that already makes that decision takes over both jobs and needs no `DestinationResolver`.
+Your `CloudEventSink` picks the destination itself while it publishes. It needs no `DestinationResolver`, the interface the shipped sinks use for that, described under [Destinations and bindings](#broker-destinations).
 
 Nothing else in this section changes when you do this. The forwarder, the checkpoint, and the at-least-once guarantee described under [What's guaranteed](#broker-guarantees) all work the same regardless of whose `CloudEventSink` is on the other end.
 
 ##### Destinations and bindings {#broker-destinations}
 
-`EventDestination` says where an event goes, one record per transport, `RabbitMqDestination` or `KafkaDestination`. `DestinationResolver<D extends EventDestination>` derives it, and derives the reverse question too, where a consumer should bind to receive events back:
+`EventDestination` says where an event goes, one record per transport, `RabbitMqDestination` or `KafkaDestination`. `DestinationResolver<D extends EventDestination>` works out that destination for a publisher. For a consumer it works out which destinations to bind to in order to receive those events:
 
 ```java
 D destinationFor(CloudEvent cloudEvent);
@@ -3726,7 +3728,7 @@ An empty `Optional` from it means the resolver could not narrow the filter, not 
 
 `destinationsFor(subscriptionFilter)` is a default method you do not implement. It hands the `Filter` inside an `AgnosticSubscriptionFilter` or a `StreamSubscriptionFilter` to the method above, and answers every other `SubscriptionFilter` with an empty `Optional`. That covers a `DcbSubscriptionFilter`, which holds DCB criteria rather than a `Filter`, and any `SubscriptionFilter` of your own, which is a type this interface knows nothing about.
 
-`catchAllDestination()` is the destination that receives every event the resolver could route. Binding it is always safe, because binding everything narrows nothing.
+`catchAllDestination()` is the destination that receives every event the resolver could route, so a consumer bound to it never misses one.
 
 `RabbitMqTopicExchangeDestinationResolver` and `KafkaTopicPerTypeDestinationResolver` derive both from the CloudEvent type through your `CloudEventTypeMapper`, the same mapping your application already uses to convert between a stored event and its domain class. A publisher and a consumer then agree by reading one mapping instead of two hand-written strings that nothing compares.
 
@@ -3771,11 +3773,13 @@ An `OrderShipped` publishes to `orders.OrderShipped`, and the consumer subscribe
 
 Narrowing a binding only ever changes what is delivered, never what is handled. A routing key or a topic name can express an event type and nothing else, so a stream id, a data field or a time range stays invisible to the broker, and `SubscriptionFilterMatcher` still decides what your handler sees once the message arrives.
 
-A binding you derive this way has to stay at least as inclusive as the subscription's own filter. A narrower one stops an event reaching a matcher that would have accepted it, and that's a lost event rather than a tuning mistake.
+A binding you derive this way has to stay at least as inclusive as the subscription's own filter. A narrower one stops an event from reaching a matcher that would have accepted it, and your projection or saga never receives that event.
 
 At the CloudEvent level the bridge has no way to read the filter your subscription was registered with, since `PushSubscriptionModel` exposes neither it nor its matcher. Pass the same filter to the bridge's `bindingFilter(...)` yourself if you want the narrowing.
 
-At the domain level `DomainEventFeed` is the only place that decision can be made, because `accept(metadata, event)` delivers unconditionally otherwise. The domain bridge filters nothing itself. It hands every message to `acceptCloudEvent(..)`, and the feed checks each one against the filter its projection registered with, however coarse the binding is.
+At the domain level `DomainEventFeed` checks each event against the filter its projection registered with, in `acceptCloudEvent(..)`. Its `accept(metadata, event)` delivers every event it's given without that check.
+
+The domain bridge filters nothing itself. It hands every message to `acceptCloudEvent(..)`, so the feed checks each one however coarse the binding is.
 
 ##### Consuming from a broker {#broker-consuming}
 
@@ -3810,7 +3814,7 @@ RabbitMqTopicExchangeDestinationResolver resolver =
 RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, resolver).build();
 ```
 
-Occurrent never declares an exchange. `orders-exchange` has to exist before anything publishes to it, so you create it, or whoever owns your broker topology does. A bridge declares the queue it consumes from and binds that queue to the routing keys it derived, and that is the whole of what Occurrent creates on a broker.
+Occurrent never declares an exchange. `orders-exchange` has to exist before anything publishes to it, so you create it, or whoever owns your broker topology does.
 
 `RabbitMqCloudEventSink` publishes with publisher confirms and `mandatory = true`, waiting up to `acknowledgementTimeout(Duration)` (five seconds by default) for the broker to confirm.
 
@@ -3820,11 +3824,9 @@ Every CloudEvent attribute, the Occurrent extensions included, becomes a message
 
 An application header using the `cloudEvents_` prefix is refused when the destination is built, so it can't collide with that mapping.
 
-`RabbitMqCloudEventBridge` is the consuming half. It holds the `PushSubscriptionModel` itself rather than a bare `Pushable`, so it can read the model's lifecycle and acknowledge correctly.
+`RabbitMqCloudEventBridge` is the consuming half. It holds the `PushSubscriptionModel` itself, not only its `accept(..)` methods, so it can read the model's lifecycle and acknowledge correctly.
 
-The bridge needs the `RoutingOutcome` of each call it makes into the model, and it can't ask for it directly. A `PushObserver` is a constructor argument on `PushSubscriptionModel` with no way to attach one afterwards, while the bridge is built from a model that already exists.
-
-`RoutingOutcomeChannel` is what connects the two. Construct one, pass it to both the model's constructor and the bridge's builder, and the bridge reads the outcome of the call it just made off that same instance.
+Create a `RoutingOutcomeChannel` and pass the same instance to the model's constructor and to the bridge's builder:
 
 ```java
 RoutingOutcomeChannel outcomeChannel = new RoutingOutcomeChannel();
@@ -3835,11 +3837,13 @@ RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(
         .build();
 ```
 
+The bridge reads the `RoutingOutcome` of each event it hands the model from that channel. A `RoutingOutcomeChannel` is a `PushObserver`, and a `PushSubscriptionModel` only takes its observer when it's constructed.
+
 Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The bridge then stops pulling messages while the replay runs. That only saves round trips, since a message the replay isn't ready for is reported `DEFERRED` and never acknowledged either way.
 
 The bridge calls `acceptRedeliverable(...)` rather than `accept(...)`. It's the same routing decision, offered by a source that can send the event again later, so the model is free to refuse an event instead of holding on to it.
 
-The bridge acknowledges a message once `acceptRedeliverable(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It does not acknowledge immediately for any other outcome, nor when `acceptRedeliverable(...)` throws.
+The bridge acknowledges a message once `acceptRedeliverable(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. No other outcome gets that acknowledgement, and neither does an exception from `acceptRedeliverable(...)`. Depending on the outcome, the bridge holds the message, stops, or hands it to its failure policy.
 
 It holds a `DEFERRED` or `UNAVAILABLE` message unacknowledged, and its poll hands it back to RabbitMQ with `basicNack` and requeue, at most once per poll interval, one second by default. RabbitMQ then delivers it again. It stops consuming for good on `REFUSED`.
 
@@ -3851,11 +3855,13 @@ Parking publishes the message to that destination with its own confirm, and only
 
 A failed park never acknowledges the original message, so it's redelivered rather than lost.
 
-RabbitMQ's own dead-lettering, where a rejected message is moved to another exchange, is not used here instead. `basicNack(requeue = false)` with no dead-letter exchange configured throws the message away outright, and even with one the broker republishes without confirms.
+The bridge parks a message itself rather than through RabbitMQ's own dead-lettering, where a rejected message is moved to another exchange. `basicNack(requeue = false)` with no dead-letter exchange configured throws the message away, and with one the broker republishes it without confirms.
 
 A single RabbitMQ queue preserves the order events were published in, so a projection that handles one stream in order needs nothing further here.
 
-Each bridge handles its deliveries on a thread of its own, one at a time and in the order the broker sent them. The RabbitMQ client runs every consumer on a connection from one shared pool of threads, so a bridge only hands a delivery over to its own thread there. A handler waiting on a database that is down holds up its own bridge and never another bridge built on the same `Connection`.
+Each bridge handles its deliveries on a thread of its own, one at a time and in the order the broker sent them.
+
+The RabbitMQ client calls every consumer on a connection from one pool of threads, so each bridge moves a delivery onto its own thread before handling it. A handler waiting on a database that is down then holds up only its own bridge, never another bridge built on the same `Connection`.
 
 `close()` waits up to `closeTimeout(Duration)`, thirty seconds by default, for a delivery already being handled. A delivery it didn't finish was never acknowledged, so RabbitMQ delivers it again.
 
@@ -3898,21 +3904,21 @@ KafkaCloudEventBridge bridge = KafkaCloudEventBridge.builder(consumerConfig, pus
         .build();
 ```
 
-The bridge stages `record.offset() + 1` for a partition once that record resolves as `DELIVERED` or `FILTERED`, and it stages the same way for a delivery failure that resolves through a confirmed `PARK`, so all three commit that record's offset.
+Once a record comes back `DELIVERED` or `FILTERED`, or its failure ends in a confirmed `PARK`, the bridge marks `record.offset() + 1` to be committed for that record's partition.
 
-It commits every partition that made progress once a poll batch is walked, and never uses the no-argument `commitSync()`, which would commit the whole batch including records nothing processed yet.
+Once it has worked through a whole poll batch, it commits the marked offsets of every partition that made progress. It never uses the no-argument `commitSync()`, which would commit the whole batch including records nothing processed yet.
 
 On `NOT_DELIVERABLE` or a thrown exception, the same `DeliveryFailurePolicy` applies as on RabbitMQ.
 
-`REDELIVER` seeks the consumer back to the failed record's offset and stops processing that partition's remaining records for the poll, so a later record in the same batch is never committed past one that failed, and nothing is staged for the failed one either.
+`REDELIVER` seeks the consumer back to the failed record's offset and stops processing that partition's remaining records for the poll, so a later record in the same batch is never committed past one that failed, and the failed record's offset isn't marked either.
 
 `DEFERRED` and `UNAVAILABLE` skip the failure policy and seek back the same way. Either way, that partition is paused for about `pollTimeout` before the bridge fetches from it again, so a record that keeps coming back is retried at that pace.
 
-`PARK` republishes to a `parkingDestination(KafkaDestination)` and stages the original record's offset only once that publish's own broker acknowledgement arrives, exactly as a delivered one would be.
+`PARK` republishes to a `parkingDestination(KafkaDestination)` and marks the original record's offset to be committed only once that publish's own broker acknowledgement arrives, the same as for a delivered record.
 
-That parking publish has a time limit of its own, and hitting the limit does not cancel the publish. `send()` can itself spend most of that time just getting a usable view of the cluster, so the record can still reach the broker in the background after the limit has elapsed and this bridge has already chosen `REDELIVER` for it.
+That parking publish has a time limit of its own, and hitting the limit does not cancel the publish. `send()` can itself spend most of that time waiting for the cluster's metadata, so the record can still reach the broker in the background after the limit has elapsed and this bridge has already chosen `REDELIVER` for it.
 
-A duplicate park is possible in that case. It is accepted rather than guarded against, the same way every handler here already has to tolerate redelivery.
+A duplicate park is possible in that case. The bridge doesn't try to prevent it, because every handler here already has to cope with a redelivered message.
 
 A partitioned Kafka topic does not preserve order across streams the way a single RabbitMQ queue does. A projection that handles one stream at a time is fine under the default stream-id keying. One that depends on order across streams is not, whichever resolver you use.
 
@@ -3926,7 +3932,7 @@ Publication is at-least-once, because the forwarder's checkpoint advances only a
 
 A projection or saga reached through either path therefore has to tolerate seeing the same event twice, the same as any other push-fed one.
 
-The catch-up and the live path split responsibility the same way they always have. Occurrent owns the one-time catch-up from the event store, through `CatchupThenPushSubscriptionModel` or `CatchupProjectionFeed`. The broker owns the live resume, by redelivering whatever a restarted bridge had not yet acknowledged.
+Occurrent replays the event store once, through `CatchupThenPushSubscriptionModel` or `CatchupProjectionFeed`. After a restart, the broker redelivers whatever the bridge had not yet acknowledged.
 
 ##### A runnable example {#broker-example}
 
@@ -3978,7 +3984,7 @@ RabbitMqDomainEventBridge<OrderEvent> orderStatusBridge(RabbitMqDomainEventBridg
 
 The factory doesn't register the bridge as a Spring bean, so nothing closes it for you. Declaring it as a `@Bean` with `destroyMethod = "close"`, as above, has Spring close it at shutdown.
 
-`RabbitMqCloudEventBridgeFactory.forQueue(queue, pushModel, outcomeChannel)` is the CloudEvent-level factory. When `pushModel` feeds a `@Projection` or `@Saga` with `source = PUSH`, it also sets `readinessSource(..)` to that projection's or saga's catch-up, so you don't pass it yourself.
+`RabbitMqCloudEventBridgeFactory.forQueue(queue, pushModel, outcomeChannel)` is the CloudEvent-level factory. It also sets `readinessSource(..)`, so you don't pass it yourself. When `pushModel` feeds a `@Projection` or `@Saga` with `source = PUSH`, that asks the projection's or saga's catch-up whether it's ready, and otherwise it always answers ready.
 
 With `declare-topology` left on, a bridge needs the resolver to know which routing keys to bind. The starter's resolver is a `RabbitMqTopicExchangeDestinationResolver` on `occurrent.broker.rabbitmq.exchange`, and it needs a `CloudEventTypeMapper` bean, which the MongoDB starter supplies.
 
@@ -4010,7 +4016,9 @@ occurrent.broker.kafka.topic=orders
 
 `forGroup(..)` sets `group.id` to the group you pass and `enable.auto.commit` to `false`. Any other Kafka client setting goes under `producer.additional-properties` or `consumer.additional-properties`, for example `occurrent.broker.kafka.consumer.additional-properties.max.poll.records=100`.
 
-A `group.id` there is ignored. The sink still refuses an `acks` weaker than `all`, and the bridge still refuses to start if `enable.auto.commit` is turned on there.
+A `group.id` under `consumer.additional-properties` is ignored.
+
+The sink and the bridges check these settings the same way as when you build them yourself. The sink refuses an `acks` weaker than `all`, and a bridge refuses to start if `enable.auto.commit` is turned on.
 
 | Property under `occurrent.broker.kafka` | Default | Sets |
 |---|---|---|
