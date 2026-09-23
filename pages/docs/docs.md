@@ -3569,6 +3569,33 @@ It skips the replay and starts delivering the buffered and future live events di
 
 A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
+A listener that receives a `CloudEvent` instead of a domain event, a broker consumer for example, hands it to `DomainEventFeed.acceptCloudEvent(..)`. It returns a [`RoutingOutcome`](#push-subscription-blocking-observer) that tells the listener whether to acknowledge the message:
+
+```java
+RoutingOutcome outcome = feed.acceptCloudEvent(cloudEvent);
+```
+
+The feed matches the event against the filter the projection was registered with, the same filter its catch-up reads the event store with. An event that doesn't match comes back `FILTERED` and is never decoded, so a converter that only knows this projection's event types never sees another type. Acknowledge it, since redelivering it gets the same answer.
+
+A matching event is decoded with the feed's `CloudEventConverter` and comes back `DELIVERED` once the projection has applied it. Acknowledge it.
+
+A matching event that arrives before the projection is live comes back `DEFERRED`. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. Don't acknowledge it. Redeliver it until it comes back `DELIVERED`, which is safe any number of times.
+
+With no projection registered, `acceptCloudEvent(..)` throws `IllegalStateException`, the same as `accept(..)`.
+
+A filter with a `Filter.data(...)` condition needs a [`DataFieldReader`](#filtering-on-payload-data) to be matched here. Pass it as the last constructor argument:
+
+```java
+DomainEventFeed<OrderEvent> feed = new DomainEventFeed<>(eventStore, cloudEventConverter, OrderEvent::eventId,
+        checkpointStorage, CatchupThenLiveOptions.defaults(), new JacksonDataFieldReader());
+```
+
+Without one, `register(..)` still accepts that filter, and the first `acceptCloudEvent(..)` throws `UnreadableLiveFilterException`. Every later call on the same feed throws that same exception instance, so stop consuming instead of redelivering the event. Build a new feed with a reader, or register a filter without the `data` condition.
+
+On the reactor stack `acceptCloudEvent(..)` returns a `Mono<RoutingOutcome>`, and the two refusals above arrive as that `Mono`'s error.
+
+On the blocking stack, once the projection's catch-up has failed, every later `acceptCloudEvent(..)` throws an `IllegalStateException`. `refusesPermanently()` returns `true` from then on, which tells that failure apart from a replay that's still running, where `isReadyForLiveDelivery()` is also `false`.
+
 The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so applying the same event twice must leave the read model unchanged. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
 
 If you are upgrading from 0.31.0 and shared one `PushSubscriptionModel` or `DomainEventFeed` between several projections, [upgrading to 0.32.0](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) shows the before and after.
