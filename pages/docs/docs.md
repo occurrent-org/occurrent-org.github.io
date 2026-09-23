@@ -111,6 +111,7 @@ permalink: /documentation
 * * [Reactive DCB](#reactive-dcb)
 * * [Notes](#notes)
 * [Retry](#retry-configuration-blocking)
+* * [Stopping a Retry When Shutting Down](#stopping-a-retry-when-shutting-down)
 * * [Retry and Transactions](#retry-and-transactions)
 * [DSL's](#dsls)
 * * [Subscription DSL](#subscription-dsl)
@@ -5491,6 +5492,30 @@ retryStrategy.execute(info -> {
     ...     
 });
 ```
+
+## Stopping a Retry When Shutting Down
+
+A retry that is between attempts keeps going until its attempts run out, which is a problem when the component doing the retrying is closing down. As of version {{site.occurrentversion}} you can hand `execute` a second argument, a predicate that says whether retrying is still wanted:
+
+```java
+private volatile boolean running = true;
+
+void store(CloudEvent cloudEvent) {
+    retryStrategy.execute(() -> writeToTheDatabase(cloudEvent), __ -> running);
+}
+
+public void close() {
+    running = false;
+}
+```
+
+The retry loop reads that predicate before every retry, and reads it again at a short interval while a backoff is being slept out. A `close()` landing one millisecond into a two second backoff therefore stops the retry at the next read instead of two seconds later. When the loop stops this way it rethrows the exception from the last attempt, the same as when the attempts run out.
+
+The predicate is handed the throwable from the last attempt, so you can answer differently for different failures. Most callers ignore it and read a flag, as above.
+
+Keep the predicate free of side effects, because a single attempt can read it many times.
+
+Put a lifecycle flag here rather than in `retryIf`. A `retryIf` predicate is only read between attempts, so a shutdown during a backoff waits out the rest of it, and `retryIf` replaces whatever retry predicate the strategy already had rather than adding to it.
 
 ## Retry and Transactions
 
