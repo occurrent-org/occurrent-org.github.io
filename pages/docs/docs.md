@@ -3365,9 +3365,9 @@ feed.catchUp();
 
 Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
 
-`stopCatchUp()` asks a running replay to stop, which is what a shutdown wants, since without it an application closing mid-replay would wait for the whole history to be applied. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
+`stopCatchUp()` stops a running replay. Without it, an application that shuts down mid-replay would wait until the whole history has been applied.
 
-After a stop, `goLive()` delivers the live copy of an event even when the stopped replay already delivered it. A view that buffers during a replay threw that buffer away when the replay stopped, so it needs the copy. A view that wrote the event straight through sees it twice.
+A stopped replay isn't treated as a failure. It doesn't record that the catch-up finished, so the next start replays the whole history again.
 
 When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still buffers every `accept(...)` until told to stop, so events pile up until the buffer's cap throws. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
 
@@ -3376,6 +3376,8 @@ feed.goLive();
 ```
 
 It skips the replay and starts delivering the buffered and future live events directly, writing no completion marker, so a later real `catchUp()` on the same feed still replays the full history rather than treating it as already done. While that replay runs, live events wait, and they are delivered when it ends, whether it finishes or is stopped.
+
+If you call `goLive()` after a stop, it also delivers the live copy of an event the stopped replay already delivered. A view that holds events back until the replay finishes discarded them when the replay stopped, so it needs that copy. A view that saved each event as it arrived gets it twice.
 
 A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
@@ -3690,9 +3692,11 @@ A subscription model may also implement `IntrospectableSubscriptions`, which add
 
 `listenForCatchup(subscriptionId, listener)` is the second method, and it tells a projection where inside a catch-up it is. A catch-up reads the history that was already there, and then delivers whatever was written while it was reading.
 
-A model that has catch-ups signals the listener twice, once when a catch-up begins, and once when it has read the history it set out to read. A catch-up that is stopped before then sends only the first. A projection that [records the appends it has applied](#projection-annotation-applied-appends) records nothing between those two signals, and records again after the second one. Some of the events written while a catch-up ran are delivered by that catch-up and never again, so they still have to be recorded.
+The model calls the listener's `catchupStarted` when a catch-up begins, and its `historyRead` once that catch-up has read the history that was already there. For a catch-up that's stopped before then, the model never calls `historyRead`.
 
-`CatchupThenPushSubscriptionModel` also calls the listener's `alreadyDeliveredByReplay(event)` when the live feed offers a copy of an event its replay already delivered. That way an append that only the replay delivered is recorded too.
+A projection that [records the appends it has applied](#projection-annotation-applied-appends) stops recording at `catchupStarted` and starts again at `historyRead`, so it still records the events written while the catch-up was reading.
+
+When the live feed offers a copy of an event its replay already delivered, `CatchupThenPushSubscriptionModel` doesn't deliver the copy and calls the listener's `alreadyDeliveredByReplay(event)` instead. A projection that records its appends then records the append of that event, as long as the replay applied it.
 
 Register the listener before you subscribe. One registered after a catch-up has already begun misses its start.
 
@@ -5595,9 +5599,11 @@ org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledSt
 }
 ```
 
-Occurrent then wraps the projection's store, so the projection records the append of every event it applies.
+Occurrent then wraps the projection, so the projection records the append of every event it applies.
 
-Replays are the exception. When a catch-up begins, the wrapper clears the projection's recorded appends, which means it deletes every one of them. It records nothing from the history the catch-up then reads. [What a `true` answer means](#applied-appends-true-answer) says when a projection replays.
+When a catch-up begins, the wrapper marks a clear as due, and a clear deletes every append the projection has recorded. The wrapper also records nothing from the history the catch-up then reads.
+
+[What a `true` answer means](#applied-appends-true-answer) says when a projection replays.
 
 This works on both the blocking and the reactor stack, and for a `DcbProjection` factory too.
 
@@ -5621,7 +5627,7 @@ If `listenForCatchup` returns `false`, you have to watch the model yourself. Whe
 
 If nothing calls them, the wrapper records every event of a replay and never clears its old records.
 
-Also call the wrapper's `pollForClear()` on a schedule, on a thread meant for blocking work. `catchupStarted` only marks the clear as due, because it runs on the thread that registers the catch-up and must not wait for the store. The clear itself runs on the next event the projection receives or the next `pollForClear()` call, whichever comes first, and a clear that fails because the store is unavailable is tried again the same way.
+Also call the wrapper's `pollForClear()` on a schedule, from a thread meant for blocking work. A clear that is due runs on whichever comes first, the projection's next event or the next `pollForClear()` call. A clear that fails because the store is unavailable is tried again the same way.
 
 Without the poll, a projection that receives no further event never clears, and keeps the records from before its replay.
 
@@ -5651,7 +5657,7 @@ How long the rest takes depends on where the projection is.
 * **If the node crashes mid-append**, another node takes over once the crashed node's [competing consumer](#competing-consumer-subscription-blocking) lock expires, 20 seconds by default.
 * **If the subscription is paused or stopped**, nothing more is applied until it starts again.
 
-A replay changes the answer too. A projection clears its recorded appends when a catch-up begins, so a wait never answers `true` about a read model the projection is in the middle of rebuilding.
+A replay changes the answer too. Once a catch-up's clear has run, a wait for an append recorded before the replay times out.
 
 Whether a projection replays at all depends on its start position. With the subscription models the Spring Boot starter configures for you, only `startAt = StartPosition.BEGINNING` or an explicit `startAtGlobalPosition` replays.
 
@@ -5676,13 +5682,11 @@ The Spring Boot starter logs a `WARN` at startup for a `recordAppliedAppends = t
 
 It can't tell for a subscription model of your own, so it logs nothing there.
 
-A projection whose start position does replay starts recording again only after the catch-up has read the history. A wait for an append recorded before the clear times out rather than answering `true` about a read model the rebuild has already wiped.
+A projection that replays stops recording when its catch-up begins. Its old records stay readable until the clear has run, so a wait in between can still answer `true` for an append whose read model the rebuild is discarding.
 
-Recording stops before the clear finishes. It stops when the catch-up begins, and the old records stay readable until the clear is done, so a wait running in between can still get `true` for an append whose read model the rebuild is discarding.
+Once the catch-up has read the history that was already there, the projection records again. The catch-up then delivers whatever was written while it was reading, and those events are recorded.
 
-Recording stops only while the catch-up reads the history that was already there. The catch-up then delivers whatever was written while it was reading, and those events are recorded.
-
-So a write issued right after your application starts is recorded even though the projection is still catching up. That holds for `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
+So a write issued right after your application starts is recorded even though the projection is still catching up. This applies to `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
 
 The stream and DCB catch-up models are different. Their history read can pick up a write that was still committing when the catch-up began, and that delivery isn't recorded.
 
