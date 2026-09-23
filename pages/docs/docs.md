@@ -780,18 +780,23 @@ without any error. It is also left out of the conflict query behind a conditiona
 have been refused is accepted.
 
 A MongoDB event store that writes `position` checks for a `position` stored as a string when it starts, and logs a
-warning that points at the repair. The check uses the `position` index, so on a store that was never damaged it reads no
-index entries at all. It only finds a damaged `position`, so a startup without the warning does not rule out the damage
+warning that points at the repair. On a store that was never damaged the check adds almost nothing to startup, because
+it looks for a string `position` in the `position` index and finds none.
+
+The check only finds a damaged `position`, so a startup without the warning does not rule out the damage
 described under [what the repair cannot find](#update-event-repair-limits).
 
-If you would rather the store refused to start than kept accepting appends that should have been refused, set
-`requireRepairedEvents(true)` on its `EventStoreConfig.Builder`. It is off by default, and the Spring Boot starters have
-no property for it, so there you define your own `EventStoreConfig` bean. With it on, the store runs the check even
-when it writes no `position`, and on such a store the check can read the whole collection at startup.
+To make the store refuse to start while the collection holds damaged events, set `requireRepairedEvents(true)` on its
+`EventStoreConfig.Builder`. It is off by default.
 
-The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`. A store never
-repairs its own history. A damaged event stays exactly as it is until someone repairs it, while a wrong repair writes
-a plausible value that nothing can take back, and some of the damage cannot be repaired safely at all.
+The Spring Boot starters have no property for `requireRepairedEvents`, so there you define your own `EventStoreConfig`
+bean.
+
+With `requireRepairedEvents(true)` the store runs the check even when it writes no `position`. Such a store has no
+`position` index, so the check can read the whole collection at startup.
+
+The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`, and you run it
+yourself. The store only warns or refuses to start. It never changes a damaged event.
 
 `report()` counts the damage and writes nothing. `run()` repairs it and only touches events that still look damaged,
 so running it twice is safe. If a run is killed, start it again and it resumes from a checkpoint document.
@@ -848,8 +853,8 @@ store would have written.
 A position it restores is the value the document holds, and the repair has no way to check that value. If an update
 function set `position` itself, the old write-back kept that number like any other. The repair catches a value that
 another event already holds, one at or below zero, and one above the highest position the store has handed out, and
-reports those instead (see the table below). A wrong value that passes all three looks exactly like the event's own
-position, so the repair restores it and counts it as repaired.
+reports those instead (see the table below). A wrong value that none of those three checks catches looks exactly like
+the event's own position, so the repair restores it and counts it as repaired.
 
 If your update functions never set `position`, every position the repair restores is the event's own. If they did, a
 clean run does not prove the positions are right, and only a record kept outside the store can tell you.
@@ -859,9 +864,11 @@ from scratch. One dropped the `dcbtags` extension, leaving a document that no lo
 The other dropped the `position` of a plain stream event, leaving a document that looks like an event written before
 `position` existed.
 
-That is why the startup messages about events without a position also point at the repair runbook. The position
-backfill those messages name would give an event whose `position` was dropped a new position it never had, and that
-cannot be undone.
+A store that finds events without a `position` at startup warns, or refuses to start, with a message that points at the
+[position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md).
+The same message tells you to read the repair runbook first if your application called `updateEvent` on 0.33.0 or
+earlier. The position backfill gives every event without a `position` a new one, so an event whose `position` an update
+function dropped would get a position it never had, and that can't be undone.
 
 ##### Events the repair reports instead of fixing {#update-event-repair-unrecoverable}
 
@@ -882,9 +889,10 @@ An event can be counted as repaired and still appear here, since the reasons are
 gets its tag index back, which is a repair, while its position stays gone.
 
 `unrecoverableEventCount()` counts events rather than findings, so an event with two things wrong with it counts once.
-It does not cover everything that needs a person, though. `eventsWithLostPosition()` is asked of the collection when
-the run finishes, so it also counts an event whose tag index an earlier run rebuilt, and a run is clean only when both
-are zero.
+
+A run is clean only when both `unrecoverableEventCount()` and `eventsWithLostPosition()` are zero.
+The repair counts `eventsWithLostPosition()` from the collection when the run finishes, so it also counts events an
+earlier run already rebuilt the tag index of.
 
 ### Stream Filtering {#eventstore-stream-filtering}
 
