@@ -6587,7 +6587,7 @@ A saga recognizes a redelivered event by its `streamid` together with its `strea
 
 The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs, instead of acknowledging it. What happens to the event after that is up to your feed. Whatever the feed does, the listener that dropped the metadata sees the exception, and that listener is where it can be fixed.
 
-Occurrent's own stored events always have the extensions, so this is about what your listener forwards, not about the event store.
+Occurrent's own stored events always have the extensions, so this only happens with events your listener forwards without them.
 
 Your feed might carry none of that redelivery metadata, another application's broker for example, while every command the saga issues is still safe to receive more than once. When both are true, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always carry the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
 
@@ -6633,15 +6633,15 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
 
-A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
+When a `SagaConcurrencyException` exhausts its compare-and-set retries on a live event, the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
 
 Whether the event is offered again, and which other events wait behind it, depends on what feeds the subscription. On a push feed your listener decides both. On a broker bridge the bridge's `DeliveryFailurePolicy` setting decides whether the event is offered again.
 
-When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka bridge holds back at most that record's partition, and nothing once it has parked the record under `PARK`. The RabbitMQ bridge holds nothing back once it has requeued the message under `REDELIVER` or parked it under `PARK`.
+When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka bridge delays at most the later records in that record's partition, and it delays nothing once it has parked the record under `PARK`. The RabbitMQ bridge delays no other message once it has requeued the failed one under `REDELIVER` or parked it under `PARK`.
 
 Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either bridge.
 
-An instance that keeps failing can be quarantined instead, once it has been failing for the quarantine budget, five minutes by default.
+An instance that keeps failing can be quarantined, which means it skips every later event addressed to it. That can happen once it has been failing for its quarantine budget, `SagaRunnerConfig.quarantineAfter`, five minutes by default.
 
 An instance that is not quarantined keeps failing for as long as the model keeps offering the event. That ends when the retry succeeds, when you abandon the instance with `SagaStateStore.delete(sagaId)`, or when you stop the subscription, which stops the whole saga rather than only the failing instance.
 
@@ -6896,8 +6896,6 @@ Once the instance has been failing for at least the budget, the next failure can
 
 Reaching the budget does not quarantine an instance on its own, so an instance past its budget can still be `ACTIVE`. Read its status instead of working it out from the time.
 
-The conditions under the headings below are the ones you are most likely to meet, and the javadoc on `SagaStatus.QUARANTINED` lists every one.
-
 When the event the record names later succeeds, the record is cleared. A different input succeeding does not clear it.
 
 Every way of failing counts once the saga knows which instance the event belongs to. Checking for a redelivery, `evolve`, `react`, your command dispatcher and the state store all do, and an `Error` counts like a `RuntimeException`. The exception is `OutOfMemoryError`. It means the JVM ran out of heap while that instance happened to hold the thread, so the runner rethrows it and the instance keeps its state.
@@ -6922,17 +6920,19 @@ Override both or neither. The runner saves the envelope it read, so a store that
 
 `SpringMongoSagaStateStore` overrides both. `SagaStateStore.inMemory()` does not and does not need to, since it holds each envelope as an object rather than a document, so nothing there can fail to decode. `SagaInstances.find(sagaId)` reads through `findWithoutState` too, so looking one instance up by id costs what enumerating them costs and answers for an instance whose state no longer decodes.
 
+An instance past its budget is quarantined only when a few other conditions are met too. The next three sections cover the ones you're most likely to run into, and the javadoc on `SagaStatus.QUARANTINED` lists every one.
+
 ##### The subscription model has to keep every event {#saga-quarantine-model-keeps-every-event}
 
-Quarantine only works on a subscription model that promises to keep every event it delivers. A model makes that promise by implementing `HistoryRetainingSubscriptions` and returning `true` from `retainsEveryEvent()`.
+Quarantine only works on a subscription model that keeps every event it delivers. A model says it does by implementing `HistoryRetainingSubscriptions` and returning `true` from `retainsEveryEvent()`.
 
-`NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` make that promise, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. Those three wrappers answer for the model they wrap, so a wrapper alone is not enough.
+Quarantining an instance returns normally, which acknowledges the event to whatever fed it. Behind a broker bridge, the bridge then acknowledges the record to the broker, and nothing can hand that event to the saga a second time.
+
+`NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` return `true`, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. The runner looks through those three wrappers to the model inside, so a wrapper around any other model doesn't qualify.
 
 `CatchupThenPushSubscriptionModel` implements `HistoryRetainingSubscriptions` but returns `false` from `retainsEveryEvent()`, since the live events pushed to it need not be in the event store it replays. A push feed on its own does not implement the interface at all.
 
-On every model that does not make the promise, the runner switches quarantine off at startup and logs a `WARN` saying why. An instance that keeps failing on such a model is never quarantined.
-
-Quarantining an instance returns normally, which acknowledges the event to whatever fed it. Behind a broker bridge, the bridge then acknowledges the record to the broker, and nothing can hand that event to the saga a second time. So on a model that can't promise to keep the event, the runner keeps the instance failing instead.
+On a model that returns `false` from `retainsEveryEvent()`, or doesn't implement `HistoryRetainingSubscriptions`, the runner switches quarantine off at startup and logs a `WARN` saying why. An instance that keeps failing on such a model is never quarantined.
 
 ##### The event needs a redelivery key {#saga-quarantine-redelivery-key}
 
@@ -6944,11 +6944,11 @@ An event store that assigns no global position still gives every event a redeliv
 
 ##### The model is asked again for each event {#saga-quarantine-checked-per-event}
 
-Before the runner quarantines an instance, it asks the model whether acknowledging that one event would lose it. A model that promised wrongly is caught on the event it is about to acknowledge, before that event is gone.
+Before the runner quarantines an instance, it calls the model's `retains(event)` for the event the instance stopped on. `retains` returns `true` when acknowledging the event doesn't delete the only copy of it. A model that returns `true` from `retainsEveryEvent()` by mistake is caught this way, before the event is gone.
 
-When the answer is no, or the check throws, the event is not quarantined. The runner logs a `WARN` once per instance, and the instance keeps failing for as long as your model offers the event again.
+When `retains` returns `false`, or throws, the instance isn't quarantined. The runner logs a `WARN` once per instance, and the instance keeps failing for as long as your model offers the event again.
 
-The check asks whether acknowledging the event would lose it, and an event an operator has already deleted can't be lost by acknowledging it. So the answer stays yes for that event, and the instance can be quarantined instead of failing forever on an event nobody can supply.
+An event an operator has already deleted from the event store isn't deleted by the acknowledgement, so `retains` returns `true` for it. The instance can then be quarantined, so it doesn't keep failing on an event nobody can supply.
 
 ##### Switching quarantine off {#saga-quarantine-off}
 
