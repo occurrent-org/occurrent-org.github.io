@@ -6228,7 +6228,7 @@ Setting a replacement switches off the hierarchy check for every event type the 
 
 Both members leave two things for you to get right, since neither is checked for you. The condition has to admit the saga's start events, because one that excludes them means no instance is ever created. It also has to admit the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running. A `replacementFilter` adds two more of its own. Every CloudEvent it admits is converted to a domain event before the saga sees it, so keep it inside what your `CloudEventConverter` can turn into an event, since one it cannot convert fails that delivery rather than being skipped. A flow saga also still appends every correlated event it receives to the instance's retained history before it looks at which branch handles it, so a replacement wider than the flow's own types grows that history.
 
-Such an event never counts toward a `stepWindow` cap and never evicts one of the step's own events to make room for itself. Nothing evicts it either, as long as the step's own events stay within their cap, so `stepWindow` puts no limit on a step fed only events of a type no step declares.
+Such an event never counts toward a [`stepWindow`](#saga-delivery-contract) cap. The cap drops it only together with an older event of the step's own types, so `stepWindow` puts no limit on a step fed only events of a type no step declares.
 
 A saga that declares no event types and sets no replacement derives a selector matching everything, so a narrowing on it is the whole selector, and the conversion obligation above then falls on that narrowing too.
 
@@ -6638,7 +6638,9 @@ A flow saga does not remember its whole history. A condition, join, guard, or ti
 
 `stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. An event counts if it is of a declared type, meaning a type named by one of the flow's own `on(...)` branches or by an `event(...)` check inside a window condition, or if it is a repeat of the type that started the instance.
 
-An event of any other type is still retained, but it does not count toward the cap and is never evicted by it. Such an event reaches the saga through a `narrowingFilter`, a `replacementFilter`, or a `CloudEventTypeMapper` that maps several domain types onto one CloudEvent type string.
+An event of any other type is still retained, and it does not count toward the cap. The cap never drops it to make room. It goes only when the cap drops a counted event that arrived after it, since the kept events are always one unbroken run ending with the newest.
+
+Such an event reaches a flow saga only through a `replacementFilter` wider than the flow's own types, or a `CloudEventTypeMapper` that maps several domain types onto one CloudEvent type string. A `narrowingFilter` cannot let one in, because it only narrows the filter derived from the flow's types.
 
 There is no cap unless you set one, so an instance that stays in a step while a large number of correlated events arrive keeps all of them, whatever `historyWindow` says. The minimum is 1.
 
@@ -6657,13 +6659,13 @@ FlowSaga.<OrderEvent, OrderCommand>builder()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Set both and an instance keeps at most `historyWindow + 2 * stepWindow + 1` events at any one moment. `stepWindow` is doubled because a transition keeps the events of the step being left so that step's reaction can read them, and the step being entered then fills its own cap before anything is dropped.
+Set both and an instance keeps at most `historyWindow + 2 * stepWindow + 1` events of the types `stepWindow` counts at any one moment. Events of any other type come on top of that. `stepWindow` is doubled because a transition keeps the events of the step being left so that step's reaction can read them, and the step being entered then fills its own cap before anything is dropped.
 
 A step condition still completes on the same event it would have without the cap, because its counts are kept in the instance's state instead of being counted from the events again. What reads less is everything that reads the events directly, a guard's `onlyIf`, a `timeout` reaction, and a window condition's reaction. A retry guard counting `PaymentFailed` across a self-looping step therefore needs its threshold to fit inside `stepWindow`, the same requirement `historyWindow` already has.
 
 A step fed only events of a type no step declares grows with no cap from `stepWindow` at all, since nothing it receives ever counts toward the cap.
 
-What tells you about that growth instead is a warning from `SpringMongoSagaStateStore`, logged once a waiting instance's retained events pass 1,000. A saga running on a state store of your own gets no such warning.
+`SpringMongoSagaStateStore` logs a warning once an instance's retained events reach 1,000, and again only after the count has dropped below 1,000 and reached it once more. A saga running on a state store of your own gets no such warning.
 
 Two things stay true at any cap of 1 or more. `received.initiating<T>()` reaches the start event, which is kept as the first retained event and never counts against the cap, and the event that fired a branch is the last element of `received.asList()`.
 
