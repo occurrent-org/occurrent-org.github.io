@@ -160,6 +160,7 @@ permalink: /documentation
 * * * [Event Metadata](#event-metadata)
 * * * [Startup Mode](#subscription-startup-mode)
 * * * [Spring Advice](#spring-advice-on-handler-methods)
+* * * [When Annotations Register](#when-annotations-register)
 * [Testing](#testing)
 * * [Testing a Saga](#testing-a-saga)
 * * * [Two things to know before you write the first test](#two-things-to-know-before-you-write-the-first-test)
@@ -3404,6 +3405,25 @@ that stores the checkpoint, and combine them to a `DurableSubscriptionModel`:
 
 {% include macros/subscription/blocking/util/autopersistence/example.md %}
 
+##### When No Start Position Can Be Recorded {#durable-subscription-blocking-no-start-position}
+
+A new subscription that asks for `StartAt.subscriptionModelDefault()` gets its start position stored before any event is delivered. `DurableSubscriptionModel` asks the wrapped model for that position through `globalCheckpoint()` inside `subscribe(..)`. A crash before the first checkpoint is saved then resumes from the stored position.
+
+When `globalCheckpoint()` answers `null` and nothing is stored for the subscription, `subscribe(..)` throws `IllegalStateException` and registers nothing. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` answer `null` when the server refuses the `hostInfo` command, and a shared MongoDB Atlas cluster refuses it.
+
+A subscription that already has a checkpoint stored is never refused this way, and neither is one that passes a `StartAt` of its own.
+
+To start such a subscription anyway, set `startWhenNoStartPositionCanBeRecorded(true)` on its config:
+
+```java
+DurableSubscriptionModelConfig config = new DurableSubscriptionModelConfig(1).startWhenNoStartPositionCanBeRecorded(true);
+DurableSubscriptionModel subscriptionModel = new DurableSubscriptionModel(wrappedSubscriptionModel, checkpointStorage, config);
+```
+
+With the Spring Boot starter, set `occurrent.subscription.start-when-no-start-position-can-be-recorded=true` instead.
+
+The subscription then starts with no stored position. If the application crashes before the first checkpoint is saved, the subscription starts over from wherever the feed has reached by then, and an event whose delivery failed before the crash is not delivered again. Up to 0.33.0 every such subscription started this way.
+
 #### Catch-up Subscription (Blocking)
 
 When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events
@@ -3643,6 +3663,8 @@ The fence works on Redis Cluster too. `SpringRedisCheckpointStorage` keeps the c
 One subscription id shape is still refused outright, an `IllegalArgumentException` from `save` for `notOlderThan` or `ifAbsent`. It is the shape Cluster itself falls back to hashing the whole id for (no brace pair, an unmatched brace, or an empty pair like `{}`), where that whole id is also either empty or has a closing brace somewhere in it, for example `""`, `"{}orders"` or `"a}b{c"`. `any()` and `delete` never refuse an id like this, since `any()` writes only the checkpoint key. In Cluster-safe mode a conditional write refuses an id of this shape before touching Redis, so that mode never leaves a version key behind for such an id. A version key for such an id can still be there from `forStandalone(RedisOperations)`, which has no such refusal and does write one, the case of a standalone deployment later migrated into Cluster with the same subscription ids. `delete`'s fallback removes that stray version key when there is one and does nothing when there isn't. A Redis Cluster deployment with no `CompetingConsumerStrategy` wired in is unaffected either way.
 
 Some storages answer per subscription id rather than once for the whole store. `evaluatesWriteConditionsFor(subscriptionId)` is the per-id version of `evaluatesWriteConditions()`, defaulting to whatever that answers, and it exists for a storage whose answer depends on the id it is asked about. `SpringRedisCheckpointStorage`'s Cluster-safe constructors above are exactly that case, answering `true` overall while refusing the one subscription id shape just described. `SpringRedisCheckpointStorage.forStandalone(RedisOperations)`, for a deployment that's standalone or replicated rather than Cluster, accepts that shape too, and every other id outside the version key's own reserved namespace, since a server that isn't Cluster has no slots to align. Don't build a Cluster deployment's storage with it though, because a conditional write then fails with Redis's own `CROSSSLOT` error for an id this constructor accepts and Cluster cannot align a slot for. Once every singleton exists, the Spring Boot starter's fencing check also asks `evaluatesWriteConditionsFor` for the subscription ids you've registered, and throws `CheckpointStorageCannotFenceSubscriptionException`, naming the storage and every refused id, when the answer is `false` for at least one of them.
+
+A storage of your own can also override `resolveFirstCheckpointRace(subscriptionId, candidate)`. `DurableSubscriptionModel` and `ManualStartSubscriptionModel` call it when their `ifAbsent()` write of a new subscription's first position is refused because a position is already stored. The reactor `CheckpointStorage` has the same method returning a `Mono`, and `ReactorDurableSubscriptionModel` calls it the same way. The default answers empty, and the model then falls back to a rule that can refuse the registration with `StartPositionAlreadyPinnedException`. Override it only when your storage can compare the two positions and write the earlier one in one atomic step, and return the checkpoint that is stored once it's done. The MongoDB checkpoint storages do this for positions that no delivery has moved on yet.
 
 Read this before rolling the upgrade out on a cluster already running competing consumers. During the rolling upgrade from 0.32.0 to 0.33.0, a node still on 0.32.0 releases its lock by deleting the lock document, so the next node to take it over starts at version 0 again. A 0.33.0 node's checkpoint write then offers `notOlderThan(0)` against a checkpoint already stamped with a higher version and is refused. That refusal repeats, once per unit of the stored version, each cycle costing one lease period and one re-run of whatever the handler did before the refusal, until every node in the deployment runs 0.33.0. From then on the version keeps climbing instead of resetting, and the fence holds. If a subscription is stuck cycling and you want it to stop sooner, `CheckpointStorage.delete(subscriptionId)` clears the checkpoint and its stored version together, at the cost of replaying everything since. [ADR 116](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0116-a-checkpoint-write-from-a-lease-that-has-moved-on-is-refused.md) has the full design, and the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.33.0.md) covers implementing `CheckpointStorage` yourself in more detail.
 
@@ -4026,9 +4048,13 @@ Starting a refused subscription is what drops it from the model, so getting it b
 
 Two registrations are left alone by all of that. One naming its own `StartAt` isn't read for at all, `StartAt.now()` included, since the model records no position for it and you've said where to begin. One that already has a checkpoint stored begins from that checkpoint and starts even when the read couldn't answer. So a position source that can never answer stops a brand new subscription rather than every subscription the application has.
 
+To start a registration whose read answers nothing, set `startWhenNoStartPositionCanBeRecorded(true)` on `ReactorDurableSubscriptionModelConfig`, or `occurrent.subscription.start-when-no-start-position-can-be-recorded=true` with the Spring Boot starter. `ReactorMongoSubscriptionModel` answers nothing when the server refuses the `hostInfo` command, as a shared MongoDB Atlas cluster does. A read that fails is still refused. [When No Start Position Can Be Recorded](#durable-subscription-blocking-no-start-position) says what starting without a stored position costs.
+
 A dynamic start position is read for the same way, but when it's resolved depends on the wrapped model. Delegating to a named model resolves it right inside `subscribe(..)`, so its refusal comes from that call directly instead of through a handle. Driving the cold primitive itself defers that resolution until the subscription starts, so its registration handle keeps waiting and the refusal comes out then.
 
 Recording that first position is a conditional write, so only the first one to reach storage is kept. When two nodes register the same brand new subscription at the same moment, the node that can't show the stored position is the one it read has its registration refused with `StartPositionAlreadyPinnedException`, rather than starting from a position it never read. The events between the two positions then reach neither until that interval is replayed, which is only safe while the subscription isn't running anywhere. A position that was already stored when the model read for it is taken without a word, so a node joining a subscription another has been running is unaffected.
+
+With `ReactorCheckpointStorage` the node whose write lost is refused only when the stored position has already been moved on by delivery. Otherwise the storage compares the two positions by the operation time each one holds and keeps the earlier one, and the node starts from that.
 
 One node on its own reaches the same refusal with nobody else registering, when the storage reads that position back from a reader that hasn't seen the write. A storage that retried a write whose answer it never heard gets the write refused too, but what it reads back is then the position it wrote itself, so the registration completes. A re-issued write only ends in a refusal when the read back also fails or is served from behind the write. Starting the node again takes whatever position storage holds by then, unless the reader is still behind the write, which answers the same way every time and needs a reader that has seen it instead.
 
@@ -5539,7 +5565,7 @@ On the MongoDB starter, leaving `store` and `storeName` unset with no matching b
 
 #### Read-your-writes (synchronous mode) {#projection-annotation-synchronous}
 
-`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. Since there's no subscription to catch up or resume, setting `startAt`, `startAtGlobalPosition`, `resumeBehavior` or `startupMode` in this mode fails startup.
+`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. A synchronous projection has no subscription to catch up or resume, so setting any of the start attributes listed under [The `@Projection` annotation](#the-projection-annotation) fails startup in this mode.
 
 #### Without the starter {#projection-annotation-without-starter}
 
@@ -7043,9 +7069,27 @@ A handler method the proxy can't reach fails Spring Boot startup with `Subscript
 
 A private or final handler on a bean nothing proxies still runs, since there's no advice to lose.
 
-Handlers register once every singleton bean exists, before any `ApplicationRunner` or `CommandLineRunner` runs. A subscription that only receives new events therefore sees an event written by an `ApplicationRunner`, but not one written while the beans are being created, from a `@PostConstruct` method for example.
+#### When Annotations Register
 
-A handler on a `@Lazy` bean registers when the bean is first built instead. It doesn't wait for its replay then, whatever `startupMode` says, since the application is already up.
+Every `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, `@SynchronousSubscription`, `@Projection`, `@Snapshot` and `@Saga` registers once every singleton bean exists, before any `ApplicationRunner` or `CommandLineRunner` runs. A subscription that only receives new events therefore sees an event written by an `ApplicationRunner`, but not one written while the beans are being created, from a `@PostConstruct` method for example.
+
+A `@Lazy` bean whose declared type shows one of these annotations is built at that point too, so it registers with the others.
+
+A bean whose declared type doesn't show the annotation registers when something first builds it. That happens with a `@Lazy` `@Bean` method that returns an interface, when the annotated method is only on the class behind it:
+
+```java
+@Configuration
+public class NotifierConfig {
+
+    @Bean
+    @Lazy
+    public OrderNotifier orderNotifier() { // OrderNotifier is an interface
+        return new EmailOrderNotifier(); // @Subscription is declared on EmailOrderNotifier
+    }
+}
+```
+
+A `FactoryBean` whose product nothing has asked for yet registers the same way. Such a registration doesn't wait for its replay, whatever `startupMode` says, since the application is already up. A bean that nothing ever builds never registers its handlers.
 
 # Testing
 
