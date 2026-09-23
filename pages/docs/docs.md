@@ -6814,7 +6814,7 @@ Enumerating instances is cheap. Listing flow-saga instances never deserializes t
 
 # Deriving the Event Filter {#deriving-the-event-filter}
 
-A projection, a snapshot view, a saga, a subscription and a query all say which event types they handle, and Occurrent turns that list into the filter that selects events for them. There is no separate list of subscribed types to keep in sync with the handlers.
+A projection, a snapshot view, a saga, a subscription and a query all say which event types they handle, and Occurrent turns that list into the filter that selects events for them. An application service's `ExecuteFilter` and a `DcbCriteriaBuilder` criterion name event types the same way. There is no separate list of subscribed types to keep in sync with the handlers.
 
 A sealed type is expanded into every concrete type it permits, all the way down, so it selects more than the type you named. A projection with one handler on a sealed `OrderEvent` asks for `OrderEvent`, `OrderPlaced` and `PaymentReserved`, and receives the concrete events stored under that hierarchy:
 
@@ -6860,6 +6860,8 @@ Where the concrete types cannot be found, the declaration is refused with an `Il
 
 A declaration of concrete types, or of a sealed type that is sealed or final at every level below it, is accepted. Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs nothing from you.
 
+An enum is accepted too, including one whose constants have bodies, and so is a sealed interface above one. A constant with a body is stored under its own class, `PaymentEvent$Reserved`, while a constant without one is stored under the enum class itself. Decide whether a constant has a body before you have events in the store.
+
 Each place derives its filter at a different moment, and that moment is where the refusal comes out. None of them waits until an event is delivered.
 
 | Where you declared the types | Where a refusal is thrown |
@@ -6873,6 +6875,18 @@ Each place derives its filter at a different moment, and that moment is where th
 | `DomainEventQueries.query(Class..)` and `query(Collection)` | each query |
 | A saga built with `Saga.Builder` or `FlowSaga.Builder` | `build()` |
 | A saga made with the `Saga.create(..)` factory | that call |
+| `ExecuteFilter.type(..)` or `includeTypes(..)`, and Kotlin's `ExecuteFilters` equivalents | each application service `execute(..)` call given that filter |
+| `DcbCriteriaBuilder.type(..)` or `types(..)` | that call |
+
+`ExecuteFilter.excludeTypes(..)` widens instead of refusing, because excluding a supertype has to exclude everything under it. It excludes the declared type and every concrete type it can find below it by following `permits` clauses, and a type it cannot reach stays in the read.
+
+`excludeTypes(..)` still refuses an array or a primitive type. It also refuses an interface or a non-sealed abstract class with nothing concrete found below it, since no event is stored under that type's own name with the mappers Occurrent ships.
+
+A sealed type that permits such a reopened interface or abstract class is not refused. With `ReflectionCloudEventTypeMapper` it excludes nothing from below that point, so seal the hierarchy or exclude the concrete types.
+
+A `DcbCriteriaBuilder` seeded with a boundary that excludes types has one more failure. A sealed type passed to `type(..)` or `types(..)` expands to its concrete types, and when one of them is a type the boundary excludes, the call throws `IllegalArgumentException` saying types and excluded types cannot overlap.
+
+A criterion built from a sealed type also matches every concrete type it permits when you use it in `DcbAppendCondition.failIfEventsMatch(..)`, so the append fails on a concurrent write of any of them.
 
 There are three remedies, and which one fits depends on who owns the events.
 
@@ -6907,6 +6921,8 @@ Use this when the hierarchy is not yours to seal, or is deliberately open. List 
 * `filterFromEventTypes(converter, arrayOf(OrderPlaced::class, PaymentReserved::class))` on the [subscription DSL](#subscription-dsl).
 * `domainEventQueries.query(OrderPlaced.class, PaymentReserved.class)` on the [query DSL](#query-dsl).
 * The concrete types in the `eventTypes` attribute of `@Subscription` and its siblings.
+* `ExecuteFilter.includeTypes(OrderPlaced.class, PaymentReserved.class)` on an [application service](#application-service-stream-filtering-and-execute-options).
+* `types(OrderPlaced.class, PaymentReserved.class)` on a `DcbCriteriaBuilder`.
 
 ## Or set an explicit filter {#derived-filter-explicit}
 
@@ -6917,6 +6933,8 @@ An explicit filter is used instead of deriving one, so nothing is expanded for t
 * `DomainEventQueries` has no override on its `Class` and `Collection` overloads, so call `query(Filter, ..)` directly.
 * The subscription DSL has none on `filterFromEventTypes`, so build the `Filter` yourself and pass it to the `subscribe(..)` overload that takes a `StreamSubscriptionFilter` or an `AgnosticSubscriptionFilter`.
 * `@Subscription` and its siblings have none, so declare the concrete types there instead.
+* An application service takes `ExecuteFilter.from(StreamReadFilter)` in place of `type(..)` or `includeTypes(..)`.
+* `DcbCriteriaBuilder` has none, so build the criterion from CloudEvent type strings with `DcbCriteria.type(String)` or `DcbCriteria.types(String, ..)`.
 
 If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, an explicit filter is the remedy to use. The subclasses were reaching you before, since they were stored under the declared type's own type string, and they are refused now because reflection cannot tell your mapper apart from the default one.
 
