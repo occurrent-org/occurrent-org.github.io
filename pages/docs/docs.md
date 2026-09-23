@@ -764,32 +764,39 @@ eventStoreOperations.updateEvent("cloudEventId", cloudEventSource) { cloudEvent 
 
 #### Repairing events damaged before 0.34.0 {#update-event-repair}
 
-`updateEvent` reapplies the values the store owns before it returns, so an update function that builds a replacement
-event from scratch cannot drop them or set them to something of its own. Those values are the event's `position`, its
-DCB tags, and its `streamId` and `streamVersion`.
+`updateEvent` keeps the values the store owns, whatever event your update function returns. Those are the event's
+`position`, its DCB tags, and its `streamId` and `streamVersion`, and the event `updateEvent` returns has the same
+values as the stored document.
 
-A store running 0.33.0 or earlier did not do that, so an application that called `updateEvent` on one of those versions
-can be holding events that lost one. Such an event is missing from DCB reads, from `exists` and `count`, from
-position-ordered reads, from position-based catch-up, and from the conflict query behind a conditional append, where it
-means an append that should have been refused is accepted instead. None of it raises an error anywhere.
+Up to and including 0.33.0 that was not the case. The MongoDB event stores wrote `position` back as a string instead of
+a number and did not write back the indexed `dcbTags` array of a DCB event, and an update function that built a
+replacement event from scratch could drop or change any of these values. So if you called `updateEvent` on a MongoDB
+event store running 0.33.0 or earlier, some of your events may be damaged.
 
-A store that writes `position` looks for one of those events when it starts and logs a warning naming the repair. The
-query behind that check is answered by the `position` index, so it costs nothing on a store that was never damaged.
+A damaged event is left out of DCB reads, `exists` and `count`, position-ordered reads and position-based catch-up,
+without any error. It is also left out of the conflict query behind a conditional append, so an append that should
+have been refused is accepted.
 
-Set `requireRepairedEvents(true)` on the store's `EventStoreConfig` if you would rather it refused to start than kept
-accepting conditional appends against a damaged event until you have run the repair. It is off by default, so a store
-warns and starts unless you ask for this.
+A MongoDB event store that writes `position` checks for a `position` stored as a string when it starts, and logs a
+warning that points at the repair. The check uses the `position` index, so on a store that was never damaged it reads no
+index entries at all. It only finds a damaged `position`, so a startup without the warning does not rule out the damage
+described under [what the repair cannot find](#update-event-repair-limits).
+
+If you would rather the store refused to start than kept accepting appends that should have been refused, set
+`requireRepairedEvents(true)` on its `EventStoreConfig.Builder`. It is off by default, and the Spring Boot starters have
+no property for it, so there you define your own `EventStoreConfig` bean. With it on, the store runs the check even
+when it writes no `position`, and on such a store the check can read the whole collection at startup.
 
 The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`. A store never
 repairs its own history. A damaged event stays exactly as it is until someone repairs it, while a wrong repair writes
 a plausible value that nothing can take back, and some of the damage cannot be repaired safely at all.
 
-`report()` counts what is there and writes nothing. `run()` repairs, resumes from a checkpoint if it is killed, and
-only touches events that still look damaged, so running it twice is safe.
+`report()` counts the damage and writes nothing. `run()` repairs it and only touches events that still look damaged,
+so running it twice is safe. If a run is killed, start it again and it resumes from a checkpoint document.
 
-Unlike the startup check, both of them read the whole collection, since finding an event whose tag array is missing
-cannot use an index. Run them during a quiet period on a large store, and run one at a time, because two runs at once
-share one checkpoint document and the first to finish deletes it while the other is still going.
+Both of them read the whole collection, since finding an event whose tag array is missing cannot use an index, so run
+them during a quiet period on a large store. Run one repair at a time, because two runs at once share one checkpoint
+document and the first to finish deletes it while the other is still going.
 
 {% capture java %}
 MongoDatabase database = mongoClient.getDatabase("my-database");
@@ -807,61 +814,75 @@ val result = repair.run()      // repairs it
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+The module also builds a runnable jar with the `cli` classifier, which takes the arguments
+`<mongoUri> <database> <collection> [report|repair]` and only reports unless the last argument is `repair`. A repair that leaves
+an event for a person to look at exits with status `2`, so a job scheduler does not record it as a clean run.
+
 Get every instance writing to the collection onto 0.34.0 before you start. The repair walks the collection once in
 `_id` order and never goes back, so an instance still on an older version can damage an event the walk has already
 passed, and the run finishes reporting a collection it has left broken.
 
-The [repair runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/update-event-repair.md) has the
-full sequence, including the queries that tell you whether you are affected and what to do with each event the tool
-will not fix by itself.
+The repair fixes the stored events, not the checkpoints of your subscriptions. A consumer that reads in position order,
+a position-based catch-up for example, and that had already moved past a repaired event's position before the repair
+reached it, never goes back for that event. `UpdateEventRepairResult.minRepairedPosition()` and `maxRepairedPosition()`
+give the lowest and highest position the run repaired, and the finished run logs the same two numbers. A consumer
+whose checkpoint is below the lowest one has not reached a repaired event yet and needs nothing from you. One whose
+checkpoint is at or above it may have skipped a repaired event.
 
-##### What the repair restores, and what it cannot check
+A later run only reports the positions it repaired itself, so keep the range from every run. A run that was killed and
+resumed can report a wider range than it actually repaired, and more unrecoverable events than there really are, but
+never a narrower range or fewer events.
+
+The [repair runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/update-event-repair.md) has the
+full sequence, including the queries that tell you whether you are affected, what to do with each event the tool will
+not fix by itself, and how to replay or reconcile a consumer that skipped a repaired event.
+
+##### What the repair restores, and what it cannot find {#update-event-repair-limits}
 
 It rebuilds `position` from the string the document still holds, and the DCB tag index from the `dcbtags` extension,
 which is a string and so came through intact. It reuses the store's own mappers, so a repaired event is what a running
 store would have written.
 
-A position it restores is the value the document holds, not one it can check. An update function that set `position`
-itself left that number behind like any other, and three kinds of forged value are still caught, one another event
-already holds, one at or below zero, and one above the store's position counter, the counter being the highest position
-the store has ever handed out.
+A position it restores is the value the document holds, and the repair has no way to check that value. If an update
+function set `position` itself, the old write-back kept that number like any other. The repair catches a value that
+another event already holds, one at or below zero, and one above the highest position the store has handed out, and
+reports those instead (see the table below). A wrong value that passes all three looks exactly like the event's own
+position, so the repair restores it and counts it as repaired.
 
-What is left is a forged value that is positive, unclaimed, and inside the range the store has handed out. Nothing
-distinguishes it from the event's own position, so the repair restores it and counts it as repaired.
+If your update functions never set `position`, every position the repair restores is the event's own. If they did, a
+clean run does not prove the positions are right, and only a record kept outside the store can tell you.
 
-So a clean run means something different depending on your update functions. If they set `position` themselves, a clean
-run is not a statement that the positions are right, and only a record from outside the store can tell you. If they
-left `position` alone, which is the ordinary case, every position the repair restored came from the event itself.
+Two kinds of damage are invisible to the tool, both from an update function that returned a replacement event built
+from scratch. One dropped the `dcbtags` extension, leaving a document that no longer looks like a DCB event at all.
+The other dropped the `position` of a plain stream event, leaving a document that looks like an event written before
+`position` existed.
 
-Two kinds of damage are invisible to the tool as well, both from an update function that returned a replacement event
-built from scratch. One dropped the `dcbtags` extension, leaving a document that no longer looks like a DCB event at
-all. The other dropped the `position` of a plain stream event, leaving a document that nothing tells apart from history
-written before `position` existed.
+That is why the startup messages about events without a position also point at the repair runbook. The position
+backfill those messages name would give an event whose `position` was dropped a new position it never had, and that
+cannot be undone.
 
-That second one is why the startup messages about events without a position also point at the repair runbook. The
-migration those messages name fills in a position for an event that never had one, and giving it to an event whose
-position was dropped instead assigns a position it never had, which nothing undoes.
-
-##### Events the repair reports instead of fixing
+##### Events the repair reports instead of fixing {#update-event-repair-unrecoverable}
 
 Where the old write-back destroyed the only copy of a value, there is nothing left to rebuild it from, so the tool
-names the event by `_id` and leaves it. `UpdateEventRepairResult` carries the findings and every one is logged.
+names the event by `_id` and leaves that value alone. `UpdateEventRepairResult.unrecoverableEvents()` contains up to
+1,000 findings by default (`UpdateEventRepairOptions.maxReportedUnrecoverable`), and every one is logged at `WARN`.
 
 |  Reason | What it means | What to do |
 |:----|:------|:----|
 | `POSITION_LOST` | The event has DCB tags, so it was written with a position, and the document has no `position` field at all. | The tag index is rebuilt and the event stays outside position-ordered reads. Set the position by hand if your own records have it. |
-| `POSITION_ALREADY_TAKEN` | The position is a string holding a value another event already holds as a number, which the unique `position` index refuses. | Look at both events and decide which keeps it. Nothing in either document says. |
+| `POSITION_ALREADY_TAKEN` | The position is a string holding a value another event already holds as a number, which the unique `position` index refuses. | The event is left exactly as it was, tag index included. Look at both events and decide which keeps the position, since nothing in either document says. |
 | `POSITION_NOT_A_NUMBER` | The `position` string does not parse as a number. | No known path produces this, so investigate before changing anything. The tag index is rebuilt either way. |
 | `POSITION_NOT_POSITIVE` | The position is zero or negative, which is not a value any store assigns. | Treat it as a lost position. Only an update function that set `position` itself produces this. |
-| `POSITION_ABOVE_COUNTER` | The position is above the store's position counter, so the store never handed it out. A read clamps its upper bound to that same counter, so the event is invisible anyway. | Treat it as a lost position. A store with no counter document has no ceiling and is never reported this way. |
+| `POSITION_ABOVE_COUNTER` | The position is above the store's position counter, the highest position the store has handed out, so the store never assigned it. A read never goes above that counter, so the event is invisible anyway. | Treat it as a lost position. A store with no counter document has no ceiling and is never reported this way. |
+| `UNREADABLE` | The `dcbtags` extension is not a string, is an explicit null, or does not decode to a set of tags. Nothing Occurrent writes produces this. | The document was most likely edited outside Occurrent, so find out how before changing it. The run continues past it, and a readable `position` is still repaired. |
 
 An event can be counted as repaired and still appear here, since the reasons are independent. A `POSITION_LOST` event
 gets its tag index back, which is a repair, while its position stays gone.
 
 `unrecoverableEventCount()` counts events rather than findings, so an event with two things wrong with it counts once.
-It is not the whole of what needs a person though. `eventsWithLostPosition()` is asked of the collection when the run
-finishes, so it still counts an event whose tag index an earlier run rebuilt, and a run is clean only when both are
-zero.
+It does not cover everything that needs a person, though. `eventsWithLostPosition()` is asked of the collection when
+the run finishes, so it also counts an event whose tag index an earlier run rebuilt, and a run is clean only when both
+are zero.
 
 ### Stream Filtering {#eventstore-stream-filtering}
 
