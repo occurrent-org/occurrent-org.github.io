@@ -159,6 +159,7 @@ permalink: /documentation
 * * * [Selective Events](#selective-events)
 * * * [Event Metadata](#event-metadata)
 * * * [Startup Mode](#subscription-startup-mode)
+* * * [Spring Advice](#spring-advice-on-handler-methods)
 * [Testing](#testing)
 * * [Testing a Saga](#testing-a-saga)
 * * * [Two things to know before you write the first test](#two-things-to-know-before-you-write-the-first-test)
@@ -7012,6 +7013,39 @@ Here's a summary of the different startup modes:
 | `DEFAULT`            | Determine the startup mode based on the properties of the subscription (such as `startAt()` and `resumeBehavior()`). It'll use `BACKGROUND` if the subscription needs to replay historic events before subscribing to new ones (e.g. if `startAt()` is `StartPosition.BEGINNING_OF_TIME`), otherwise `WAIT_UNTIL_STARTED` will be used.                                                                                                                                                                                                                                                                                                                                                                             |
 | `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.CheckpointStorage`, it'll never miss an event during startup.                                                                                      |
 | `BACKGROUND`         | The subscription will NOT wait until it's started up fully before Spring continues starting the rest of the application; instead, it will be started in the background. Typically, this is useful if you instruct the subscription to start at an earlier date (such as the beginning of time), and you have a lot of events to read before the subscription has caught up. In this case, you may wish to start the Spring application before the subscription has fully started (i.e., before all historic events have been replayed) because waiting for all events to replay takes too long. The subscription will then replay all historic events in the background before switching to continuous mode. |
+
+#### Spring Advice on Handler Methods
+
+A handler method runs through the bean's Spring proxy, so `@Transactional` or any other aspect on it, or on its class, applies to every delivery:
+
+```java
+@Component
+public class OrderStatusUpdater {
+
+    @Transactional
+    @Subscription(id = "orderStatus")
+    public void onOrderPlaced(OrderPlaced orderPlaced) {
+        // runs inside a transaction
+    }
+}
+```
+
+That holds for `@Subscription`, `@StreamSubscription`, `@DcbSubscription` and `@SynchronousSubscription` alike.
+
+A handler method the proxy can't reach fails Spring Boot startup with `SubscriptionHandlerNotInvocableException`, instead of running without its advice:
+
+| Handler method | Why the proxy can't reach it | Fix |
+|---|---|---|
+| Declared only on the class, on a bean behind a JDK interface proxy | The proxy implements only the interfaces | Declare the method on an interface, or set `spring.aop.proxy-target-class=true` |
+| `private`, on a bean behind a CGLIB proxy | A CGLIB proxy can't override a private method | Make the method non-private |
+| `final`, on a bean behind a CGLIB proxy | A CGLIB proxy can't override a final method | Remove `final` |
+| `static` | Calling it never goes through any proxy | Make it an instance method |
+
+A private or final handler on a bean nothing proxies still runs, since there's no advice to lose.
+
+Handlers register once every singleton bean exists, before any `ApplicationRunner` or `CommandLineRunner` runs. A subscription that only receives new events therefore sees an event written by an `ApplicationRunner`, but not one written while the beans are being created, from a `@PostConstruct` method for example.
+
+A handler on a `@Lazy` bean registers when the bean is first built instead. It doesn't wait for its replay then, whatever `startupMode` says, since the application is already up.
 
 # Testing
 
