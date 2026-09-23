@@ -3478,6 +3478,11 @@ ProjectionRunner.agnostic(model, cloudEventConverter)
 ```
 
 Two settings control the handover, both with sensible defaults you can ignore until you cannot. The handover keeps two de-dup caches, one for what the replay delivered and one for what live delivery delivered, and each holds the last 10000 events by id and source. That is how far the replay-to-live overlap is suppressed exactly. At the default the two hold up to 20000 keys between them. Past that window the at-least-once contract takes over, and because applying the same event twice must leave the read model unchanged, the duplicate does no harm. The live buffer holds at most 100000 events during the replay and is a fail-loud ceiling rather than a throttle, so hitting it throws instead of dropping events. Pass `CatchupThenLiveOptions` to change either:
+Two settings control the handover, and both have defaults.
+
+The first, `dedupCacheSize`, is how many recently delivered event ids the handover keeps, so that an event both the replay and the live feed deliver reaches your handler once. The handover keeps two such caches, one for what its replay delivered and one for what it delivered live, and the setting sizes each of them. The default of 10000 therefore keeps up to 20000 ids, and raising it costs twice what the number suggests. An overlap longer than that can reach your handler twice, and because applying the same event twice must leave the read model unchanged, the duplicate does no harm.
+
+The second, `maxBufferedEvents`, caps the live events buffered during the replay, at 100000 by default. It's a fail-loud ceiling rather than a throttle, so hitting it throws instead of dropping events. Pass `CatchupThenLiveOptions` to change either:
 
 ```java
 CatchupThenPushSubscriptionModel model = new CatchupThenPushSubscriptionModel(
