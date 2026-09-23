@@ -6359,7 +6359,9 @@ If `listenForCatchup` returns `false`, you have to watch the model yourself. Whe
 
 If nothing calls them, the wrapper records every event of a replay and never clears its old records.
 
-Also call the wrapper's `pollForClear()` on a schedule, on a thread meant for blocking work. If the store is unavailable when a catch-up begins, the clear fails, and `pollForClear()` retries it. Without it, the clear is only retried when another event reaches the projection.
+Also call the wrapper's `pollForClear()` on a schedule, on a thread meant for blocking work. `catchupStarted` only marks the clear as due, because it runs on the thread that registers the catch-up and must not wait for the store. The clear itself runs on the next event the projection receives or the next `pollForClear()` call, whichever comes first, and a clear that fails because the store is unavailable is tried again the same way.
+
+Without the poll, a projection that receives no further event never clears, and keeps the records from before its replay.
 
 If you maintain a projection some other way, call `recordApplied(projectionId, appendId)` on the store yourself wherever it applies an event.
 
@@ -6373,7 +6375,7 @@ These properties belong to the Spring Boot starter. Configure the store it auto-
 | `retention` | `7d` | How long a record is kept before MongoDB's TTL index deletes it. A wait for a deleted record times out rather than answering wrong, so this is about storage rather than correctness. |
 | `max-attempts` | `10` | How many times the store calls MongoDB for one read or write before it fails, at most 1000. The projection records on the thread that delivers its events, so an unreachable store holds that delivery up this long and then fails it like a handler that threw. A `waitUntilApplied` that runs out of attempts keeps polling instead. |
 | `wait-backoff.initial` / `.max` / `.multiplier` | `25ms` / `250ms` / `2.0` | How `waitUntilApplied` paces its polls. |
-| `replay-poll.initial` / `.max` / `.multiplier` | `200ms` / `5s` / `2.0` | How often the starter retries a clear that failed when a catch-up began. On a subscription model that doesn't send catch-up signals, it is also how often the starter checks `isCatchingUp`. |
+| `replay-poll.initial` / `.max` / `.multiplier` | `200ms` / `5s` / `2.0` | How often the starter runs a clear a catch-up marked as due, and tries again one that failed. On a subscription model that doesn't send catch-up signals, it is also how often the starter checks `isCatchingUp`. |
 
 ##### What a `true` answer means, and what it doesn't {#applied-appends-true-answer}
 
