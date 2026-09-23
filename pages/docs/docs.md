@@ -3641,7 +3641,7 @@ Replay stays the event store's job, through [`CatchupThenPushSubscriptionModel`]
 
 Three modules cover the forwarding, one shared API and one per broker. Add the shared API first. RabbitMQ's and Kafka's own dependencies come with their own subsections below.
 
-Each broker also has a Spring Boot starter, `occurrent-broker-rabbitmq-spring-boot-starter` and `occurrent-broker-kafka-spring-boot-starter`, which you turn on with `@EnableOccurrentRabbitMqBroker` or `@EnableOccurrentKafkaBroker`. This section sticks to the plain libraries.
+Each broker also has a Spring Boot starter, `occurrent-broker-rabbitmq-spring-boot-starter` and `occurrent-broker-kafka-spring-boot-starter`, which you turn on with `@EnableOccurrentRabbitMqBroker` or `@EnableOccurrentKafkaBroker`. The subsections below use the plain libraries, and [With Spring Boot](#broker-spring-boot) shows the starters.
 
 {% include macros/broker/api/blocking/maven.md %}
 
@@ -3927,6 +3927,92 @@ Its Testcontainers tests cover the catch-up-to-live handover, a failing handler 
 The Kafka wiring below is built the same way. It has no equivalent Testcontainers-backed example module yet, so treat it as a wiring sketch against the shipped API rather than a tested reference:
 
 {% include macros/broker/kafka/blocking/example.md %}
+
+##### With Spring Boot {#broker-spring-boot}
+
+`occurrent-broker-rabbitmq-spring-boot-starter` builds the sink and the bridges from properties. Turn it on with `@EnableOccurrentRabbitMqBroker` and declare the `com.rabbitmq.client.Connection` it uses:
+
+```java
+@SpringBootApplication
+@EnableOccurrentRabbitMqBroker
+public class Application {
+
+    @Bean
+    Connection rabbitMqConnection() throws IOException, TimeoutException {
+        ConnectionFactory connectionFactory = new ConnectionFactory();
+        connectionFactory.setUri("amqp://guest:guest@localhost:5672");
+        return connectionFactory.newConnection();
+    }
+}
+```
+
+```properties
+occurrent.broker.rabbitmq.exchange=orders-exchange
+```
+
+The starter never creates the `Connection`. `spring-boot-starter-amqp` doesn't supply one either, because it registers a Spring AMQP `ConnectionFactory`, which is a different type. Without a `Connection` bean the starter registers nothing and logs a `WARN` naming the missing bean.
+
+Each bridge is built from a factory the starter registers, one queue per projection or saga:
+
+```java
+@Bean(destroyMethod = "close")
+RabbitMqDomainEventBridge<OrderEvent> orderStatusBridge(RabbitMqDomainEventBridgeFactory bridges,
+                                                        DomainEventFeed<OrderEvent> ordersFeed) {
+    return bridges.forQueue("order-status-queue", ordersFeed).build();
+}
+```
+
+`forQueue(..)` returns the same builder as `RabbitMqDomainEventBridge.builder(..)`, with the connection, the resolver and every `bridge.*` property below already applied. You can still override any of them before `build()`.
+
+The factory doesn't register the bridge as a Spring bean, so nothing closes it for you. Declaring it as a `@Bean` with `destroyMethod = "close"`, as above, has Spring close it at shutdown.
+
+`RabbitMqCloudEventBridgeFactory.forQueue(queue, pushModel, outcomeChannel)` is the CloudEvent-level factory. When `pushModel` feeds a `@Projection` or `@Saga` with `source = PUSH`, it also sets `readinessSource(..)` to that projection's or saga's catch-up, so you don't pass it yourself.
+
+With `declare-topology` left on, a bridge needs the resolver to know which routing keys to bind. The starter's resolver is a `RabbitMqTopicExchangeDestinationResolver` on `occurrent.broker.rabbitmq.exchange`, and it needs a `CloudEventTypeMapper` bean, which the MongoDB starter supplies.
+
+The same resolver backs the `CloudEventSink` bean, a `RabbitMqCloudEventSink`. The sink is built the first time something injects it, so an application that only consumes, with `declare-topology` off, needs no `exchange`. With a `CloudEventConverter` bean there's also a `RabbitMqDomainEventSink`.
+
+Your own `CloudEventSink` or `DestinationResolver` bean replaces the starter's.
+
+| Property under `occurrent.broker.rabbitmq` | Default | Sets |
+|---|---|---|
+| `exchange` | none | The topic exchange the sink publishes to and the bridges bind to |
+| `sink.acknowledgement-timeout` | `5s` | How long the sink waits for a publisher confirm |
+| `sink.retry.initial`, `.max`, `.multiplier` | `100ms`, `2s`, `2.0` | The backoff between publish retries |
+| `bridge.poll-interval` | `1s` | `pollInterval(..)` |
+| `bridge.prefetch-count` | `1` | `prefetchCount(..)` |
+| `bridge.close-timeout` | `30s` | `closeTimeout(..)` |
+| `bridge.declare-topology` | `true` | `declareTopology(..)` |
+| `bridge.on-delivery-failure` | `REDELIVER` | `onDeliveryFailure(..)` |
+| `bridge.parking-destination.exchange`, `.routing-key` | none | `parkingDestination(..)`, where `PARK` publishes |
+| `bridge.retry.initial`, `.max`, `.multiplier`, `.max-attempts` | `100ms`, `2s`, `2.0`, `10` | How `build()` retries opening its channel and declaring the queue |
+
+`occurrent-broker-kafka-spring-boot-starter` needs no client bean. Turn it on with `@EnableOccurrentKafkaBroker` and set the bootstrap servers:
+
+```properties
+occurrent.broker.kafka.bootstrap-servers=localhost:9092
+occurrent.broker.kafka.topic=orders
+```
+
+`topic` gives the sink a `KafkaSharedTopicDestinationResolver` on that topic. The factories are `KafkaDomainEventBridgeFactory.forGroup(groupId, feed)` and `KafkaCloudEventBridgeFactory.forGroup(groupId, pushModel, outcomeChannel)`, used the same way as the RabbitMQ ones.
+
+`forGroup(..)` sets `group.id` to the group you pass and `enable.auto.commit` to `false`. Any other Kafka client setting goes under `producer.additional-properties` or `consumer.additional-properties`, for example `occurrent.broker.kafka.consumer.additional-properties.max.poll.records=100`.
+
+A `group.id` there is ignored. The sink still refuses an `acks` weaker than `all`, and the bridge still refuses to start if `enable.auto.commit` is turned on there.
+
+| Property under `occurrent.broker.kafka` | Default | Sets |
+|---|---|---|
+| `bootstrap-servers` | none | The brokers, comma-separated or as a YAML list. The starter does nothing without it |
+| `topic` | none | The one topic the sink publishes to |
+| `producer.additional-properties` | none | Extra producer config for the sink |
+| `consumer.additional-properties` | none | Extra consumer config for every bridge |
+| `sink.acknowledgement-timeout` | `5s` | How long the sink waits for the broker to acknowledge |
+| `sink.retry.initial`, `.max`, `.multiplier` | `100ms`, `2s`, `2.0` | The backoff between publish retries |
+| `bridge.poll-timeout` | `1s` | `pollTimeout(..)` |
+| `bridge.close-timeout` | `30s` | `closeTimeout(..)` |
+| `bridge.on-delivery-failure` | `REDELIVER` | `onDeliveryFailure(..)` |
+| `bridge.parking-destination.topic` | none | `parkingDestination(..)`, where `PARK` publishes |
+| `bridge.commit-retry.initial`, `.max`, `.multiplier` | `100ms`, `2s`, `2.0` | The backoff between offset commit retries |
 
 #### Durable Subscriptions (Blocking)
 
