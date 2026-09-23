@@ -19,6 +19,7 @@ CatchupThenPushSubscriptionModel model =
 RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(
                 rabbitConnection, pushModel, outcomeChannel, "order-status-queue")
         .resolver(resolver)
+        .readinessSource(model::isReadyForLiveDelivery)
         .build();
 
 ProjectionRunner.stream(model, cloudEventConverter)
