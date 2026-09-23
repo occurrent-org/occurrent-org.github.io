@@ -3279,7 +3279,7 @@ Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of
 | `FILTERED` | The subscription's filter looked at the event and declined it. Offering it to the same subscription again gets the same answer. |
 | `UNAVAILABLE` | No filter was asked, because nothing is registered, the model is stopped, or the subscription is paused. Nothing is thrown. |
 | `DEFERRED` | The filter accepted the event, but the `CatchupThenPushSubscriptionModel` in front of the handler didn't deliver it. That happens, for example, when its catch-up was stopped, or when a broker listener called `acceptRedeliverable(..)`, described below, before the replay finished. Nothing is thrown, and offering the event again later is safe. |
-| `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event for a reason that ends without anyone acting on it, such as its live buffer being full while the replay is still running. The exception propagates out of `accept(..)` either way. |
+| `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event, for example because its live buffer is full while the replay is still running. The exception propagates out of `accept(..)` either way. |
 | `REFUSED` | The `CatchupThenPushSubscriptionModel` in front of the handler refused the event because its replay failed, and it refuses every event from then on. The exception propagates out of `accept(..)`. |
 
 If you acknowledge broker messages yourself, `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. `DELIVERED` can arrive together with the handler's exception, so acknowledge only once `accept(..)` has also returned normally.
@@ -3312,7 +3312,7 @@ The table below shows what the observer is told, and what `accept(..)` throws, w
 
 A filter can throw a `RuntimeException` or an `AssertionError` when the `DataFieldReader` you gave the model fails to read a field.
 
-Because the observer's exceptions are caught, a broken observer can't turn a delivered event into a broker redelivery, and it doesn't stop the rest of a batch from being routed.
+Because an `Exception` or `AssertionError` from the observer is caught, an observer that throws one can't turn a delivered event into a broker redelivery, and doesn't stop the rest of a batch.
 
 If your observer throws an `InterruptedException`, the model sets the interrupt flag on the calling thread again.
 
@@ -3470,9 +3470,11 @@ DomainEventFeed<OrderEvent> feed = new DomainEventFeed<>(eventStore, cloudEventC
 
 Without one, `register(..)` still accepts that filter, and the first `acceptCloudEvent(..)` throws `UnreadableLiveFilterException`. Every later call on the same feed throws that same exception instance, so stop consuming instead of redelivering the event. Build a new feed with a reader, or register a filter without the `data` condition.
 
-On the reactor stack `acceptCloudEvent(..)` returns a `Mono<RoutingOutcome>`, and the two refusals above arrive as that `Mono`'s error.
+On the reactor stack `acceptCloudEvent(..)` returns a `Mono<RoutingOutcome>`, and the `IllegalStateException` and `UnreadableLiveFilterException` above arrive as that `Mono`'s error.
 
-On the blocking stack, once the projection's catch-up has failed, every later `acceptCloudEvent(..)` throws an `IllegalStateException`. `refusesPermanently()` returns `true` from then on, which tells that failure apart from a replay that's still running, where `isReadyForLiveDelivery()` is also `false`.
+On the blocking stack, once the projection's catch-up has failed, every later `acceptCloudEvent(..)` throws an `IllegalStateException`.
+
+`feed.isReadyForLiveDelivery()` is `false` both while the replay runs and after the catch-up has failed. `feed.refusesPermanently()` returns `true` only after the failure, so check it to tell the two apart.
 
 The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so applying the same event twice must leave the read model unchanged. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
 
