@@ -5658,14 +5658,14 @@ A `View<S, E>` is a pure fold, an initial state and an `evolve` that applies one
 {% capture java %}
 record NameState(String userId, String name) {}
 
-View<NameState, DomainEvent> view = View.create((state, event) -> switch (event) {
+View<@Nullable NameState, DomainEvent> view = View.create((state, event) -> switch (event) {
     case NameDefined e    -> new NameState(e.userId(), e.name());
     case NameWasChanged e -> new NameState(state.userId(), e.name());
     default               -> state;
 });
 
 // Applying a list of events gives the current state, which is all a unit test needs
-NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
+@Nullable NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
 {% endcapture %}
 {% capture kotlin %}
 data class NameState(val userId: String, val name: String)
@@ -5681,6 +5681,8 @@ val view: View<NameState?, DomainEvent> = view { state, event ->
 val current: NameState? = view.evolveAll(nameDefined, nameWasChanged)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Neither example passes an initial state, so the fold starts from `null` and the state is typed nullable, `@Nullable NameState` in Java and `NameState?` in Kotlin. Pass one with `View.create(initialState, ...)` or `view(initialState) { }` when the fold has a natural starting value.
 
 A view can also handle the delivering event's metadata, its stream id and version, global position, and CloudEvent extensions, through the metadata-carrying `evolve(state, metadata, event)` (`View.create(initialState, (state, metadata, event) -> ...)` in Java, `view(initialState) { state, metadata, event -> ... }` in Kotlin). The event-only form applies the event with empty metadata. That lets a view key on the stream id or the global position without carrying either in the event payload. Metadata support was added in 0.31.0.
 
@@ -5774,6 +5776,10 @@ The builder both assembles the `View` and records the event types you registered
 That safety has a limit though. Every event the filter admits is still converted to a domain event before the fold ever sees it, and one the converter can't turn into your event type fails that delivery instead of being ignored. A subscription that keeps redelivering a failing event holds up everything queued behind it, so a broader stream is only safe while it stays inside what the converter can convert.
 
 When you need to select on more than the event type, for example a subject, a source, or a time range, set an explicit `filter(...)` on the builder.
+
+Leave out the initial state when the fold has no natural starting value. `Projection.<CourseSummary, CourseEvent, String>builder()` in Java and `projection<CourseSummary, CourseEvent, String> { }` in Kotlin start the fold from `null`, so the state is typed nullable, `@Nullable CourseSummary` in Java and `CourseSummary?` in Kotlin.
+
+The single-instance builders below take the same form, `singletonBuilder()` and `singletonProjection { }`, and so does a snapshot view, with `SnapshotView.builder()` and `snapshotView { }`.
 
 ### Single-instance projections
 
@@ -6290,7 +6296,7 @@ There are two ways to write a saga, and both produce the same `Saga<E, S, C>`, s
 
 ### The Core DSL {#saga-core-dsl}
 
-The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state when the fold needs one and take none when it starts from `null`. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state when the fold needs one and take none when it starts from `null`, in which case the state is typed nullable, `@Nullable S` in Java and `S?` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
 
 Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
 
@@ -6319,7 +6325,7 @@ val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand> {
 }
 {% endcapture %}
 {% capture java %}
-Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment =
+Saga<OrderEvent, @Nullable OrderSagaState, OrderCommand> orderFulfillment =
         Saga.<OrderEvent, OrderSagaState, OrderCommand>builder()
                 .correlateAll(OrderEvent::orderId)
                 .startsOn(OrderPlaced.class)
