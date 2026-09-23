@@ -7053,9 +7053,9 @@ Setting a replacement switches off the hierarchy check for every event type the 
 
 Both members leave two things for you to get right, since neither is checked for you. The condition has to admit the saga's start events, because one that excludes them means no instance is ever created. It also has to admit the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running. A `replacementFilter` adds two more of its own. Every CloudEvent it admits is converted to a domain event before the saga sees it, so keep it inside what your `CloudEventConverter` can turn into an event, since one it cannot convert fails that delivery rather than being skipped. A flow saga also still appends every correlated event it receives to the instance's retained history before it looks at which branch handles it, so a replacement wider than the flow's own types grows that history.
 
-Such an event never counts toward a [`stepWindow`](#saga-delivery-contract) cap. The cap drops it only together with an older event of the step's own types, so `stepWindow` puts no limit on a step fed only events of a type no step declares.
+Such an event never counts toward a `stepWindow` cap. [Delivery Contract](#saga-delivery-contract) says when the cap drops one, and why a step fed only such events has no limit from `stepWindow`.
 
-A saga that declares no event types and sets no replacement derives a selector matching everything, so a narrowing on it is the whole selector, and the conversion obligation above then falls on that narrowing too.
+A saga that declares no event types and sets no replacement derives a selector matching everything. A narrowing on such a saga is then the whole selector, and it has to stay inside what your `CloudEventConverter` can convert, the same as a `replacementFilter`.
 
 On a flow saga, either member can also change what a guard sees. A guard's `onlyIf` reads `ReceivedEvents`, so a selector that excludes an event type changes what `received.none(Rejected.class)` or `received.any(Rejected.class)` answers, and a branch can fire that would not have fired otherwise. This is not a narrowing-only risk. A narrowing can only remove matches, so that is the only direction it can move the answer. A replacement can be wider or narrower than the declared types, and does the same thing whenever it is narrower.
 
@@ -7487,7 +7487,9 @@ A flow saga does not remember its whole history. A condition, guard, or timeout 
 
 `stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. An event counts if it is of a declared type, meaning a type named by one of the flow's own `on(...)` branches or by an `event(...)` check inside a window condition, or if it is a repeat of the type that started the instance.
 
-An event of any other type is still retained, and it does not count toward the cap. The cap never drops it to make room. It goes only when the cap drops a counted event that arrived after it, since the kept events are always one unbroken run ending with the newest.
+An event of any other type is still retained, and it doesn't count toward the cap. It's dropped only when the cap drops a counted event that arrived after it.
+
+For example, take `stepWindow(2)` and the events A, x, B, C, D, where x is of a type no step declares. C arriving drops A and keeps x. D arriving drops B, and x goes with it, because the kept events are always an unbroken run ending with the newest.
 
 Such an event reaches a flow saga only through a `replacementFilter` wider than the flow's own types, or a `CloudEventTypeMapper` that maps several domain types onto one CloudEvent type string. A `narrowingFilter` cannot let one in, because it only narrows the filter derived from the flow's types.
 
@@ -7522,7 +7524,9 @@ Before a flow can cap its steps, every `event(...)` condition with a predicate n
 
 Changing what a capped step waits on while instances are still in it, whether that is an event type or a predicate's name, makes those instances refuse their next delivery with an `IllegalStateException` naming the step. Retrying does not help, because the events those counts would be rebuilt from are gone. Put the previous condition declaration back until those instances have moved on, so they stop refusing deliveries. Delete the instance instead if you don't need to keep it running. An instance still inside the cap counts its kept events again and continues.
 
-A flow saga instance waiting in a step stores that step's name. Renaming or removing the step while instances are still in it makes each of them refuse its next event or timeout with an `IllegalStateException` naming the step, because the new flow definition has no step by that name to route from. Retrying does not help. Put the step back under its old name, or add a temporary step under the old name that moves its instances on to the new one, until every instance has left it. Delete the instance from the `SagaStateStore` instead if you need it unblocked before a redeploy.
+A flow saga instance waiting in a step stores that step's name. Renaming or removing the step while instances are still in it makes each of them refuse its next event or timeout with an `IllegalStateException` naming the step, because the new flow definition has no step by that name. Retrying does not help.
+
+To move those instances on, put the step back under its old name, or add a temporary step under the old name that transitions to the new one, until every instance has left it. To unblock an instance before you redeploy, delete it from the `SagaStateStore`.
 
 What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name. So a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
@@ -7683,6 +7687,8 @@ class SagaDashboard {
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 `get(id)` throws and names every id that is registered, which is what you want when the id is a constant in your own code. `find(id)` returns an `Optional` for an id that came from a request or a configuration value. `sagaIds()` lists them so a dashboard does not hardcode ids. Each saga is also published under the bean name `sagaInstances-<id>`, reachable with `getBean` or a `@Qualifier` if you prefer to inject one saga's view directly.
+
+Each saga's running `SagaSubscription` is published the same way, as `sagaSubscription-<id>`. It's the handle `SagaRunner` returns on the programmatic path, so it gives you the saga's event `Subscription` and `waitUntilStarted()` as well as `instances()`. A saga on a push feed that you start through `ManualStartPushSources` gets this bean when you start it, not when the context refreshes.
 
 One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
 
