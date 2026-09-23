@@ -5659,7 +5659,7 @@ Recording stops for the history the replay is reading, not for the whole catch-u
 
 Those later events are recorded, so a write issued right after your application starts is recorded even though the projection is still catching up. That holds for `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
 
-The stream and DCB catch-up models are different. If their history read picks up an event written after the catch-up began, that delivery isn't recorded, and the live copy of it is dropped as a duplicate. A wait for that append times out.
+The stream and DCB catch-up models are different. Their history read can pick up a write that was still committing when the catch-up began, and that delivery isn't recorded. The live subscription then delivers the same event again and records the append, so the wait answers `true`, and the projection applies that event twice.
 
 Waiting for an append the catch-up is still working through is a wait like any other. It answers as soon as the projection has applied one of that append's events, which can be well before the catch-up hands over to live delivery.
 
