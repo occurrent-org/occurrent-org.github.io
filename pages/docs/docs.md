@@ -6881,20 +6881,20 @@ occurrent:
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java)
 to find which configuration properties that are supported.
 
-Four keys move to a `mongodb`-qualified key on the prefix they already had. Each of them always described a MongoDB event store or a MongoDB subscription model rather than something that works on any store.
+The settings that only apply to a MongoDB event store or a MongoDB subscription model have `mongodb` in their key:
 
-| Old key | New key |
-|:---|:---|
-| `occurrent.event-store.collection` | `occurrent.event-store.mongodb.collection` |
-| `occurrent.event-store.time-representation` | `occurrent.event-store.mongodb.time-representation` |
-| `occurrent.subscription.collection` | `occurrent.subscription.mongodb.collection` |
-| `occurrent.subscription.restart-on-change-stream-history-lost` | `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` |
+| Key | Default | Deprecated key it replaces |
+|:---|:---|:---|
+| `occurrent.event-store.mongodb.collection` | `events` | `occurrent.event-store.collection` |
+| `occurrent.event-store.mongodb.time-representation` | `DATE` | `occurrent.event-store.time-representation` |
+| `occurrent.subscription.mongodb.collection` | `subscriptions` | `occurrent.subscription.collection` |
+| `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` | `true` | `occurrent.subscription.restart-on-change-stream-history-lost` |
 
-Each old key still works for now, and every one of them is removed in the release after next. Setting both the old and the new key is fine as long as they agree, so a leftover environment variable does not break an otherwise-migrated configuration.
+The deprecated keys are the ones Occurrent used up to 0.33.0. They still work in 0.34.0 and will be removed two releases after it.
 
-Setting both to values that disagree fails startup, and the error names both keys.
+You can set both the old and the new key as long as they have the same value. That way an old key you have not found yet, in an environment variable for example, does not break a configuration you have already migrated. If the two values differ, the application fails at startup with an error that names both keys.
 
-See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) for the OpenRewrite recipe that renames the properties for you.
+The `org.occurrent.UpgradeToOccurrent_0_34` OpenRewrite recipe renames the keys in your `.properties` and `.yaml` files, as described in [section 4 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb). It cannot see environment variables such as `OCCURRENT_EVENT_STORE_COLLECTION`, so search your deployment configuration for those yourself.
 
 ### Deferring Subscription Startup {#deferring-subscription-startup}
 
