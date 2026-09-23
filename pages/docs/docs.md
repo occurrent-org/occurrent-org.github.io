@@ -4971,7 +4971,7 @@ public void close() {
 }
 ```
 
-The retry loop reads that predicate before every retry, and reads it again at a short interval while a backoff is being slept out. A `close()` landing one millisecond into a two second backoff therefore stops the retry at the next read instead of two seconds later. When the loop stops this way it rethrows the exception from the last attempt, the same as when the attempts run out.
+The retry loop reads that predicate before every retry. While it waits out a backoff, it reads the predicate again roughly every 50 milliseconds. A `close()` called one millisecond into a two second backoff therefore stops the retry at the next read instead of two seconds later. When the loop stops this way it rethrows the exception from the last attempt, the same as when the attempts run out.
 
 The predicate is handed the throwable from the last attempt, so you can answer differently for different failures. Most callers ignore it and read a flag, as above.
 
