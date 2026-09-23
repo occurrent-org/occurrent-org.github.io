@@ -190,6 +190,7 @@ permalink: /documentation
 * * [Competing Consumer Strategy Conformance](#competing-consumer-strategy-conformance)
 * * [The Reactive Bridge](#subscription-reactive-bridge)
 * [Upgrading](#upgrading)
+* * [Upgrading to 0.34.0](#upgrading-to-0-34-0)
 * * [Upgrading to 0.33.0](#upgrading-to-0-33-0)
 * * [Upgrading to 0.32.0](#upgrading-to-0-32-0)
 * * [Upgrading to 0.31.0](#upgrading-to-0-31-0)
@@ -5884,8 +5885,6 @@ Saga<ShipmentEvent, FlowState<ShipmentEvent>, DispatchShipment> shipment =
 
 Use `anyOf` when the alternatives share a reaction. A reaction cannot find out which of the alternatives completed the step, so when each alternative needs its own command, write them as separate branches instead, the way `awaiting-decision` does above.
 
-The older `join(...)`, which waited for a list of `Expectation`s, does the same thing as `on(allOf(...))` and is deprecated in favor of it. Existing code keeps working.
-
 `event(...)` also takes a predicate alongside its count, so a match can depend on the arriving event's own data and not only its type. In the example below, `monitoring` completes the moment a reading exceeds a threshold:
 
 {% capture kotlin %}
@@ -6049,8 +6048,6 @@ Saga<ReviewEvent, FlowState<ReviewEvent>, ReviewCommand> reviewWithTriage =
 A guard's `onlyIf` and a `timeout`'s reaction read everything the instance has kept instead, which is what lets a guard count across several steps.
 
 `received.initiating<T>()` is the exception, reaching the start event whichever step you are in and whichever callback you are writing, so building a command from an id on the start event always works.
-
-The deprecated `join`'s reaction used to read everything the instance has kept, and no longer does. It now reads the same events a condition branch's reaction reads, so a `join` past a saga's first step sees nothing from an earlier step, not even another event of the type it was waiting for. A `join` on the first step also stops seeing the start event through `count`, `all`, `first`, `any`, `none` and `asList`, though `received.initiating<T>()` still reaches it.
 
 ##### Counted Conditions and `stepWindow` {#saga-counted-conditions}
 
@@ -6630,7 +6627,7 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so a stuck timer never blocks the poller. Nothing isolates it from the saga's other instances, though. A poll fires at most `timerBatchLimit` instances, a hundred by default, and nothing in `findWithDueTimers` requires a store to give a different instance a turn, so once a hundred instances cannot fire their timers the saga can stop firing timers altogether. [Issue 1003](https://github.com/johanhaleby/occurrent/issues/1003) is where that is being fixed. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
-A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`. The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
+A flow saga does not remember its whole history. A condition, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition or guard that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`. The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
 
 `stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. There is no cap unless you set one, so an instance that stays in a step while a large number of correlated events arrive keeps all of them, whatever `historyWindow` says. The minimum is 1.
 
@@ -7912,6 +7909,56 @@ The reactor `IntrospectableSubscriptions`, in `occurrent-subscription-api-reacto
 # Upgrading
 
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
+
+## Upgrading to 0.34.0 {#upgrading-to-0-34-0}
+
+The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
+
+The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) has eleven sections, and the paragraphs below link to each one.
+
+The removal of `join` and a new component on `WriteResult` and `DcbAppendResult` both break compilation.
+
+The flow saga's deprecated `join`, Kotlin's `expect<T>`, and `Expectation` are removed. That is the saga DSL itself, so it applies whether or not you run Spring Boot.
+
+`join` was already deprecated in 0.33.0 in favor of `on(StepCondition, ...)` with `allOf(...)`, and that replacement is what every caller now needs.
+
+The recipe rewrites every `join` call whose expectation list is a literal `List.of(...)` or `Arrays.asList(...)` of literal `Expectation.of(...)` calls.
+
+When several expectations name the same event type, the recipe keeps the highest count, as `join` did. It only does that when every one of those counts is an integer literal or left out, and a missing count means 1.
+
+The recipe doesn't rewrite these calls, and each of them stops compiling, so the compiler finds them for you:
+
+* a `join` whose expectation list is a variable or a method call
+* a `join` where several expectations name the same event type and one of their counts is not an integer literal
+* every Kotlin call site
+
+See [section 1](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#1-a-flow-sagas-join-kotlins-expectt-and-expectation-are-removed).
+
+`WriteResult` and `DcbAppendResult` gain a fourth component, `Optional<AppendId> appendId()`. A record pattern deconstructing either stops compiling, and the recipe rewrites those.
+
+An equality assertion on a whole `WriteResult` or `DcbAppendResult` still compiles but fails, because every write that persists an event gets a new append id. Compare the components you mean instead. See [section 6](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#6-writeresult-and-dcbappendresult-gain-a-fourth-component-the-append-id).
+
+One change is in configuration rather than code. Four MongoDB-only Spring Boot keys move under `mongodb`, `occurrent.event-store.collection` to `occurrent.event-store.mongodb.collection` for example. The old keys still work and are deprecated, and the recipe rewrites them in your configuration files. See [section 4](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb).
+
+The changes below alter what already-running code does.
+
+A flow saga's `stepWindow` counts only events of the types its steps declare, plus repeats of the type that starts the flow. See [section 2](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#2-a-flow-sagas-stepwindow-now-caps-its-declared-events-and-the-start-type).
+
+A projection, a subscription, a query, a snapshot view, an `ExecuteFilter` or a `DcbCriteriaBuilder` that declares an event type whose concrete subtypes cannot be found is refused, the way a saga and an annotation-based subscription already were. A concrete class that is neither final nor sealed is refused everywhere, sagas included. [Section 3](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#3-declaring-an-event-type-whose-concrete-subtypes-cannot-be-found-is-refused) has the remedies.
+
+A `@Projection`, `@Saga` or `@Snapshot` bean's class-level advice, `@Transactional` or a custom aspect for example, no longer runs once at startup as a side effect of building its descriptor. That was never documented behavior, just an accident of CGLIB proxying the bean's factory method by default.
+
+A reactor factory returning `null` also fails startup with `IllegalStateException` instead of `IllegalArgumentException`, matching what the blocking stack already threw. See [section 5](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#5-a-descriptor-factorys-class-level-advice-no-longer-runs-at-startup).
+
+`DurableSubscriptionModel` refuses a first subscription with `IllegalStateException` when it has no checkpoint and the wrapped model cannot give it a start position, which is the case on a shared MongoDB Atlas cluster. See [section 7](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#7-durablesubscriptionmodel-refuses-a-first-subscription-when-no-start-position-can-be-recorded).
+
+A saga instance whose event keeps failing can now be quarantined. `SagaEnvelope` and `SagaRunnerConfig` gain record components, `SagaInstance` gains `failure()`, and `SagaStatus` gains `QUARANTINED`, which `findByStatus(ACTIVE, ..)` does not return. See [section 8](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#8-a-saga-instance-that-keeps-failing-is-quarantined-and-four-saga-types-change-with-it).
+
+A reactor catch-up subscription can deliver a write that was in flight during its replay twice, so its handler has to be safe to run twice on the same event. See [section 9](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#9-a-reactor-catch-up-subscription-can-deliver-a-concurrent-write-twice).
+
+An event `updateEvent` rewrote on 0.33.0 or earlier was stored with a string `position` and without its `dcbTags`, and it needs a one-off repair. See [section 10](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#10-events-updateevent-damaged-before-0340-need-a-one-off-repair).
+
+A subscription handler method Spring's proxy cannot invoke fails startup with `SubscriptionHandlerNotInvocableException`. Every annotation-based subscription handler also registers only after all singletons are created, so a live-only subscription does not see an event a bean writes from its own `@PostConstruct`. See [section 11](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#11-a-subscription-handler-spring-cannot-invoke-now-fails-startup-and-a-live-subscription-can-miss-a-startup-write).
 
 ## Upgrading to 0.33.0 {#upgrading-to-0-33-0}
 
