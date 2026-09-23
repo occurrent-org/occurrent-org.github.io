@@ -787,7 +787,7 @@ it looks for a string `position` in the `position` index and finds none.
 The check only finds a damaged `position`, so a startup without the warning does not rule out the damage
 described under [what the repair cannot find](#update-event-repair-limits).
 
-To make the store refuse to start while the collection holds damaged events, set `requireRepairedEvents(true)` on its
+To make the store refuse to start when it finds a string `position`, set `requireRepairedEvents(true)` on its
 `EventStoreConfig.Builder`. It is off by default.
 
 The Spring Boot starters have no property for `requireRepairedEvents`, so there you define your own `EventStoreConfig`
@@ -865,10 +865,14 @@ from scratch. One dropped the `dcbtags` extension, leaving a document that no lo
 The other dropped the `position` of a plain stream event, leaving a document that looks like an event written before
 `position` existed.
 
-A store that finds events without a `position` at startup warns, or refuses to start, with a message that points at the
-[position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md).
-The same message tells you to read the repair runbook first if your application called `updateEvent` on 0.33.0 or
-earlier. The position backfill gives every event without a `position` a new one, so an event whose `position` an update
+A store that writes `position` also runs a separate startup check, for events with no `position` at all. It logs a
+warning when it finds one, or refuses to start when `requireBackfilledPosition(true)` is set on its
+`EventStoreConfig.Builder`.
+
+The warning and the refusal both point at the
+[position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md),
+and tell you to read the repair runbook first if your application called `updateEvent` on 0.33.0 or earlier.
+The position backfill gives every event without a `position` a new one, so an event whose `position` an update
 function dropped would get a position it never had, and that can't be undone.
 
 ##### Events the repair reports instead of fixing {#update-event-repair-unrecoverable}
@@ -891,9 +895,11 @@ gets its tag index back, which is a repair, while its position stays gone.
 
 `unrecoverableEventCount()` counts events rather than findings, so an event with two things wrong with it counts once.
 
-A run is clean only when both `unrecoverableEventCount()` and `eventsWithLostPosition()` are zero.
-The repair counts `eventsWithLostPosition()` from the collection when the run finishes, so it also counts events an
-earlier run already rebuilt the tag index of.
+`eventsWithLostPosition()` counts the events in the collection that have DCB tags and no `position` at all. A run is
+clean only when it and `unrecoverableEventCount()` are both zero.
+
+It's counted from the collection when the run finishes, so it includes events whose tag index an earlier run already
+rebuilt.
 
 ### Stream Filtering {#eventstore-stream-filtering}
 
@@ -2272,7 +2278,7 @@ fun accountSnapshot(): SnapshotView<AccountState, AccountEvent> = snapshotView(A
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The subscription that keeps the snapshot up to date is filtered to the event types the `SnapshotView` registers handlers for, derived as described in [Deriving the Event Filter](#deriving-the-event-filter). A type that section lists as refused fails Spring Boot startup.
+The subscription that keeps the snapshot up to date is filtered to the event types the `SnapshotView` registers handlers for, derived as described in [Deriving the Event Filter](#deriving-the-event-filter). If the `SnapshotView` registers a handler for a type listed as refused in that section, Spring Boot startup fails.
 
 <div class="comment">The declarative <code>@Snapshot</code> annotation works on both the blocking and reactor stacks, for stream and DCB. The DSL executors below are the programmatic path when you would rather not use the annotation.</div>
 
@@ -3422,7 +3428,7 @@ Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of
 | `FILTERED` | The subscription's filter looked at the event and declined it. Offering it to the same subscription again gets the same answer. |
 | `UNAVAILABLE` | No filter was asked, because nothing is registered, the model is stopped, or the subscription is paused. Nothing is thrown. |
 | `DEFERRED` | The filter accepted the event, but the `CatchupThenPushSubscriptionModel` in front of the handler didn't deliver it. That happens, for example, when its catch-up was stopped, or when a broker listener called `acceptRedeliverable(..)`, described below, before the replay finished. Nothing is thrown, and offering the event again later is safe. |
-| `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event for a reason that ends without anyone acting on it, such as its live buffer being full while the replay is still running. The exception propagates out of `accept(..)` either way. |
+| `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event, for example because its live buffer is full while the replay is still running. The exception propagates out of `accept(..)` either way. |
 | `REFUSED` | The `CatchupThenPushSubscriptionModel` in front of the handler refused the event because its replay failed, and it refuses every event from then on. The exception propagates out of `accept(..)`. |
 
 If you acknowledge broker messages yourself, `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. `DELIVERED` can arrive together with the handler's exception, so acknowledge only once `accept(..)` has also returned normally.
@@ -3455,7 +3461,7 @@ The table below shows what the observer is told, and what `accept(..)` throws, w
 
 A filter can throw a `RuntimeException` or an `AssertionError` when the `DataFieldReader` you gave the model fails to read a field.
 
-Because the observer's exceptions are caught, a broken observer can't turn a delivered event into a broker redelivery, and it doesn't stop the rest of a batch from being routed.
+Because an `Exception` or `AssertionError` from the observer is caught, an observer that throws one can't turn a delivered event into a broker redelivery, and doesn't stop the rest of a batch.
 
 If your observer throws an `InterruptedException`, the model sets the interrupt flag on the calling thread again.
 
@@ -3477,12 +3483,15 @@ ProjectionRunner.agnostic(model, cloudEventConverter)
         .project("order-status", orderStatusProjection(), repository);
 ```
 
-Two settings control the handover, both with sensible defaults you can ignore until you cannot. The handover keeps two de-dup caches, one for what the replay delivered and one for what live delivery delivered, and each holds the last 10000 events by id and source. That is how far the replay-to-live overlap is suppressed exactly. At the default the two hold up to 20000 keys between them. Past that window the at-least-once contract takes over, and because applying the same event twice must leave the read model unchanged, the duplicate does no harm. The live buffer holds at most 100000 events during the replay and is a fail-loud ceiling rather than a throttle, so hitting it throws instead of dropping events. Pass `CatchupThenLiveOptions` to change either:
 Two settings control the handover, and both have defaults.
 
-The first, `dedupCacheSize`, is how many recently delivered event ids the handover keeps, so that an event both the replay and the live feed deliver reaches your handler once. The handover keeps two such caches, one for what its replay delivered and one for what it delivered live, and the setting sizes each of them. The default of 10000 therefore keeps up to 20000 ids, and raising it costs twice what the number suggests. An overlap longer than that can reach your handler twice, and because applying the same event twice must leave the read model unchanged, the duplicate does no harm.
+The first, `dedupCacheSize`, is how many recently delivered events the handover keeps the id and source of, so that an event both the replay and the live feed deliver reaches your handler once. The handover keeps two such caches, one for what its replay delivered and one for what it delivered live, and the setting sizes each of them.
 
-The second, `maxBufferedEvents`, caps the live events buffered during the replay, at 100000 by default. It's a fail-loud ceiling rather than a throttle, so hitting it throws instead of dropping events. Pass `CatchupThenLiveOptions` to change either:
+At the default of 10000 the two caches together hold up to 20000 events, twice the number you set.
+
+If the replay and the live feed overlap by more than `dedupCacheSize` events, an event can reach your handler twice, so make sure that applying an event a second time doesn't change your read model.
+
+The second, `maxBufferedEvents`, caps the live events buffered during the replay, at 100000 by default. When the buffer is full, the model throws instead of dropping events. Pass `CatchupThenLiveOptions` to change either:
 
 ```java
 CatchupThenPushSubscriptionModel model = new CatchupThenPushSubscriptionModel(
@@ -3502,7 +3511,7 @@ occurrent.subscription.catchup-then-live.max-buffered-events=200000
 
 Set one and the other keeps its default. A zero or negative value fails startup rather than falling back.
 
-Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass, or nowhere at all if you pass `null`, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
+Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Pass `null` and it records nothing, so every restart replays the history. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
 
 The record that the catch-up finished is kept per subscription id, so cancelling and then resubscribing under the same id skips the replay as well. Delete that id's checkpoint when you want the history read again.
 
@@ -3585,9 +3594,9 @@ feed.catchUp();
 
 Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
 
-`stopCatchUp()` asks a running replay to stop, which is what a shutdown wants, since without it an application closing mid-replay would wait for the whole history to be applied. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
+`stopCatchUp()` stops a running replay. Without it, an application that shuts down mid-replay would wait until the whole history has been applied.
 
-After a stop, `goLive()` delivers the live copy of an event even when the stopped replay already delivered it. A view that buffers during a replay threw that buffer away when the replay stopped, so it needs the copy. A view that wrote the event straight through sees it twice.
+A stopped replay isn't treated as a failure. It doesn't record that the catch-up finished, so the next start replays the whole history again.
 
 When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still buffers every `accept(...)` until told to stop, so events pile up until the buffer's cap throws. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
 
@@ -3596,6 +3605,8 @@ feed.goLive();
 ```
 
 It skips the replay and starts delivering the buffered and future live events directly, writing no completion marker, so a later real `catchUp()` on the same feed still replays the full history rather than treating it as already done. While that replay runs, live events wait, and they are delivered when it ends, whether it finishes or is stopped.
+
+If you call `goLive()` after a stop, it also delivers the live copy of an event the stopped replay already delivered. A view that holds events back until the replay finishes discarded them when the replay stopped, so it needs that copy. A view that saved each event as it arrived gets it twice.
 
 A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
@@ -3622,9 +3633,11 @@ DomainEventFeed<OrderEvent> feed = new DomainEventFeed<>(eventStore, cloudEventC
 
 Without one, `register(..)` still accepts that filter, and the first `acceptCloudEvent(..)` throws `UnreadableLiveFilterException`. Every later call on the same feed throws that same exception instance, so stop consuming instead of redelivering the event. Build a new feed with a reader, or register a filter without the `data` condition.
 
-On the reactor stack `acceptCloudEvent(..)` returns a `Mono<RoutingOutcome>`, and the two refusals above arrive as that `Mono`'s error.
+On the reactor stack `acceptCloudEvent(..)` returns a `Mono<RoutingOutcome>`, and the `IllegalStateException` and `UnreadableLiveFilterException` above arrive as that `Mono`'s error.
 
-On the blocking stack, once the projection's catch-up has failed, every later `acceptCloudEvent(..)` throws an `IllegalStateException`. `refusesPermanently()` returns `true` from then on, which tells that failure apart from a replay that's still running, where `isReadyForLiveDelivery()` is also `false`.
+On the blocking stack, once the projection's catch-up has failed, every later `acceptCloudEvent(..)` throws an `IllegalStateException`.
+
+`feed.isReadyForLiveDelivery()` is `false` both while the replay runs and after the catch-up has failed. `feed.refusesPermanently()` returns `true` only after the failure, so check it to tell the two apart.
 
 The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so applying the same event twice must leave the read model unchanged. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
 
@@ -3659,7 +3672,7 @@ PushSubscriptionModel or DomainEventFeed
 your projection or saga
 ```
 
-A sink publishes and a bridge consumes. The sink takes an event out of the event store and puts it on the broker, the bridge takes a message off the broker and hands it to your projection or saga. A round trip uses one of each.
+A sink publishes events to the broker, and a bridge consumes messages from it and hands them to your projection or saga. A round trip uses one of each.
 
 Only the bridge touches the broker's topology. `CloudEventForwarder` and the sinks declare nothing at all, while a RabbitMQ bridge declares the queue it consumes from and binds that queue to the destinations it derived. A Kafka bridge creates no topic and only subscribes.
 
@@ -3700,7 +3713,7 @@ forwarder.forward("order-status-forwarder");
 
 Publication is at-least-once. `DurableSubscriptionModel` saves its checkpoint only after the sink's `publish` returns, so a sink that throws keeps the checkpoint where it was and the event is published again on the next run.
 
-That holds for `forward(id)` and `forward(id, filter)`. The two overloads that take a `StartAt` start where you tell them instead of resuming from the checkpoint.
+`forward(id)` and `forward(id, filter)` read the checkpoint on every start, restart included. The two overloads that take a `StartAt` start where you tell them instead of resuming from the checkpoint.
 
 The guarantee only applies when `publish` returns after the broker has confirmed the message. A sink that hands the event to a thread pool and returns straight away lets the checkpoint move past an event nobody delivered.
 
@@ -3727,7 +3740,7 @@ Nothing else in this section changes when you do this. The forwarder, the checkp
 
 ##### Destinations and bindings {#broker-destinations}
 
-`EventDestination` says where an event goes, one record per transport, `RabbitMqDestination` or `KafkaDestination`. `DestinationResolver<D extends EventDestination>` works out that destination for a publisher. For a consumer it works out which destinations to bind to in order to receive those events:
+`EventDestination` describes where an event goes, and each broker implements it as its own record, `RabbitMqDestination` or `KafkaDestination`. A `DestinationResolver<D extends EventDestination>` works out the destination a publisher sends an event to, and the destinations a consumer has to bind to for the events it wants:
 
 ```java
 D destinationFor(CloudEvent cloudEvent);
@@ -3859,7 +3872,7 @@ Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupT
 
 The bridge calls `acceptRedeliverable(...)` rather than `accept(...)`. It's the same routing decision, offered by a source that can send the event again later, so the model is free to refuse an event instead of holding on to it.
 
-The bridge acknowledges a message once `acceptRedeliverable(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. No other outcome gets that acknowledgement, and neither does an exception from `acceptRedeliverable(...)`. Depending on the outcome, the bridge holds the message, stops, or hands it to its failure policy.
+The bridge acknowledges a message once `acceptRedeliverable(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. For any other outcome, or an exception from `acceptRedeliverable(...)`, the bridge holds the message, stops, or hands it to its failure policy.
 
 It holds a `DEFERRED` or `UNAVAILABLE` message unacknowledged, and its poll hands it back to RabbitMQ with `basicNack` and requeue, at most once per poll interval, one second by default. RabbitMQ then delivers it again. It stops consuming for good on `REFUSED`.
 
@@ -3932,7 +3945,7 @@ On `NOT_DELIVERABLE` or a thrown exception, the same `DeliveryFailurePolicy` app
 
 `PARK` republishes to a `parkingDestination(KafkaDestination)` and marks the original record's offset to be committed only once that publish's own broker acknowledgement arrives, the same as for a delivered record.
 
-That parking publish has a time limit of its own, and hitting the limit does not cancel the publish. `send()` can itself spend most of that time waiting for the cluster's metadata, so the record can still reach the broker in the background after the limit has elapsed and this bridge has already chosen `REDELIVER` for it.
+The parking publish has its own time limit of five seconds. When it runs out, the bridge redelivers the record instead, but the publish isn't cancelled. `send()` can spend most of those five seconds waiting for the cluster's metadata, so the record can still reach the parking topic after the bridge has already decided to redeliver it.
 
 A duplicate park is possible in that case. The bridge doesn't try to prevent it, because every handler here already has to cope with a redelivered message.
 
@@ -3944,11 +3957,13 @@ A partitioned Kafka topic does not preserve order across streams the way a singl
 
 Delivery guarantees don't change from what [ADR 62](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0062-pluggable-projection-event-source.md) already established for a push feed.
 
-Publication is at-least-once, because the forwarder's checkpoint advances only after the sink returns. Delivery is at-least-once, because a bridge acknowledges only after its handler has run.
+Publication is at-least-once, because the forwarder's checkpoint advances only after the sink returns. Delivery is at-least-once, because a bridge acknowledges a message only once the handler has run without throwing, the filter has declined it, or the message has been parked.
 
 A projection or saga reached through either path therefore has to tolerate seeing the same event twice, the same as any other push-fed one.
 
-Occurrent replays the event store once, through `CatchupThenPushSubscriptionModel` or `CatchupProjectionFeed`. After a restart, the broker redelivers whatever the bridge had not yet acknowledged.
+After a restart, the broker redelivers whatever the bridge hadn't acknowledged.
+
+The event store is replayed again only when the `checkpointStorage` you passed has no record that the catch-up finished. With `null` in its place, every restart replays it.
 
 ##### A runnable example {#broker-example}
 
@@ -4000,7 +4015,9 @@ RabbitMqDomainEventBridge<OrderEvent> orderStatusBridge(RabbitMqDomainEventBridg
 
 The factory doesn't register the bridge as a Spring bean, so nothing closes it for you. Declaring it as a `@Bean` with `destroyMethod = "close"`, as above, has Spring close it at shutdown.
 
-`RabbitMqCloudEventBridgeFactory.forQueue(queue, pushModel, outcomeChannel)` is the CloudEvent-level factory. It also sets `readinessSource(..)`, so you don't pass it yourself. When `pushModel` feeds a `@Projection` or `@Saga` with `source = PUSH`, that asks the projection's or saga's catch-up whether it's ready, and otherwise it always answers ready.
+`RabbitMqCloudEventBridgeFactory.forQueue(queue, pushModel, outcomeChannel)` is the CloudEvent-level factory. It also sets `readinessSource(..)` for you.
+
+When `pushModel` feeds a `@Projection` or `@Saga` with `source = PUSH`, the bridge checks whether that projection's or saga's catch-up is ready. Otherwise it treats the model as always ready.
 
 With `declare-topology` left on, a bridge needs the resolver to know which routing keys to bind. The starter's resolver is a `RabbitMqTopicExchangeDestinationResolver` on `occurrent.broker.rabbitmq.exchange`, and it needs a `CloudEventTypeMapper` bean, which the MongoDB starter supplies.
 
@@ -4331,7 +4348,11 @@ One subscription id shape is still refused outright, an `IllegalArgumentExceptio
 
 Some storages answer per subscription id rather than once for the whole store. `evaluatesWriteConditionsFor(subscriptionId)` is the per-id version of `evaluatesWriteConditions()`, defaulting to whatever that answers, and it exists for a storage whose answer depends on the id it is asked about. `SpringRedisCheckpointStorage`'s Cluster-safe constructors above are exactly that case, answering `true` overall while refusing the one subscription id shape just described. `SpringRedisCheckpointStorage.forStandalone(RedisOperations)`, for a deployment that's standalone or replicated rather than Cluster, accepts that shape too, and every other id outside the version key's own reserved namespace, since a server that isn't Cluster has no slots to align. Don't build a Cluster deployment's storage with it though, because a conditional write then fails with Redis's own `CROSSSLOT` error for an id this constructor accepts and Cluster cannot align a slot for. Once every singleton exists, the Spring Boot starter's fencing check also asks `evaluatesWriteConditionsFor` for the subscription ids you've registered, and throws `CheckpointStorageCannotFenceSubscriptionException`, naming the storage and every refused id, when the answer is `false` for at least one of them.
 
-A storage of your own can also override `resolveFirstCheckpointRace(subscriptionId, candidate)`. `DurableSubscriptionModel` and `ManualStartSubscriptionModel` call it when their `ifAbsent()` write of a new subscription's first position is refused because a position is already stored. The reactor `CheckpointStorage` has the same method returning a `Mono`, and `ReactorDurableSubscriptionModel` calls it the same way. The default answers empty, and the model then falls back to a rule that can refuse the registration with `StartPositionAlreadyPinnedException`. Override it only when your storage can compare the two positions and write the earlier one in one atomic step, and return the checkpoint that is stored once it's done. The MongoDB checkpoint storages do this for positions that no delivery has moved on yet.
+A storage of your own can also override `resolveFirstCheckpointRace(subscriptionId, candidate)`. `DurableSubscriptionModel` and `ManualStartSubscriptionModel` call it when their `ifAbsent()` write of a new subscription's first position is refused because a position is already stored. The reactor `CheckpointStorage` has the same method returning a `Mono`, and `ReactorDurableSubscriptionModel` calls it the same way.
+
+The default returns empty, and the model may then refuse the registration with `StartPositionAlreadyPinnedException`.
+
+Override it only if your storage can compare the two positions and write the earlier one in one atomic step. Return the checkpoint that's stored afterwards. The MongoDB checkpoint storages do this while no delivery has moved the stored position yet.
 
 Read this before rolling the upgrade out on a cluster already running competing consumers. During the rolling upgrade from 0.32.0 to 0.33.0, a node still on 0.32.0 releases its lock by deleting the lock document, so the next node to take it over starts at version 0 again. A 0.33.0 node's checkpoint write then offers `notOlderThan(0)` against a checkpoint already stamped with a higher version and is refused. That refusal repeats, once per unit of the stored version, each cycle costing one lease period and one re-run of whatever the handler did before the refusal, until every node in the deployment runs 0.33.0. From then on the version keeps climbing instead of resetting, and the fence holds. If a subscription is stuck cycling and you want it to stop sooner, `CheckpointStorage.delete(subscriptionId)` clears the checkpoint and its stored version together, at the cost of replaying everything since. [ADR 116](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0116-a-checkpoint-write-from-a-lease-that-has-moved-on-is-refused.md) has the full design, and the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.33.0.md) covers implementing `CheckpointStorage` yourself in more detail.
 
@@ -4378,9 +4399,11 @@ A subscription model may also implement `IntrospectableSubscriptions`, which add
 
 `listenForCatchup(subscriptionId, listener)` is the second method, and it tells a projection where inside a catch-up it is. A catch-up reads the history that was already there, and then delivers whatever was written while it was reading.
 
-A model that has catch-ups signals the listener twice, once when a catch-up begins, and once when it has read the history it set out to read. A catch-up that is stopped before then sends only the first. A projection that [records the appends it has applied](#projection-annotation-applied-appends) records nothing between those two signals, and records again after the second one. Some of the events written while a catch-up ran are delivered by that catch-up and never again, so they still have to be recorded.
+The model calls the listener's `catchupStarted` when a catch-up begins, and its `historyRead` once that catch-up has read the history that was already there. For a catch-up that's stopped before then, the model never calls `historyRead`.
 
-`CatchupThenPushSubscriptionModel` also calls the listener's `alreadyDeliveredByReplay(event)` when the live feed offers a copy of an event its replay already delivered. That way an append that only the replay delivered is recorded too.
+A projection that [records the appends it has applied](#projection-annotation-applied-appends) stops recording at `catchupStarted` and starts again at `historyRead`, so it still records the events written while the catch-up was reading.
+
+When the live feed offers a copy of an event its replay already delivered, `CatchupThenPushSubscriptionModel` doesn't deliver the copy and calls the listener's `alreadyDeliveredByReplay(event)` instead. A projection that records its appends then records the append of that event, as long as the replay applied it.
 
 Register the listener before you subscribe. One registered after a catch-up has already begun misses its start.
 
@@ -4733,7 +4756,7 @@ A dynamic start position is read for the same way, but when it's resolved depend
 
 Recording that first position is a conditional write, so only the first one to reach storage is kept. When two nodes register the same brand new subscription at the same moment, the node that can't show the stored position is the one it read has its registration refused with `StartPositionAlreadyPinnedException`, rather than starting from a position it never read. The events between the two positions then reach neither until that interval is replayed, which is only safe while the subscription isn't running anywhere. A position that was already stored when the model read for it is taken without a word, so a node joining a subscription another has been running is unaffected.
 
-With `ReactorCheckpointStorage` the node whose write lost is refused only when the stored position has already been moved on by delivery. Otherwise the storage compares the two positions by the operation time each one holds and keeps the earlier one, and the node starts from that.
+With the MongoDB `ReactorCheckpointStorage`, the node whose write reached storage second is refused only when delivery has already moved the stored position forward. Otherwise the storage keeps whichever position has the earlier operation time, and the node starts from that.
 
 One node on its own reaches the same refusal with nobody else registering, when the storage reads that position back from a reader that hasn't seen the write. A storage that retried a write whose answer it never heard gets the write refused too, but what it reads back is then the position it wrote itself, so the registration completes. A re-issued write only ends in a refusal when the read back also fails or is served from behind the write. Starting the node again takes whatever position storage holds by then, unless the reader is still behind the write, which answers the same way every time and needs a reader that has seen it instead.
 
@@ -5784,7 +5807,7 @@ subscriptions.subscribe("gameStarted", GameStarted.class, gameStarted -> {
 For this to work, your domain events must all "implement" a `DomainEvent` interface (or a sealed class in Kotlin). Note that `DomainEvent` is something you create yourself, 
 it's not something that is provided by Occurrent.
 
-`subscribe(..)` derives the subscription filter from the event types you name, as described in [Deriving the Event Filter](#deriving-the-event-filter). A type that section lists as refused makes the `subscribe(..)` call throw.
+`subscribe(..)` derives the subscription filter from the event types you name, as described in [Deriving the Event Filter](#deriving-the-event-filter). If you name a type listed as refused in that section, `subscribe(..)` throws.
 
 As of version 0.17.0 you can also get metadata (such as stream version, stream id and all other cloud event extension properties) when consuming an event:
 
@@ -5813,7 +5836,7 @@ GameStarted event1 = domainQueries.queryOne(GameStarted.class); // Find the firs
 GamePlayed event2 = domainQueries.queryOne(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")); // Find event with this id
 ```
 
-`query(GameStarted.class, GameEnded.class)` and the `Collection` overloads derive a filter from the types you list, as described in [Deriving the Event Filter](#deriving-the-event-filter). A type that section lists as refused makes each query that names it throw.
+`query(GameStarted.class, GameEnded.class)` and the `Collection` overloads derive a filter from the types you list, as described in [Deriving the Event Filter](#deriving-the-event-filter). If a query names a type listed as refused in that section, the query throws.
 
 Given a `null` or empty collection, these overloads return no events. [Empty Still Means Empty on a Query](#derived-filter-empty) says how that differs from a projection.
 
@@ -6333,9 +6356,11 @@ org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledSt
 }
 ```
 
-Occurrent then wraps the projection's store, so the projection records the append of every event it applies.
+Occurrent then wraps the projection, so the projection records the append of every event it applies.
 
-Replays are the exception. When a catch-up begins, the wrapper clears the projection's recorded appends, which means it deletes every one of them. It records nothing from the history the catch-up then reads. [What a `true` answer means](#applied-appends-true-answer) says when a projection replays.
+When a catch-up begins, the wrapper marks a clear as due, and a clear deletes every append the projection has recorded. The wrapper also records nothing from the history the catch-up then reads.
+
+[What a `true` answer means](#applied-appends-true-answer) says when a projection replays.
 
 This works on both the blocking and the reactor stack, and for a `DcbProjection` factory too.
 
@@ -6359,7 +6384,7 @@ If `listenForCatchup` returns `false`, you have to watch the model yourself. Whe
 
 If nothing calls them, the wrapper records every event of a replay and never clears its old records.
 
-Also call the wrapper's `pollForClear()` on a schedule, on a thread meant for blocking work. `catchupStarted` only marks the clear as due, because it runs on the thread that registers the catch-up and must not wait for the store. The clear itself runs on the next event the projection receives or the next `pollForClear()` call, whichever comes first, and a clear that fails because the store is unavailable is tried again the same way.
+Also call the wrapper's `pollForClear()` on a schedule, from a thread meant for blocking work. A clear that is due runs on whichever comes first, the projection's next event or the next `pollForClear()` call. A clear that fails because the store is unavailable is tried again the same way.
 
 Without the poll, a projection that receives no further event never clears, and keeps the records from before its replay.
 
@@ -6389,7 +6414,7 @@ How long the rest takes depends on where the projection is.
 * **If the node crashes mid-append**, another node takes over once the crashed node's [competing consumer](#competing-consumer-subscription-blocking) lock expires, 20 seconds by default.
 * **If the subscription is paused or stopped**, nothing more is applied until it starts again.
 
-A replay changes the answer too. A projection clears its recorded appends when a catch-up begins, so a wait never answers `true` about a read model the projection is in the middle of rebuilding.
+A replay changes the answer too. Once a catch-up's clear has run, a wait for an append recorded before the replay times out.
 
 Whether a projection replays at all depends on its start position. With the subscription models the Spring Boot starter configures for you, only `startAt = StartPosition.BEGINNING` or an explicit `startAtGlobalPosition` replays.
 
@@ -6414,13 +6439,11 @@ The Spring Boot starter logs a `WARN` at startup for a `recordAppliedAppends = t
 
 It can't tell for a subscription model of your own, so it logs nothing there.
 
-A projection whose start position does replay starts recording again only after the catch-up has read the history. A wait for an append recorded before the clear times out rather than answering `true` about a read model the rebuild has already wiped.
+A projection that replays stops recording when its catch-up begins. Its old records stay readable until the clear has run, so a wait in between can still answer `true` for an append whose read model the rebuild is discarding.
 
-Recording stops before the clear finishes. It stops when the catch-up begins, and the old records stay readable until the clear is done, so a wait running in between can still get `true` for an append whose read model the rebuild is discarding.
+Once the catch-up has read the history that was already there, the projection records again. The catch-up then delivers whatever was written while it was reading, and those events are recorded.
 
-Recording stops only while the catch-up reads the history that was already there. The catch-up then delivers whatever was written while it was reading, and those events are recorded.
-
-So a write issued right after your application starts is recorded even though the projection is still catching up. That holds for `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
+So a write issued right after your application starts is recorded even though the projection is still catching up. This applies to `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
 
 The stream and DCB catch-up models are different. Their history read can pick up a write that was still committing when the catch-up began, and that delivery isn't recorded.
 
@@ -7063,7 +7086,7 @@ A saga's event types are also its subscription filter. Occurrent takes the types
 
 The types are expanded and checked as described in [Deriving the Event Filter](#deriving-the-event-filter). A saga declaring a sealed `OrderEvent` receives the concrete events stored under it (before 0.33.0 the filter asked only for `OrderEvent`'s own CloudEvent type, so with the mappers Occurrent ships the saga received nothing).
 
-A type that section lists as refused makes `build()` throw `IllegalArgumentException` naming the type.
+If a saga declares a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), `build()` throws `IllegalArgumentException` naming the type.
 
 To fix a refused declaration, [seal the hierarchy](#derived-filter-seal) or [declare the concrete types](#derived-filter-concrete). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
@@ -7119,7 +7142,7 @@ Setting a replacement switches off the hierarchy check for every event type the 
 
 Both members leave two things for you to get right, since neither is checked for you. The condition has to admit the saga's start events, because one that excludes them means no instance is ever created. It also has to admit the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running. A `replacementFilter` adds two more of its own. Every CloudEvent it admits is converted to a domain event before the saga sees it, so keep it inside what your `CloudEventConverter` can turn into an event, since one it cannot convert fails that delivery rather than being skipped. A flow saga also still appends every correlated event it receives to the instance's retained history before it looks at which branch handles it, so a replacement wider than the flow's own types grows that history.
 
-Such an event never counts toward a `stepWindow` cap. [Delivery Contract](#saga-delivery-contract) says when the cap drops one, and why a step fed only such events has no limit from `stepWindow`.
+An event of a type the flow doesn't declare never counts toward a `stepWindow` cap. [Delivery Contract](#saga-delivery-contract) says when the cap drops one, and why a step fed only such events has no limit from `stepWindow`.
 
 A saga that declares no event types and sets no replacement derives a selector matching everything. A narrowing on such a saga is then the whole selector, and it has to stay inside what your `CloudEventConverter` can convert, the same as a `replacementFilter`.
 
@@ -7481,7 +7504,7 @@ A saga recognizes a redelivered event by its `streamid` together with its `strea
 
 The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs, instead of acknowledging it. What happens to the event after that is up to your feed. Whatever the feed does, the listener that dropped the metadata sees the exception, and that listener is where it can be fixed.
 
-Occurrent's own stored events always have the extensions, so this is about what your listener forwards, not about the event store.
+Occurrent's own stored events always have the extensions, so this only happens with events your listener forwards without them.
 
 Your feed might carry none of that redelivery metadata, another application's broker for example, while every command the saga issues is still safe to receive more than once. When both are true, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always carry the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
 
@@ -7527,15 +7550,15 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
 
-A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
+When a `SagaConcurrencyException` exhausts its compare-and-set retries on a live event, the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
 
 Whether the event is offered again, and which other events wait behind it, depends on what feeds the subscription. On a push feed your listener decides both. On a broker bridge the bridge's `DeliveryFailurePolicy` setting decides whether the event is offered again.
 
-When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka bridge holds back at most that record's partition, and nothing once it has parked the record under `PARK`. The RabbitMQ bridge holds nothing back once it has requeued the message under `REDELIVER` or parked it under `PARK`.
+When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka bridge delays at most the later records in that record's partition, and it delays nothing once it has parked the record under `PARK`. The RabbitMQ bridge delays no other message once it has requeued the failed one under `REDELIVER` or parked it under `PARK`.
 
 Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either bridge.
 
-An instance that keeps failing can be quarantined instead, once it has been failing for the quarantine budget, five minutes by default.
+An instance that keeps failing can be quarantined, which means it skips every later event addressed to it. That can happen once it has been failing for its quarantine budget, `SagaRunnerConfig.quarantineAfter`, five minutes by default.
 
 An instance that is not quarantined keeps failing for as long as the model keeps offering the event. That ends when the retry succeeds, when you abandon the instance with `SagaStateStore.delete(sagaId)`, or when you stop the subscription, which stops the whole saga rather than only the failing instance.
 
@@ -7563,9 +7586,11 @@ A flow saga does not remember its whole history. A condition, guard, or timeout 
 
 `stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. An event counts if it is of a declared type, meaning a type named by one of the flow's own `on(...)` branches or by an `event(...)` check inside a window condition, or if it is a repeat of the type that started the instance.
 
-An event of any other type is still retained, and it doesn't count toward the cap. It's dropped only when the cap drops a counted event that arrived after it.
+An event of any other type is still retained, and it doesn't count toward the cap. `stepWindow` drops it only when the cap drops a counted event that arrived after it.
 
 For example, take `stepWindow(2)` and the events A, x, B, C, D, where x is of a type no step declares. C arriving drops A and keeps x. D arriving drops B, and x goes with it, because the kept events are always an unbroken run ending with the newest.
+
+`historyWindow` can drop an event that doesn't count toward the cap too. Once the flow has left the step the event arrived in, the event is part of the history kept from earlier steps, and a later transition can drop it the same as a counted one.
 
 Such an event reaches a flow saga only through a `replacementFilter` wider than the flow's own types, or a `CloudEventTypeMapper` that maps several domain types onto one CloudEvent type string. A `narrowingFilter` cannot let one in, because it only narrows the filter derived from the flow's types.
 
@@ -7808,8 +7833,6 @@ Once the instance has been failing for at least the budget, the next failure can
 
 Reaching the budget does not quarantine an instance on its own, so an instance past its budget can still be `ACTIVE`. Read its status instead of working it out from the time.
 
-The conditions under the headings below are the ones you are most likely to meet, and the javadoc on `SagaStatus.QUARANTINED` lists every one.
-
 When the event the record names later succeeds, the record is cleared. A different input succeeding does not clear it.
 
 Every way of failing counts once the saga knows which instance the event belongs to. Checking for a redelivery, `evolve`, `react`, your command dispatcher and the state store all do, and an `Error` counts like a `RuntimeException`. The exception is `OutOfMemoryError`. It means the JVM ran out of heap while that instance happened to hold the thread, so the runner rethrows it and the instance keeps its state.
@@ -7834,17 +7857,19 @@ Override both or neither. The runner saves the envelope it read, so a store that
 
 `SpringMongoSagaStateStore` overrides both. `SagaStateStore.inMemory()` does not and does not need to, since it holds each envelope as an object rather than a document, so nothing there can fail to decode. `SagaInstances.find(sagaId)` reads through `findWithoutState` too, so looking one instance up by id costs what enumerating them costs and answers for an instance whose state no longer decodes.
 
+An instance past its budget is quarantined only when a few other conditions are met too. The next three sections cover the ones you're most likely to run into, and the javadoc on `SagaStatus.QUARANTINED` lists every one.
+
 ##### The subscription model has to keep every event {#saga-quarantine-model-keeps-every-event}
 
-Quarantine only works on a subscription model that promises to keep every event it delivers. A model makes that promise by implementing `HistoryRetainingSubscriptions` and returning `true` from `retainsEveryEvent()`.
+Quarantine only works on a subscription model that keeps every event it delivers. A model says it does by implementing `HistoryRetainingSubscriptions` and returning `true` from `retainsEveryEvent()`.
 
-`NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` make that promise, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. Those three wrappers answer for the model they wrap, so a wrapper alone is not enough.
+Quarantining an instance returns normally, which acknowledges the event to whatever fed it. Behind a broker bridge, the bridge then acknowledges the record to the broker, and nothing can hand that event to the saga a second time.
+
+`NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` return `true`, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. The runner looks through those three wrappers to the model inside, so a wrapper around any other model doesn't qualify.
 
 `CatchupThenPushSubscriptionModel` implements `HistoryRetainingSubscriptions` but returns `false` from `retainsEveryEvent()`, since the live events pushed to it need not be in the event store it replays. A push feed on its own does not implement the interface at all.
 
-On every model that does not make the promise, the runner switches quarantine off at startup and logs a `WARN` saying why. An instance that keeps failing on such a model is never quarantined.
-
-Quarantining an instance returns normally, which acknowledges the event to whatever fed it. Behind a broker bridge, the bridge then acknowledges the record to the broker, and nothing can hand that event to the saga a second time. So on a model that can't promise to keep the event, the runner keeps the instance failing instead.
+On a model that returns `false` from `retainsEveryEvent()`, or doesn't implement `HistoryRetainingSubscriptions`, the runner switches quarantine off at startup and logs a `WARN` saying why. An instance that keeps failing on such a model is never quarantined.
 
 ##### The event needs a redelivery key {#saga-quarantine-redelivery-key}
 
@@ -7856,11 +7881,11 @@ An event store that assigns no global position still gives every event a redeliv
 
 ##### The model is asked again for each event {#saga-quarantine-checked-per-event}
 
-Before the runner quarantines an instance, it asks the model whether acknowledging that one event would lose it. A model that promised wrongly is caught on the event it is about to acknowledge, before that event is gone.
+Before the runner quarantines an instance, it calls the model's `retains(event)` for the event the instance stopped on. `retains` returns `true` when acknowledging the event doesn't delete the only copy of it. A model that returns `true` from `retainsEveryEvent()` by mistake is caught this way, before the event is gone.
 
-When the answer is no, or the check throws, the event is not quarantined. The runner logs a `WARN` once per instance, and the instance keeps failing for as long as your model offers the event again.
+When `retains` returns `false`, or throws, the instance isn't quarantined. The runner logs a `WARN` once per instance, and the instance keeps failing for as long as your model offers the event again.
 
-The check asks whether acknowledging the event would lose it, and an event an operator has already deleted can't be lost by acknowledging it. So the answer stays yes for that event, and the instance can be quarantined instead of failing forever on an event nobody can supply.
+An event an operator has already deleted from the event store isn't deleted by the acknowledgement, so `retains` returns `true` for it. The instance can then be quarantined, so it doesn't keep failing on an event nobody can supply.
 
 ##### Switching quarantine off {#saga-quarantine-off}
 
@@ -8219,7 +8244,7 @@ For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` 
 
 The filter Occurrent derives from a sealed type names the declared type as well as the concrete types it permits. That only matters if you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto the type string of the type it was declared with, because such a subscription used to receive nothing at all. No mapper Occurrent ships stores an event under a sealed interface's own type, so nothing changes for the default setup.
 
-A declared type that [Deriving the Event Filter](#deriving-the-event-filter) lists as refused fails Spring Boot startup. The message names the type and points you at `eventTypes()`. The same section has a table of when each of the other places refuses one.
+If you declare a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), Spring Boot startup fails. The message names the type and points you at `eventTypes()`. The same section has a table of when each of the other places refuses one.
 
 #### Event Metadata
 
@@ -8267,7 +8292,7 @@ public class OrderStatusUpdater {
 }
 ```
 
-That holds for `@Subscription`, `@StreamSubscription`, `@DcbSubscription` and `@SynchronousSubscription` alike.
+This applies to `@Subscription`, `@StreamSubscription`, `@DcbSubscription` and `@SynchronousSubscription` alike.
 
 A handler method the proxy can't reach fails Spring Boot startup with `SubscriptionHandlerNotInvocableException`, instead of running without its advice:
 
