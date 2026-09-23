@@ -6228,7 +6228,7 @@ Setting a replacement switches off the hierarchy check for every event type the 
 
 Both members leave two things for you to get right, since neither is checked for you. The condition has to admit the saga's start events, because one that excludes them means no instance is ever created. It also has to admit the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running. A `replacementFilter` adds two more of its own. Every CloudEvent it admits is converted to a domain event before the saga sees it, so keep it inside what your `CloudEventConverter` can turn into an event, since one it cannot convert fails that delivery rather than being skipped. A flow saga also still appends every correlated event it receives to the instance's retained history before it looks at which branch handles it, so a replacement wider than the flow's own types grows that history.
 
-Such an event never counts toward a `stepWindow` cap. [Delivery Contract](#saga-delivery-contract) says when the cap drops one, and why a step fed only such events has no limit from `stepWindow`.
+An event of a type the flow doesn't declare never counts toward a `stepWindow` cap. [Delivery Contract](#saga-delivery-contract) says when the cap drops one, and why a step fed only such events has no limit from `stepWindow`.
 
 A saga that declares no event types and sets no replacement derives a selector matching everything. A narrowing on such a saga is then the whole selector, and it has to stay inside what your `CloudEventConverter` can convert, the same as a `replacementFilter`.
 
@@ -6638,9 +6638,11 @@ A flow saga does not remember its whole history. A condition, join, guard, or ti
 
 `stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. An event counts if it is of a declared type, meaning a type named by one of the flow's own `on(...)` branches or by an `event(...)` check inside a window condition, or if it is a repeat of the type that started the instance.
 
-An event of any other type is still retained, and it doesn't count toward the cap. It's dropped only when the cap drops a counted event that arrived after it.
+An event of any other type is still retained, and it doesn't count toward the cap. `stepWindow` drops it only when the cap drops a counted event that arrived after it.
 
 For example, take `stepWindow(2)` and the events A, x, B, C, D, where x is of a type no step declares. C arriving drops A and keeps x. D arriving drops B, and x goes with it, because the kept events are always an unbroken run ending with the newest.
+
+`historyWindow` can drop an event that doesn't count toward the cap too. Once the flow has left the step the event arrived in, the event is part of the history kept from earlier steps, and a later transition can drop it the same as a counted one.
 
 Such an event reaches a flow saga only through a `replacementFilter` wider than the flow's own types, or a `CloudEventTypeMapper` that maps several domain types onto one CloudEvent type string. A `narrowingFilter` cannot let one in, because it only narrows the filter derived from the flow's types.
 
