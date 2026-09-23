@@ -3365,7 +3365,9 @@ feed.catchUp();
 
 Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
 
-`stopCatchUp()` asks a running replay to stop, which is what a shutdown wants, since without it an application closing mid-replay would wait for the whole history to be applied. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning. Calling `goLive()` after a stop delivers the live copy of an event the stopped replay delivered rather than skipping it, since a view that buffers during a replay threw that buffer away. A view that wrote the event straight through sees it twice.
+`stopCatchUp()` asks a running replay to stop, which is what a shutdown wants, since without it an application closing mid-replay would wait for the whole history to be applied. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
+
+After a stop, `goLive()` delivers the live copy of an event even when the stopped replay already delivered it. A view that buffers during a replay threw that buffer away when the replay stopped, so it needs the copy. A view that wrote the event straight through sees it twice.
 
 When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still buffers every `accept(...)` until told to stop, so events pile up until the buffer's cap throws. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
 
@@ -3688,7 +3690,9 @@ A subscription model may also implement `IntrospectableSubscriptions`, which add
 
 `listenForCatchup(subscriptionId, listener)` is the second method, and it tells a projection where inside a catch-up it is. A catch-up reads the history that was already there, and then delivers whatever was written while it was reading.
 
-A model that has catch-ups signals the listener twice, once when a catch-up begins, and once when it has read the history it set out to read. A catch-up that is stopped before then sends only the first. A projection that [records the appends it has applied](#projection-annotation-applied-appends) records nothing between those two signals, and records again after the second one. Some of the events written while a catch-up ran are delivered by that catch-up and never again, so they still have to be recorded. `CatchupThenPushSubscriptionModel` also calls the listener's `alreadyDeliveredByReplay(event)` when the live feed offers a copy of an event its replay already delivered, which is how an append whose only delivery was the replay's gets recorded.
+A model that has catch-ups signals the listener twice, once when a catch-up begins, and once when it has read the history it set out to read. A catch-up that is stopped before then sends only the first. A projection that [records the appends it has applied](#projection-annotation-applied-appends) records nothing between those two signals, and records again after the second one. Some of the events written while a catch-up ran are delivered by that catch-up and never again, so they still have to be recorded.
+
+`CatchupThenPushSubscriptionModel` also calls the listener's `alreadyDeliveredByReplay(event)` when the live feed offers a copy of an event its replay already delivered. That way an append that only the replay delivered is recorded too.
 
 Register the listener before you subscribe. One registered after a catch-up has already begun misses its start.
 
@@ -5552,7 +5556,7 @@ On the MongoDB starter, leaving `store` and `storeName` unset with no matching b
 
 #### Read-your-writes for an asynchronous projection {#projection-annotation-applied-appends}
 
-Every write and DCB append now returns an `AppendId`. It comes back as an `Optional<AppendId>` from `appendId()` on `WriteResult` and `DcbAppendResult`.
+Every write and DCB append returns an `AppendId`. It comes back as an `Optional<AppendId>` from `appendId()` on `WriteResult` and `DcbAppendResult`.
 
 Tell a projection to record the appends it has applied, and you can wait for one of them right after you write it. That gives you read-your-writes without moving the projection to [synchronous mode](#projection-annotation-synchronous), which updates the read model on every write.
 
@@ -5578,7 +5582,7 @@ appliedAppendStore.waitUntilApplied("enrolled-students", appendId, Duration.ofSe
 
 If it can't reach the store, it keeps polling until the timeout rather than answering early.
 
-The reactive MongoDB store is the exception to that. Call its `waitUntilApplied` on a thread Reactor marks non-blocking, a WebFlux handler for example, and it throws `IllegalStateException` straight away. Call it from `Schedulers.boundedElastic()` or another thread meant for blocking work.
+Call the reactive MongoDB store's `waitUntilApplied` from `Schedulers.boundedElastic()` or another thread meant for blocking work. On a thread Reactor marks non-blocking, a WebFlux handler for example, it throws `IllegalStateException` straight away.
 
 ##### Wiring it up
 
@@ -5591,7 +5595,9 @@ org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledSt
 }
 ```
 
-Occurrent then wraps the projection's store, so the projection records the append of every event it applies. Replays are the exception, and they are covered below.
+Occurrent then wraps the projection's store, so the projection records the append of every event it applies.
+
+Replays are the exception. When a catch-up begins, the wrapper clears the projection's recorded appends, which means it deletes every one of them. It records nothing from the history the catch-up then reads. [What a `true` answer means](#applied-appends-true-answer) says when a projection replays.
 
 This works on both the blocking and the reactor stack, and for a `DcbProjection` factory too.
 
@@ -5601,15 +5607,21 @@ It also fails when you combine `recordAppliedAppends = true` with `mode = SYNCHR
 
 The MongoDB starters configure a store for you, one document per projection id and append id pair, so `recordAppliedAppends = true` needs no store of your own.
 
-Without Spring Boot you do the same by hand. `AppliedAppendStore.inMemory()` gives you a store for tests or for a single-process application. It keeps the 10000 most recent appends per projection, and a wait for one it has dropped times out. `Projections.recordingAppliedAppends(view, projectionId, store)` wraps the projection, on the blocking stack and the reactor stack alike.
+Without Spring Boot you do the same by hand. `Projections.recordingAppliedAppends(view, projectionId, store)` wraps the projection, on the blocking stack and the reactor stack alike.
 
-Nothing tells that wrapper when a catch-up begins and ends unless you arrange it. Pass it to [`listenForCatchup`](#subscription-model-capabilities) on the subscription model the projection runs on, before you subscribe.
+`AppliedAppendStore.inMemory()` gives you a store for tests or for a single-process application. It keeps the 10000 most recent appends per projection, and a wait for one it has dropped times out.
 
-On the blocking stack, `ReplayAwareSubscriptions.findIn(subscriptionModel)` finds that model through any models wrapping it. The reactor stack has no `findIn`. Check the model with `instanceof` instead, and ask the subscription model itself, since the subscription DSL wrappers don't pass the capability on.
+Nothing tells the wrapper when a catch-up begins and ends unless you arrange it. Pass it to [`listenForCatchup`](#subscription-model-capabilities) on the subscription model the projection runs on, before you subscribe.
 
-If `listenForCatchup` returns `false`, you have to watch the model yourself. Call `catchupStarted` on the wrapper with a new object when `isCatchingUp(projectionId)` turns `true`, and `historyRead` with that same object when it turns `false` again. A wrapper that nobody tells records straight through a replay and never clears.
+On the blocking stack, `ReplayAwareSubscriptions.findIn(subscriptionModel)` finds the model that has `listenForCatchup` through any models wrapping it.
 
-Also call the wrapper's `pollForClear()` on a schedule, on a thread meant for blocking work. It retries a clear that failed because the store was unavailable when a catch-up began. Without it, that clear is only retried when another event reaches the projection.
+The reactor stack has no `findIn`. Check the model with `instanceof` instead, and ask the subscription model itself, since the subscription DSL wrappers don't pass the capability on.
+
+If `listenForCatchup` returns `false`, you have to watch the model yourself. When `isCatchingUp(projectionId)` turns `true`, call `catchupStarted` on the wrapper with a new object that identifies this catch-up, a plain `new Object()` for example. When it turns `false` again, call `historyRead` with that same object.
+
+If nothing calls them, the wrapper records every event of a replay and never clears its old records.
+
+Also call the wrapper's `pollForClear()` on a schedule, on a thread meant for blocking work. If the store is unavailable when a catch-up begins, the clear fails, and `pollForClear()` retries it. Without it, the clear is only retried when another event reaches the projection.
 
 If you maintain a projection some other way, call `recordApplied(projectionId, appendId)` on the store yourself wherever it applies an event.
 
@@ -5623,9 +5635,9 @@ These properties belong to the Spring Boot starter. Configure the store it auto-
 | `retention` | `7d` | How long a record is kept before MongoDB's TTL index deletes it. A wait for a deleted record times out rather than answering wrong, so this is about storage rather than correctness. |
 | `max-attempts` | `10` | How many times the store calls MongoDB for one read or write before it fails, at most 1000. The projection records on the thread that delivers its events, so an unreachable store holds that delivery up this long and then fails it like a handler that threw. A `waitUntilApplied` that runs out of attempts keeps polling instead. |
 | `wait-backoff.initial` / `.max` / `.multiplier` | `25ms` / `250ms` / `2.0` | How `waitUntilApplied` paces its polls. |
-| `replay-poll.initial` / `.max` / `.multiplier` | `200ms` / `5s` / `2.0` | How often the starter retries a clear a catch-up still owes, and on a subscription model that doesn't send catch-up signals, how often it checks whether the projection is catching up. Both are described below. |
+| `replay-poll.initial` / `.max` / `.multiplier` | `200ms` / `5s` / `2.0` | How often the starter retries a clear that failed when a catch-up began. On a subscription model that doesn't send catch-up signals, it is also how often the starter checks `isCatchingUp`. |
 
-##### What a `true` answer means, and what it doesn't
+##### What a `true` answer means, and what it doesn't {#applied-appends-true-answer}
 
 A `true` answer means the projection has applied at least one event of that append. It is not a promise that the projection has caught up to any particular point, and it says nothing about writes other callers made.
 
@@ -5634,48 +5646,69 @@ The recording happens after each event the projection applies, not after the who
 How long the rest takes depends on where the projection is.
 
 * **In the ordinary case**, it takes however long the same node needs to work through the rest of the append.
-* **If the node crashes mid-append**, another node takes over once its lease expires, 20 seconds by default.
+* **If the node crashes mid-append**, another node takes over once the crashed node's [competing consumer](#competing-consumer-subscription-blocking) lock expires, 20 seconds by default.
 * **If the subscription is paused or stopped**, nothing more is applied until it starts again.
 
-The other thing that changes the answer is a replay. A projection that replays its history clears its recorded appends first, so it never answers `true` about a read model it is in the middle of rebuilding. The rest of this section is about when that happens.
+A replay changes the answer too. A projection clears its recorded appends when a catch-up begins, so a wait never answers `true` about a read model the projection is in the middle of rebuilding.
 
-Whether a projection replays at all depends on its start position. With the subscription models Occurrent ships and wires together for you, only `startAt = StartPosition.BEGINNING` or an explicit `startAtGlobalPosition` replays. Left unset (`StartPosition.DEFAULT`, the annotation's own default) or set to `NOW`, a projection never replays there, whatever its checkpoint holds.
+Whether a projection replays at all depends on its start position. With the subscription models the Spring Boot starter configures for you, only `startAt = StartPosition.BEGINNING` or an explicit `startAtGlobalPosition` replays.
+
+A projection whose `startAt` is unset (`StartPosition.DEFAULT`, the annotation's own default) or `NOW` never replays on those models, whatever its checkpoint holds.
 
 A push projection (`source = PUSH`) doesn't use `startAt`. Its `catchup` decides instead. The default, `FROM_EVENT_STORE`, replays history before the projection goes live, and `NONE` never replays.
 
-Rebuilding a read model therefore takes two steps. Set `startAt = StartPosition.BEGINNING` (or a global position) so the projection replays, and clear its stored checkpoint.
+Rebuilding a read model therefore takes two steps. Set `startAt = StartPosition.BEGINNING` (or a global position) so the projection replays, and delete its stored checkpoint.
 
-The checkpoint matters because the default `resumeBehavior` resumes from it instead of replaying again. Wipe the read model but leave the checkpoint, and the projection resumes rather than replays, so it never clears its recorded appends either.
+The checkpoint matters because the default `resumeBehavior` resumes from it instead of replaying again. Wipe the read model but keep the checkpoint, and the projection resumes instead of replaying, so it never clears its recorded appends either.
 
-A projection left at `StartPosition.DEFAULT` never replays on that composition, so it never clears its own records. Wipe its read model, then call `AppliedAppendStore.clear(projectionId)` yourself. A projection that is running when you do that isn't told, so if the append it recorded last is delivered again it skips recording it, and a wait for that one append times out.
+A projection on `StartPosition.DEFAULT` never replays on the models the starter configures, so it never clears its own records. Wipe its read model, then call `AppliedAppendStore.clear(projectionId)` yourself.
 
-The Spring Boot starter logs a `WARN` at startup naming a `recordAppliedAppends = true` projection it can tell never replays. That covers an explicit `NOW`, a `DEFAULT` on Occurrent's own MongoDB composition, a push projection with `catchup = NONE`, and on the reactor stack a composition with no catch-up layer. It can't tell for a subscription model of your own, so it stays silent there.
+A running projection isn't told about that call. The wrapper remembers the append it recorded last and doesn't write it twice, so if that append is delivered again after your call, it isn't recorded, and a wait for it times out.
 
-A projection whose start position does replay clears its recorded appends when the catch-up begins, and starts recording again only after the history has been read. A wait for an append recorded before that clear times out rather than answering `true` about a read model the rebuild has already wiped.
+The Spring Boot starter logs a `WARN` at startup for a `recordAppliedAppends = true` projection it can tell never replays, naming the projection. It can tell for:
 
-Those two moments aren't the same instant. Recording stops when the catch-up begins, and the old records stay readable until the clear finishes, so a wait running in between can still get `true` for an append whose read model the rebuild is discarding.
+* an explicit `NOW`
+* `DEFAULT` on the MongoDB subscription models the starter configures
+* a push projection with `catchup = NONE`
+* on the reactor stack, a subscription model the starter configured without a catch-up model inside it
 
-Recording stops for the history the replay is reading, not for the whole catch-up. A catch-up reads the history that was already there, and then delivers whatever was written while it was reading.
+It can't tell for a subscription model of your own, so it logs nothing there.
 
-Those later events are recorded, so a write issued right after your application starts is recorded even though the projection is still catching up. That holds for `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
+A projection whose start position does replay starts recording again only after the catch-up has read the history. A wait for an append recorded before the clear times out rather than answering `true` about a read model the rebuild has already wiped.
 
-The stream and DCB catch-up models are different. Their history read can pick up a write that was still committing when the catch-up began, and that delivery isn't recorded. The live subscription then delivers the same event again and records the append, so the wait answers `true`, and the projection applies that event twice.
+Recording stops before the clear finishes. It stops when the catch-up begins, and the old records stay readable until the clear is done, so a wait running in between can still get `true` for an append whose read model the rebuild is discarding.
+
+Recording stops only while the catch-up reads the history that was already there. The catch-up then delivers whatever was written while it was reading, and those events are recorded.
+
+So a write issued right after your application starts is recorded even though the projection is still catching up. That holds for `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
+
+The stream and DCB catch-up models are different. Their history read can pick up a write that was still committing when the catch-up began, and that delivery isn't recorded.
+
+Their history read also adds nothing to the cache of event ids the live subscription checks for duplicates. So the live subscription delivers the same event again and records the append. The wait answers `true`, and the projection applies that event twice.
+
+`CatchupThenPushSubscriptionModel` does keep the ids of the events its replay delivered. When the live feed offers one of them again, it drops that copy and tells the projection with `alreadyDeliveredByReplay(event)`, so the append is recorded and the event is applied once.
 
 Waiting for an append the catch-up is still working through is a wait like any other. It answers as soon as the projection has applied one of that append's events, which can be well before the catch-up hands over to live delivery.
 
-Occurrent's own subscription models tell the projection a catch-up has begun before it delivers anything, so no replay goes unnoticed on them. The clear itself runs against the store, and if the store is unavailable at that moment, the clear is retried on the next event the projection receives and on the `replay-poll` schedule. That poll comes with the Spring Boot starter. Without it, schedule `pollForClear()` yourself as described above.
+Occurrent's own subscription models tell the projection a catch-up has begun before they deliver anything, so no replay goes unnoticed on them.
 
-A subscription model that doesn't send the catch-up signals puts the projection on a fallback. The starter checks `isCatchingUp` on the `replay-poll` schedule, and the projection records nothing until the catch-up is over, including the writes that arrive while it runs.
+If the store is unavailable when the clear runs, the clear is retried on the next event the projection receives and on the `replay-poll` schedule. That poll comes with the Spring Boot starter. Without the starter, schedule `pollForClear()` yourself as described above.
 
-A catch-up that starts and finishes between two of those checks isn't seen at all, so the projection records the history it replayed as if it were live, and its old records survive it. The checks start at 200ms and back off to 5 seconds, so once they are that far apart, a catch-up shorter than 5 seconds can be missed.
+On a subscription model that doesn't send the catch-up signals, the starter checks `isCatchingUp` on the `replay-poll` schedule instead. The projection records nothing until the catch-up is over, including the writes that arrive while it runs.
 
-Even when the start position does replay, telling a replay apart from live delivery depends on the subscription model implementing [`ReplayAwareSubscriptions`](#subscription-model-capabilities).
+A catch-up that starts and finishes between two of those checks isn't seen at all. The projection records the history it replayed as if it were live, and its old records survive the catch-up.
 
-On the blocking stack, `ReplayAwareSubscriptions.findIn(..)` looks through the chain of wrapping models for one that implements it. A model where nothing in the chain does is treated as never replaying, and nothing is logged about it.
+The checks start at 200ms and back off to 5 seconds, so once they are that far apart, a catch-up shorter than 5 seconds can be missed.
 
-That is deliberate rather than an oversight. It does mean a model of your own that replays without implementing the capability keeps recording straight through its own rebuild instead of clearing.
+Even when the start position does replay, the projection can only tell a replay from live delivery when the subscription model implements [`ReplayAwareSubscriptions`](#subscription-model-capabilities).
 
-On the reactor stack, the default MongoDB composition always knows, because the auto-configuration that builds it supplies the answer. A reactive model of your own, or a third-party one, that can't say gets the same fallback, except that a warning is logged once, when the projection registers.
+On the blocking stack, `ReplayAwareSubscriptions.findIn(..)` looks through the chain of wrapping models for one that implements it. When nothing in the chain does, the model is treated as never replaying, and nothing is logged about it.
+
+A model of your own that replays without implementing `ReplayAwareSubscriptions` therefore keeps recording during its own rebuild and never clears its old records.
+
+On the reactor stack, the starter always knows whether the MongoDB subscription model it configures is catching up, because the auto-configuration that builds that model hands the starter the catch-up model inside it.
+
+A reactive model of your own, or a third-party one, that doesn't implement `ReplayAwareSubscriptions` itself is treated as never replaying too. The starter logs a warning about it once, when the projection registers.
 
 #### Without the starter {#projection-annotation-without-starter}
 
