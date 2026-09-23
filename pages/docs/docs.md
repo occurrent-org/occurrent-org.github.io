@@ -7918,15 +7918,23 @@ The flow saga's deprecated `join`, Kotlin's `expect<T>`, and `Expectation` are r
 
 `join` was already deprecated in 0.33.0 in favor of `on(StepCondition, ...)` with `allOf(...)`, and that replacement is what every caller now needs.
 
-The recipe rewrites every `join` call whose expectation list is a literal `List.of(...)` or `Arrays.asList(...)` of literal `Expectation.of(...)` calls. A duplicate-typed pair is collapsed to the higher of their counts, the same way `join` itself did, but only when each count is an integer literal or left out, which counts as 1.
+The recipe rewrites every `join` call whose expectation list is a literal `List.of(...)` or `Arrays.asList(...)` of literal `Expectation.of(...)` calls.
 
-A list built from a variable or a method call, a duplicate-typed pair whose count is not a literal, and every Kotlin call site are left alone and stop compiling, so the compiler finds them for you. See [section 1](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#1-a-flow-sagas-join-kotlins-expectt-and-expectation-are-removed).
+When several expectations name the same event type, the recipe keeps the highest count, as `join` did. It only does that when every one of those counts is an integer literal or left out, and a missing count means 1.
+
+The recipe doesn't rewrite these calls, and each of them stops compiling, so the compiler finds them for you:
+
+* a `join` whose expectation list is a variable or a method call
+* a `join` where several expectations name the same event type and one of their counts is not an integer literal
+* every Kotlin call site
+
+See [section 1](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#1-a-flow-sagas-join-kotlins-expectt-and-expectation-are-removed).
 
 `WriteResult` and `DcbAppendResult` gain a fourth component, `Optional<AppendId> appendId()`. A record pattern deconstructing either stops compiling, and the recipe rewrites those.
 
 An equality assertion on a whole `WriteResult` or `DcbAppendResult` still compiles but fails, because every write that persists an event gets a new append id. Compare the components you mean instead. See [section 6](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#6-writeresult-and-dcbappendresult-gain-a-fourth-component-the-append-id).
 
-Four MongoDB-only Spring Boot keys move under `mongodb`, `occurrent.event-store.collection` to `occurrent.event-store.mongodb.collection` for example. The old keys still work and are deprecated, and the recipe rewrites them in your configuration files. See [section 4](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb).
+One change is in configuration rather than code. Four MongoDB-only Spring Boot keys move under `mongodb`, `occurrent.event-store.collection` to `occurrent.event-store.mongodb.collection` for example. The old keys still work and are deprecated, and the recipe rewrites them in your configuration files. See [section 4](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb).
 
 The changes below alter what already-running code does.
 
