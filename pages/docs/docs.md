@@ -3252,6 +3252,10 @@ public void onMessage(byte[] body) {
 
 No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
+Fed from the event store's write path, the push model keeps no record of which events a subscription has handled. When the application crashes after a write has committed but before the handler has run, the subscription never sees that event. Use a [durable subscription](#durable-subscriptions-blocking) if that is not acceptable.
+
+Fed from a broker, don't acknowledge a message just because `accept(..)` returned. It returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused, so the broker never sends those events again. Call `acceptRedeliverable(CloudEvent)` instead, and acknowledge the message only when it returns normally and the model's `PushObserver` was told `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It returns normally for the other outcomes as well, so returning alone is not enough. The RabbitMQ and Kafka bridges do this for you.
+
 A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
 
 `CatchupThenPushSubscriptionModel` automates that catch-up. Wrap it around the push model and give it the event store as the replay source. On the first subscribe it replays the projection's history in position order, then hands over to the live feed, buffering the feed during the replay and de-duplicating the overlap by event id so nothing is lost or delivered twice across the replay-to-live handover:
@@ -4077,11 +4081,13 @@ Mono<Void> onMessage(byte[] body) {
     CloudEvent cloudEvent = EventFormatProvider.getInstance()
             .resolveFormat(JsonFormat.CONTENT_TYPE)
             .deserialize(body);
-    return pushModel.accept(cloudEvent);
+    return pushModel.acceptRedeliverable(cloudEvent);
 }
 ```
 
-`accept(CloudEvent)` returns a `Mono<Void>` and runs the registered handler when the event matches its filter. A handler error propagates through that `Mono`, so the caller decides whether to acknowledge the message, retry it, or route it to the broker's failed-message queue, where the broker has one.
+`acceptRedeliverable(CloudEvent)` returns a `Mono<Void>` and runs the registered handler when the event matches its filter. The `Mono` completes normally only when the handler applied the event, the filter declined it, or a `CatchupThenPushSubscriptionModel` in front had already applied it, so acknowledge the message only then. It errors for every other event, which means you need no `PushObserver` to decide. An event that reaches no subscription, because nothing is registered, the model is stopped or the subscription is paused, errors with `EventNotAcceptedException`, and so does one that arrives while a `CatchupThenPushSubscriptionModel` in front is still replaying. Leave that message unacknowledged rather than routing it to the broker's failed-message queue, and the broker delivers it again. A handler error propagates through the `Mono` too, so the caller decides whether to retry the message or route it to the failed-message queue, where the broker has one.
+
+`accept(CloudEvent)` is for the event store's write path, and its `Mono` completes normally for an event no subscription takes as well. Fed that way, the model keeps no record of which events a subscription has handled, so when the application crashes after a write has committed but before the handler has run, the subscription never sees that event. Use a [durable subscription](#durable-subscriptions-reactive) if that is not acceptable.
 
 As on the blocking side, one model feeds one consumer, and a second projection registering on it fails at startup. The reasoning is in the [blocking section](#push-subscription-blocking): a broker message carries one acknowledgement, so sharing a model would let one failing consumer strand the others. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
 
