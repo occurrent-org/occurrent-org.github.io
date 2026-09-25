@@ -14,12 +14,11 @@ forwarder.forward("order-status-forwarder");
 consumerConfig.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
 consumerConfig.put(ConsumerConfig.GROUP_ID_CONFIG, "order-status");
 
-RoutingOutcomeChannel outcomeChannel = new RoutingOutcomeChannel();
-PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(), outcomeChannel);
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing());
 CatchupThenPushSubscriptionModel model =
         new CatchupThenPushSubscriptionModel(eventStore, pushModel, catchupMarker);
 
-KafkaCloudEventBridge bridge = KafkaCloudEventBridge.builder(consumerConfig, pushModel, outcomeChannel)
+KafkaCloudEventBridge bridge = KafkaCloudEventBridge.builder(consumerConfig, pushModel)
         .resolver(resolver)
         .build();
 

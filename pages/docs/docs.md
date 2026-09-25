@@ -3695,22 +3695,18 @@ An application header using the `cloudEvents_` prefix is refused when the destin
 
 `RabbitMqCloudEventBridge` is the consuming half. It holds the `PushSubscriptionModel` itself, not only its `accept(..)` methods, so it can read the model's lifecycle and acknowledge correctly.
 
-Create a `RoutingOutcomeChannel` and pass the same instance to the model's constructor and to the bridge's builder:
-
 ```java
-RoutingOutcomeChannel outcomeChannel = new RoutingOutcomeChannel();
-PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(), outcomeChannel);
-RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(
-                rabbitConnection, pushModel, outcomeChannel, "order-status-queue")
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing());
+RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(rabbitConnection, pushModel, "order-status-queue")
         .resolver(resolver)
         .build();
 ```
 
-The bridge acts on the `RoutingOutcome` that `acceptRedeliverable(...)` returns. A call that throws returns nothing, so for that case the bridge reads the outcome the model reported to the channel instead, which is how it tells `REFUSED` apart from a failing handler. A `RoutingOutcomeChannel` is a `PushObserver`, and a `PushSubscriptionModel` only takes its observer when it's constructed.
-
 Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The bridge then stops pulling messages while the replay runs. That only saves round trips, since a message the replay isn't ready for is reported `DEFERRED` and never acknowledged either way.
 
 The bridge calls `acceptRedeliverable(...)` rather than `accept(...)`. It's the same routing decision, offered by a source that can send the event again later, so the model is free to refuse an event instead of holding on to it.
+
+`acceptRedeliverable(...)` returns a refusal as an outcome, `REFUSED` or `NOT_DELIVERABLE`, and throws only when the subscription's filter or handler throws. The bridge decides what to do with a message from the returned `RoutingOutcome` alone.
 
 The bridge acknowledges a message once `acceptRedeliverable(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. For any other outcome, or an exception from `acceptRedeliverable(...)`, the bridge holds the message, stops, or hands it to its failure policy.
 
@@ -3736,7 +3732,7 @@ The RabbitMQ client calls every consumer on a connection from one pool of thread
 
 `build()` retries opening its channel and declaring the queue, the bindings and the QoS, backing off from 100ms to 2 seconds over ten attempts, so a broker that is still starting doesn't fail your application's startup. It never creates or reconnects the `Connection` you gave it. A bridge keeps consuming after that connection recovers automatically, and a delivery that was being handled when it dropped is delivered again. On a `Connection` with automatic recovery turned off, the bridge stops instead.
 
-`RabbitMqDomainEventBridge<E>` and `RabbitMqDomainEventSink<E>` are the domain-level counterparts. The bridge is built with `RabbitMqDomainEventBridge.builder(connection, feed, queue)`, which needs no `RoutingOutcomeChannel` because `acceptCloudEvent(..)` returns the outcome, and the sink with `RabbitMqDomainEventSink.using(cloudEventSink, cloudEventConverter)`.
+`RabbitMqDomainEventBridge<E>` and `RabbitMqDomainEventSink<E>` are the domain-level counterparts. The bridge is built with `RabbitMqDomainEventBridge.builder(connection, feed, queue)`, and the sink with `RabbitMqDomainEventSink.using(cloudEventSink, cloudEventConverter)`.
 
 ##### Kafka {#broker-kafka}
 
@@ -3768,7 +3764,7 @@ KafkaCloudEventSink sink = KafkaCloudEventSink.builder(producerConfig, resolver)
 ```java
 consumerConfig.put(ConsumerConfig.GROUP_ID_CONFIG, "order-status");
 consumerConfig.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
-KafkaCloudEventBridge bridge = KafkaCloudEventBridge.builder(consumerConfig, pushModel, outcomeChannel)
+KafkaCloudEventBridge bridge = KafkaCloudEventBridge.builder(consumerConfig, pushModel)
         .resolver(resolver)
         .build();
 ```
@@ -3778,6 +3774,8 @@ Once a record comes back `DELIVERED` or `FILTERED`, or its failure ends in a con
 Once it has worked through a whole poll batch, it commits the marked offsets of every partition that made progress. It never uses the no-argument `commitSync()`, which would commit the whole batch including records nothing processed yet.
 
 On `NOT_DELIVERABLE` or a thrown exception, the same `DeliveryFailurePolicy` applies as on RabbitMQ.
+
+On `REFUSED` the bridge stops for good without committing that record's offset, so the next consumer in the group fetches it again.
 
 `REDELIVER` seeks the consumer back to the failed record's offset and stops processing that partition's remaining records for the poll, so a later record in the same batch is never committed past one that failed, and the failed record's offset isn't marked either.
 
@@ -3855,7 +3853,7 @@ RabbitMqDomainEventBridge<OrderEvent> orderStatusBridge(RabbitMqDomainEventBridg
 
 The factory doesn't register the bridge as a Spring bean, so nothing closes it for you. Declaring it as a `@Bean` with `destroyMethod = "close"`, as above, has Spring close it at shutdown.
 
-`RabbitMqCloudEventBridgeFactory.forQueue(queue, pushModel, outcomeChannel)` is the CloudEvent-level factory. It also sets `readinessSource(..)` for you.
+`RabbitMqCloudEventBridgeFactory.forQueue(queue, pushModel)` is the CloudEvent-level factory. It also sets `readinessSource(..)` for you.
 
 When `pushModel` feeds a `@Projection` or `@Saga` with `source = PUSH`, the bridge checks whether that projection's or saga's catch-up is ready. Otherwise it treats the model as always ready.
 
@@ -3885,7 +3883,7 @@ occurrent.broker.kafka.bootstrap-servers=localhost:9092
 occurrent.broker.kafka.topic=orders
 ```
 
-`topic` gives the sink a `KafkaSharedTopicDestinationResolver` on that topic. The factories are `KafkaDomainEventBridgeFactory.forGroup(groupId, feed)` and `KafkaCloudEventBridgeFactory.forGroup(groupId, pushModel, outcomeChannel)`, used the same way as the RabbitMQ ones.
+`topic` gives the sink a `KafkaSharedTopicDestinationResolver` on that topic. The factories are `KafkaDomainEventBridgeFactory.forGroup(groupId, feed)` and `KafkaCloudEventBridgeFactory.forGroup(groupId, pushModel)`, used the same way as the RabbitMQ ones.
 
 `forGroup(..)` sets `group.id` to the group you pass and `enable.auto.commit` to `false`. Any other Kafka client setting goes under `producer.additional-properties` or `consumer.additional-properties`, for example `occurrent.broker.kafka.consumer.additional-properties.max.poll.records=100`.
 
