@@ -3258,11 +3258,13 @@ Fed from a broker, don't acknowledge a message just because `accept(..)` returne
 
 Call `acceptRedeliverable(CloudEvent)` instead. It returns the event's `RoutingOutcome`, and you acknowledge the message only when that is `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It throws when the handler or the subscription's filter throws.
 
-It returns `UNAVAILABLE` for an event no subscription takes and `DEFERRED` for one that arrives while a `CatchupThenPushSubscriptionModel` in front is still replaying. The broker delivers either of those again if you don't acknowledge the message.
+It returns `UNAVAILABLE` for an event no subscription takes, and while the model is stopped or the subscription is paused. With a `CatchupThenPushSubscriptionModel` in front it returns `DEFERRED` for an event that arrives while the replay is still running, or while an earlier delivery of the same event is still in progress on another thread. The broker delivers either of those again if you don't acknowledge the message.
 
 Once a catch-up in front has failed it returns `REFUSED` for every event, and you stop consuming, because the broker would only deliver the message into the same refusal. A `CatchupThenPushSubscriptionModel` in front tells events apart by id, so it returns `NOT_DELIVERABLE` for an event whose `getId()` is `null`. Handle that the same way as a handler that throws.
 
 The RabbitMQ and Kafka bridges do all of this for you.
+
+A handler that feeds another push model from inside its own subscription has to act on what `acceptRedeliverable(..)` returns, because nothing delivers an event it refuses there again. Throw on anything but `DELIVERED` or `FILTERED`, say, so the outer handler fails instead of returning as if the event had been handled. Calling `accept(..)` there is no safer, since it also returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
 
 A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
 
@@ -4106,6 +4108,8 @@ Mono<Boolean> onMessage(byte[] body) {
 For `UNAVAILABLE` and `DEFERRED`, leave the message unacknowledged rather than routing it to the broker's failed-message queue, and the broker delivers it again. A handler or filter error propagates through the `Mono`, so the caller decides whether to retry the message or route it to the failed-message queue, where the broker has one. Handle `NOT_DELIVERABLE` the same way. On `REFUSED`, stop consuming, because the broker would only deliver the message into the same refusal.
 
 `accept(CloudEvent)` is for the event store's write path, and its `Mono` completes normally for an event no subscription takes as well. Fed that way, the model keeps no record of which events a subscription has handled, so when the application crashes after a write has committed but before the handler has run, the subscription never sees that event. Use a [durable subscription](#durable-subscriptions-reactive) if that is not acceptable.
+
+A handler that feeds another push model from inside its own subscription has to act on the outcome the `Mono` from `acceptRedeliverable(..)` completes with, because nothing delivers an event it refuses there again. Error on anything but `DELIVERED` or `FILTERED`, say, so the outer handler fails instead of completing as if the event had been handled. Calling `accept(..)` there is no safer, since its `Mono` also completes normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
 
 As on the blocking side, one model feeds one consumer, and a second projection registering on it fails at startup. The reasoning is in the [blocking section](#push-subscription-blocking): a broker message carries one acknowledgement, so sharing a model would let one failing consumer strand the others. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
 
