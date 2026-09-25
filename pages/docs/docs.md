@@ -3706,7 +3706,7 @@ RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(
         .build();
 ```
 
-The bridge reads the `RoutingOutcome` of each event it hands the model from that channel. A `RoutingOutcomeChannel` is a `PushObserver`, and a `PushSubscriptionModel` only takes its observer when it's constructed.
+The bridge acts on the `RoutingOutcome` that `acceptRedeliverable(...)` returns. A call that throws returns nothing, so for that case the bridge reads the outcome the model reported to the channel instead, which is how it tells `REFUSED` apart from a failing handler. A `RoutingOutcomeChannel` is a `PushObserver`, and a `PushSubscriptionModel` only takes its observer when it's constructed.
 
 Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The bridge then stops pulling messages while the replay runs. That only saves round trips, since a message the replay isn't ready for is reported `DEFERRED` and never acknowledged either way.
 
