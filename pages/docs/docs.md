@@ -3254,7 +3254,7 @@ No broker dependency is added by this module, you pick and wire up RabbitMQ, Kaf
 
 Fed from the event store's write path, the push model keeps no record of which events a subscription has handled. When the application crashes after a write has committed but before the handler has run, the subscription never sees that event. Use a [durable subscription](#durable-subscriptions-blocking) if that is not acceptable.
 
-Fed from a broker, don't acknowledge a message just because `accept(..)` returned. It returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused, so the broker never sends those events again. Call `acceptRedeliverable(CloudEvent)` instead, and acknowledge the message only when it returns normally and the model's `PushObserver` was told `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It returns normally for the other outcomes as well, so returning alone is not enough. The RabbitMQ and Kafka bridges do this for you.
+Fed from a broker, don't acknowledge a message just because `accept(..)` returned. It returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused, so the broker never sends those events again. Call `acceptRedeliverable(CloudEvent)` instead. It returns the event's `RoutingOutcome`, and you acknowledge the message only when that is `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It returns `UNAVAILABLE` for an event no subscription takes and `DEFERRED` for one that arrives while a `CatchupThenPushSubscriptionModel` in front is still replaying, and the broker delivers either of those again if you leave the message unacknowledged. It throws when the handler or the subscription's filter throws, or when a catch-up in front has failed. The RabbitMQ and Kafka bridges do this for you.
 
 A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
 
@@ -4077,15 +4077,23 @@ ReactiveProjectionRunner.agnostic(pushModel, cloudEventConverter)
 Reconstruct the `CloudEvent` from the CloudEvents JSON payload on the listener side, then hand it to the model:
 
 ```java
-Mono<Void> onMessage(byte[] body) {
+// Completes with true when the message may be acknowledged
+Mono<Boolean> onMessage(byte[] body) {
     CloudEvent cloudEvent = EventFormatProvider.getInstance()
             .resolveFormat(JsonFormat.CONTENT_TYPE)
             .deserialize(body);
-    return pushModel.acceptRedeliverable(cloudEvent);
+    return pushModel.acceptRedeliverable(cloudEvent).map(RoutingOutcome::mayAcknowledge);
 }
 ```
 
-`acceptRedeliverable(CloudEvent)` returns a `Mono<Void>` and runs the registered handler when the event matches its filter. The `Mono` completes normally only when the handler applied the event, the filter declined it, or a `CatchupThenPushSubscriptionModel` in front had already applied it, so acknowledge the message only then. It errors for every other event, which means you need no `PushObserver` to decide. An event that reaches no subscription, because nothing is registered, the model is stopped or the subscription is paused, errors with `EventNotAcceptedException`, and so does one that arrives while a `CatchupThenPushSubscriptionModel` in front is still replaying. Leave that message unacknowledged rather than routing it to the broker's failed-message queue, and the broker delivers it again. A handler error propagates through the `Mono` too, so the caller decides whether to retry the message or route it to the failed-message queue, where the broker has one.
+`acceptRedeliverable(CloudEvent)` runs the registered handler when the event matches its filter and returns a `Mono<RoutingOutcome>`. Acknowledge the message only when that `Mono` completes with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`, the two outcomes `mayAcknowledge()` is true for.
+
+* `DELIVERED` once the handler has applied the event, or once a `CatchupThenPushSubscriptionModel` in front finds it had already applied it.
+* `FILTERED` when the subscription's filter declined the event.
+* `UNAVAILABLE` when nothing is registered, the model is stopped or the subscription is paused.
+* `DEFERRED` while a `CatchupThenPushSubscriptionModel` in front is still replaying.
+
+For `UNAVAILABLE` and `DEFERRED`, leave the message unacknowledged rather than routing it to the broker's failed-message queue, and the broker delivers it again. A handler or filter error propagates through the `Mono`, so the caller decides whether to retry the message or route it to the failed-message queue, where the broker has one. The `Mono` also errors when a catch-up in front has failed or its live buffer is full.
 
 `accept(CloudEvent)` is for the event store's write path, and its `Mono` completes normally for an event no subscription takes as well. Fed that way, the model keeps no record of which events a subscription has handled, so when the application crashes after a write has committed but before the handler has run, the subscription never sees that event. Use a [durable subscription](#durable-subscriptions-reactive) if that is not acceptable.
 
