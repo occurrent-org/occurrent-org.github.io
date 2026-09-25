@@ -3367,6 +3367,8 @@ feed.catchUp();
 
 When the event is not applied, `accept(...)` throws an `IllegalStateException`, or its `Mono` errors with one. That happens when the catch-up was stopped before the feed went live, the event was fed after such a stop and before the next catch-up, or the catch-up failed. On the blocking stack it also happens when the waiting thread was interrupted, when another delivery of the same event was still running, and when `accept(...)` was called while the feed was not live from inside the projection, a view or another callback of the same feed, where the thread would wait for work it holds up itself. Do not acknowledge the message then, and the broker delivers it again.
 
+On the blocking stack, an `accept(...)` called from inside the projection or a view while the catch-up replays history into it is refused, and that refusal fails the catch-up. The feed then refuses every event until you build a new one, and a caller that catches the refusal and continues drops the event it fed.
+
 On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
 
 A long replay keeps the listener waiting. A Kafka consumer that waits past its `max.poll.interval.ms`, five minutes by default, is taken out of its group and the record is delivered again. RabbitMQ delivers a message again once a consumer has held on to it without acknowledging it for longer than `consumer_timeout`, 30 minutes by default. Either costs a redelivery rather than the event.
