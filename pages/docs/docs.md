@@ -3254,7 +3254,15 @@ No broker dependency is added by this module, you pick and wire up RabbitMQ, Kaf
 
 Fed from the event store's write path, the push model keeps no record of which events a subscription has handled. When the application crashes after a write has committed but before the handler has run, the subscription never sees that event. Use a [durable subscription](#durable-subscriptions-blocking) if that is not acceptable.
 
-Fed from a broker, don't acknowledge a message just because `accept(..)` returned. It returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused, so the broker never sends those events again. Call `acceptRedeliverable(CloudEvent)` instead. It returns the event's `RoutingOutcome`, and you acknowledge the message only when that is `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It returns `UNAVAILABLE` for an event no subscription takes and `DEFERRED` for one that arrives while a `CatchupThenPushSubscriptionModel` in front is still replaying, and the broker delivers either of those again if you leave the message unacknowledged. It throws when the handler or the subscription's filter throws. Once a catch-up in front has failed it returns `REFUSED` for every event, and you stop consuming, because the broker would only deliver the message into the same refusal. The RabbitMQ and Kafka bridges do this for you.
+Fed from a broker, don't acknowledge a message just because `accept(..)` returned. It returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused, so the broker never sends those events again.
+
+Call `acceptRedeliverable(CloudEvent)` instead. It returns the event's `RoutingOutcome`, and you acknowledge the message only when that is `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. It throws when the handler or the subscription's filter throws.
+
+It returns `UNAVAILABLE` for an event no subscription takes and `DEFERRED` for one that arrives while a `CatchupThenPushSubscriptionModel` in front is still replaying. The broker delivers either of those again if you don't acknowledge the message.
+
+Once a catch-up in front has failed it returns `REFUSED` for every event, and you stop consuming, because the broker would only deliver the message into the same refusal. A `CatchupThenPushSubscriptionModel` in front tells events apart by id, so it returns `NOT_DELIVERABLE` for an event whose `getId()` is `null`. Handle that the same way as a handler that throws.
+
+The RabbitMQ and Kafka bridges do all of this for you.
 
 A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
 
