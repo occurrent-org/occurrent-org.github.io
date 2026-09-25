@@ -3363,11 +3363,11 @@ CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
 feed.catchUp();
 ```
 
-`accept(...)` returns, or its `Mono` completes, only once the event has been applied. An event fed while the catch-up replay runs, or before it starts, is held until the replay finishes and applied then, so a listener that acknowledges when `accept(...)` returns never acknowledges an event that is only held in memory.
+`accept(...)` returns, or its `Mono` completes, only once the event has been applied. An event fed before the feed goes live, or while a catch-up runs on a feed that already went live, is held until the replay finishes and applied then, so a listener that acknowledges when `accept(...)` returns never acknowledges an event that is only held in memory.
 
-When the event is not applied, `accept(...)` throws an `IllegalStateException`, or its `Mono` errors with one. That happens when the catch-up was stopped before the feed went live or the catch-up failed, and on the blocking stack also when the waiting thread was interrupted or another delivery of the same event was still running. Do not acknowledge the message then, and the broker delivers it again.
+When the event is not applied, `accept(...)` throws an `IllegalStateException`, or its `Mono` errors with one. That happens when the catch-up was stopped before the feed went live, the event was fed after such a stop and before the next catch-up, or the catch-up failed. On the blocking stack it also happens when the waiting thread was interrupted, when another delivery of the same event was still running, and when `accept(...)` was called while the feed was not live from inside the projection, a view or another callback of the same feed, where the thread would wait for work it holds up itself. Do not acknowledge the message then, and the broker delivers it again.
 
-On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until `stopCatchUp()` is called from another thread.
+On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
 
 A long replay keeps the listener waiting. A Kafka consumer that waits past its `max.poll.interval.ms`, five minutes by default, is taken out of its group and the record is delivered again. RabbitMQ delivers a message again once a consumer has held on to it without acknowledging it for longer than `consumer_timeout`, 30 minutes by default. Either costs a redelivery rather than the event.
 
@@ -3375,7 +3375,7 @@ Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying th
 
 `stopCatchUp()` asks a running replay to stop, which is what a shutdown wants, since without it an application closing mid-replay would wait for the whole history to be applied. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
 
-When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still holds every `accept(...)` back until told to stop, so nothing is applied, every `accept(...)` waits, and once the buffer's cap is reached further events are refused. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
+When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still holds every `accept(...)` back until told to stop, so nothing is applied. On the blocking stack each listener thread stalls in its first `accept(...)`, and the broker delivers that message again once one of the timeouts above runs out. On the reactor stack events pile up until the buffer's cap is reached, and further ones are refused. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
 
 ```java
 feed.goLive();
