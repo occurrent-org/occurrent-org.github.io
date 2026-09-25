@@ -4188,7 +4188,7 @@ The reactive model also takes an optional `PushObserver`, for the same reason as
 
 Five things differ.
 
-* The reactive model has no `acceptRedeliverable(..)`. A `CatchupThenPushSubscriptionModel` in front of it buffers an event that arrives during the replay and reports `DELIVERED`.
+* The reactive `acceptRedeliverable(CloudEvent)` returns a `Mono<RoutingOutcome>` rather than the `RoutingOutcome` itself, so a broker listener acknowledges the message only when that `Mono` completes with `DELIVERED` or `FILTERED`.
 * A handler that fails with a checked exception is reported `DELIVERED`, like any other exception. Only an `Error` other than `AssertionError` from the handler skips the observer.
 * The observer doesn't always run on the thread that called `accept(..)`. `UNAVAILABLE`, `FILTERED` and a filter that threw are reported on the thread that subscribed to the returned `Mono`. The other outcomes are reported once your handler, or the `CatchupThenPushSubscriptionModel` in front of it, has finished with the event, on whichever thread that happened.
 * An `InterruptedException` from the observer sets the interrupt flag on the thread the observer ran on. A pooled Reactor worker clears that flag before its next task, so the caller may never see it.
