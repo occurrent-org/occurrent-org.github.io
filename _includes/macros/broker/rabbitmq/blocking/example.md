@@ -11,13 +11,11 @@ CloudEventForwarder forwarder = new CloudEventForwarder(forwarderSubscription, s
 forwarder.forward("order-status-forwarder");
 
 // Consume side: the bridge feeds a PushSubscriptionModel, wrapped in catch-up.
-RoutingOutcomeChannel outcomeChannel = new RoutingOutcomeChannel();
-PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(), outcomeChannel);
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing());
 CatchupThenPushSubscriptionModel model =
         new CatchupThenPushSubscriptionModel(eventStore, pushModel, catchupMarker);
 
-RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(
-                rabbitConnection, pushModel, outcomeChannel, "order-status-queue")
+RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(rabbitConnection, pushModel, "order-status-queue")
         .resolver(resolver)
         .readinessSource(model::isReadyForLiveDelivery)
         .build();
