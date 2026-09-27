@@ -766,7 +766,8 @@ replacement event from scratch could drop or change any of these values. So if y
 event store running 0.33.0 or earlier, some of your events may be damaged.
 
 Position-ordered reads and position-based catch-up skip an event whose `position` is a string or missing, and DCB
-reads, `exists` and `count` also skip a DCB event without its `dcbTags` array. Reads leave a damaged event out
+reads, `exists` and `count` find a DCB event by its `dcbTags` array alone, so they skip it under a tag the array
+lacks. Reads leave a damaged event out
 without any error. A damaged DCB event is also left out of the conflict query behind a conditional append, so an
 append that should have been refused is accepted.
 
@@ -778,17 +779,18 @@ The check only finds a damaged `position`, so a startup without the warning does
 described under [what the repair cannot find](#update-event-repair-limits).
 
 To make the store refuse to start over such an event, set `requireRepairedEvents(true)` on its
-`EventStoreConfig.Builder`. It is off by default. It refuses while any event's `position` is anything other than a
-positive integer no greater than the store's position counter, or any DCB event lacks its `dcbTags` array. That takes
-in a string `position`, a `null` one, `NaN`, an array, a DCB event whose position is gone and a position set by hand
-that no store would assign, so it also finds damage the warning cannot see. A non DCB event with no `position` field
+`EventStoreConfig.Builder`. It is off by default. It refuses while any event's `position` is not a positive integer,
+or is above the store's position counter when there is a counter document, or any DCB event's `dcbTags` array does
+not hold the tags its `dcbtags` lists. That takes in a string `position`, a `null` one, `NaN`, an array, a DCB event
+whose position is gone, a position set by hand that no store would assign and a tag array that is missing or names
+other tags, so it also finds damage the warning cannot see. A non DCB event with no `position` field
 at all is left to `requireBackfilledPosition`.
 
 The Spring Boot starters have no property for `requireRepairedEvents`, so there you define your own `EventStoreConfig`
 bean.
 
-With `requireRepairedEvents(true)` the store runs the check even when it writes no `position`. Finding a missing tag
-array cannot use an index, so a startup that finds no damage reads the whole collection.
+With `requireRepairedEvents(true)` the store runs the check even when it writes no `position`. Comparing a tag array
+with `dcbtags` cannot use an index, so a startup that finds no damage reads the whole collection.
 
 An event the repair [reports instead of fixing](#update-event-repair-unrecoverable), such as a DCB event whose
 position is gone, can keep a store with `requireRepairedEvents(true)` from starting after a run. It does so until you
@@ -802,7 +804,7 @@ yourself. The store only warns or refuses to start. It never changes a damaged e
 `report()` counts the damage and writes nothing. `run()` repairs it and only touches events that still look damaged,
 so running it twice is safe. If a run is killed, start it again and it resumes from a checkpoint document.
 
-Both of them read the whole collection, since finding an event whose tag array is missing cannot use an index, so run
+Both of them read the whole collection, since finding an event whose tag array does not hold its tags cannot use an index, so run
 them during a quiet period on a large store. Run one repair at a time, because two runs at once share one checkpoint
 document and the first to finish deletes it while the other is still going.
 
@@ -848,7 +850,8 @@ not fix by itself, and how to replay or reconcile a consumer that skipped a repa
 ##### What the repair restores, and what it cannot find {#update-event-repair-limits}
 
 It rebuilds `position` from the string the document still holds, and the DCB tag index from the `dcbtags` extension,
-which is a string and so came through intact. It reuses the store's own mappers, so a repaired event is what a running
+which is a string and so came through intact. It rebuilds the index whenever it does not hold the tags `dcbtags`
+lists, and rewrites a `dcbtags` with whitespace around a tag the way an append writes it. It reuses the store's own mappers, so a repaired event is what a running
 store would have written.
 
 A position it restores is the value the document holds, and the repair has no way to check that value. If an update
@@ -885,8 +888,8 @@ names the event by `_id` and leaves that value alone. `UpdateEventRepairResult.u
 |:----|:------|:----|
 | `POSITION_LOST` | The event has DCB tags, so it was written with a position, and the document has no `position` field or holds `null` in it. | The tag index is rebuilt and the event stays outside position-ordered reads and DCB reads. Set the position by hand if your own records have it. |
 | `POSITION_ALREADY_TAKEN` | The position is a string holding a value another event already holds as a number, which the unique `position` index refuses. | The event is left exactly as it was, tag index included. Look at both events and decide which keeps the position, since nothing in either document says. |
-| `POSITION_NOT_A_NUMBER` | The `position` string does not parse as a number. | No known path produces this, so investigate before changing anything. The tag index is rebuilt either way. |
-| `POSITION_NOT_POSITIVE` | The position is zero or negative, which is not a value any store assigns. | Treat it as a lost position. Only an update function that set `position` itself produces this. |
+| `POSITION_NOT_A_NUMBER` | The `position` is not a whole number, a string that does not parse as one or a stored fraction, NaN, array or number above the largest `long`. | No known path produces this, so investigate before changing anything. The tag index is rebuilt either way, except next to an array position, which MongoDB will not index alongside it. Fix the position and run the repair again. |
+| `POSITION_NOT_POSITIVE` | The position is zero or negative, which is not a value any store assigns. | Treat it as a lost position when an update function set `position` itself. A slip in a position set by hand produces it too, and then you set the position again. |
 | `POSITION_ABOVE_COUNTER` | The position is above the store's position counter, the highest position the store has handed out, so the store never assigned it. DCB reads and position-ordered reads stop at that counter, so they skip the event anyway. | Treat it as a lost position. A store with no counter document has no ceiling and is never reported this way. |
 | `UNREADABLE` | The `dcbtags` extension is not a string, is an explicit null, or does not decode to a set of tags. Nothing Occurrent writes produces this. | The document was most likely edited outside Occurrent, so find out how before changing it. The run continues past it, and a readable `position` is still repaired. |
 
