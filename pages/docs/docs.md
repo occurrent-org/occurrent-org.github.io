@@ -777,8 +777,8 @@ The check only finds a damaged `position`, so a startup without the warning does
 described under [what the repair cannot find](#update-event-repair-limits).
 
 To make the store refuse to start while any event still looks damaged, set `requireRepairedEvents(true)` on its
-`EventStoreConfig.Builder`. It is off by default. It looks for the same events the repair does, a string `position`
-or a DCB event whose `dcbTags` array is missing, so it also finds damage the warning cannot see.
+`EventStoreConfig.Builder`. It is off by default. It refuses over every event the repair would still change, a string
+`position` or a DCB event whose `dcbTags` array is missing, so it also finds damage the warning cannot see.
 
 The Spring Boot starters have no property for `requireRepairedEvents`, so there you define your own `EventStoreConfig`
 bean.
@@ -786,10 +786,11 @@ bean.
 With `requireRepairedEvents(true)` the store runs the check even when it writes no `position`. Finding a missing tag
 array cannot use an index, so a startup that finds no damage reads the whole collection.
 
-An event the repair [reports instead of fixing](#update-event-repair-unrecoverable) can still look damaged after a
-run. It then keeps a store with `requireRepairedEvents(true)` from starting until you fix it by hand, as step 5 of
-the [repair runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/update-event-repair.md)
-describes, or turn the setting off.
+An event the repair [reports instead of fixing](#update-event-repair-unrecoverable), such as a DCB event whose
+position is gone, can keep a store with `requireRepairedEvents(true)` from starting after a run. It does so until you
+fix it by hand, as step 5 of the
+[repair runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/update-event-repair.md) describes, or
+turn the setting off once you have accepted it.
 
 The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`, and you run it
 yourself. The store only warns or refuses to start. It never changes a damaged event.
@@ -878,7 +879,7 @@ names the event by `_id` and leaves that value alone. `UpdateEventRepairResult.u
 
 |  Reason | What it means | What to do |
 |:----|:------|:----|
-| `POSITION_LOST` | The event has DCB tags, so it was written with a position, and the document has no `position` field at all. | The tag index is rebuilt and the event stays outside position-ordered reads. Set the position by hand if your own records have it. |
+| `POSITION_LOST` | The event has DCB tags, so it was written with a position, and the document has no `position` field at all. | The tag index is rebuilt and the event stays outside position-ordered reads and DCB reads. Set the position by hand if your own records have it. |
 | `POSITION_ALREADY_TAKEN` | The position is a string holding a value another event already holds as a number, which the unique `position` index refuses. | The event is left exactly as it was, tag index included. Look at both events and decide which keeps the position, since nothing in either document says. |
 | `POSITION_NOT_A_NUMBER` | The `position` string does not parse as a number. | No known path produces this, so investigate before changing anything. The tag index is rebuilt either way. |
 | `POSITION_NOT_POSITIVE` | The position is zero or negative, which is not a value any store assigns. | Treat it as a lost position. Only an update function that set `position` itself produces this. |
