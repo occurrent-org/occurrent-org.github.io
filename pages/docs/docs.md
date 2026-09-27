@@ -776,14 +776,19 @@ it looks for a string `position` in the `position` index and finds none.
 The check only finds a damaged `position`, so a startup without the warning does not rule out the damage
 described under [what the repair cannot find](#update-event-repair-limits).
 
-To make the store refuse to start when it finds a string `position`, set `requireRepairedEvents(true)` on its
-`EventStoreConfig.Builder`. It is off by default.
+To make the store refuse to start while any event still looks damaged, set `requireRepairedEvents(true)` on its
+`EventStoreConfig.Builder`. It is off by default. It looks for the same events the repair does, a string `position`
+or a DCB event whose `dcbTags` array is missing, so it also finds damage the warning cannot see.
 
 The Spring Boot starters have no property for `requireRepairedEvents`, so there you define your own `EventStoreConfig`
 bean.
 
-With `requireRepairedEvents(true)` the store runs the check even when it writes no `position`. Such a store has no
-`position` index, so the check can read the whole collection at startup.
+With `requireRepairedEvents(true)` the store runs the check even when it writes no `position`. Finding a missing tag
+array cannot use an index, so the check reads the whole collection at every startup.
+
+The events the repair [reports instead of fixing](#update-event-repair-unrecoverable) still look damaged after a
+run, except one whose only problem is a lost position. Each of them keeps a store with `requireRepairedEvents(true)`
+from starting until you fix it by hand or turn the setting off.
 
 The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`, and you run it
 yourself. The store only warns or refuses to start. It never changes a damaged event.
