@@ -3318,7 +3318,7 @@ If your observer throws an `InterruptedException`, the model sets the interrupt 
 
 The two constructors that take no observer use `PushObserver.noop()`. With it, `accept(..)` routes each event without working out a `RoutingOutcome` at all.
 
-In a batch fed through `accept(Iterable<CloudEvent>)`, a handler that throws stops the batch, so the events after it are neither routed nor observed. An `Error` other than `AssertionError` from the observer stops the batch the same way.
+In a batch fed through `accept(Iterable<CloudEvent>)`, the first event whose routing throws stops the batch, whether its handler or its filter threw or a `CatchupThenPushSubscriptionModel` in front refused it, so the events after it are neither routed nor observed. An `Error` other than `AssertionError` from the observer stops the batch the same way.
 
 No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
