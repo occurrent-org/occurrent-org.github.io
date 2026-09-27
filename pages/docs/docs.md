@@ -4109,15 +4109,15 @@ Mono<Void> onMessage(byte[] body) {
 * `DELIVERED` once the handler has applied the event, or once a `CatchupThenPushSubscriptionModel` in front finds it had already applied it.
 * `FILTERED` when the subscription's filter declined the event.
 * `UNAVAILABLE` when nothing is registered, the model is stopped or the subscription is paused.
-* `DEFERRED` while a `CatchupThenPushSubscriptionModel` in front is still replaying.
-* `NOT_DELIVERABLE` when the live buffer of a `CatchupThenPushSubscriptionModel` in front is full.
+* `DEFERRED` when a `CatchupThenPushSubscriptionModel` in front hasn't gone live, because its replay is still running, say.
 * `REFUSED` once a `CatchupThenPushSubscriptionModel` in front has failed its catch-up.
+* `NOT_DELIVERABLE` for any other refusal decided before the handler would run, a full live buffer in a `CatchupThenPushSubscriptionModel` in front, say.
 
 For `UNAVAILABLE` and `DEFERRED`, leave the message unacknowledged rather than routing it to the broker's failed-message queue, and the broker delivers it again. A handler or filter error propagates through the `Mono`, so the caller decides whether to retry the message or route it to the failed-message queue, where the broker has one. Handle `NOT_DELIVERABLE` the same way. On `REFUSED`, stop consuming, because the broker would only deliver the message into the same refusal.
 
 `accept(..)` is for the in-memory event store's write path, and its `Mono` completes normally for an event no subscription takes as well. There's no reactive in-memory event store, so that means a listener on the blocking `InMemoryEventStore` that calls `accept(Iterable<CloudEvent>)` and waits for the `Mono`, such as `events -> pushModel.accept(events).block()`. The `Mono` does nothing until something subscribes to it, so `new InMemoryEventStore(pushModel::accept)` compiles but delivers nothing.
 
-The store calls that listener on the thread that wrote, once it has kept the events, so write from a thread that may block. On a Reactor non-blocking thread, such as a WebFlux event loop, `block()` throws, and the write call fails although the store holds the events. With a `CatchupThenPushSubscriptionModel` in front, a write during its replay waits until the replay has finished, and a write from inside one of its handlers can hang, because that model hands a subscription's live events to its handler one at a time.
+The store calls that listener on the thread that wrote, once it has kept the events, so write from a thread that may block. On a Reactor non-blocking thread, such as a WebFlux event loop, `block()` throws, and the write call fails although the store holds the events. With a `CatchupThenPushSubscriptionModel` in front, a write during its replay waits until the replay has finished, and a handler that writes an event the subscription's filter accepts hangs in that write. During the replay the write waits for the replay, which waits for that handler. Once live, that model hands the subscription's events to the handler one at a time, so the new event waits behind the one the handler is still processing.
 
 Feeding `accept(..)` from the write path of a durable event store, such as MongoDB, isn't supported. The model keeps no record of which events a subscription has handled, so the subscription never sees an event when the application crashes after the write has committed but before the handler has run. Use a [durable subscription](#durable-subscriptions-reactive) there, or a broker listener that calls `acceptRedeliverable(CloudEvent)`.
 
