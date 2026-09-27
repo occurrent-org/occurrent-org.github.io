@@ -765,10 +765,10 @@ a number and did not write back the indexed `dcbTags` array of a DCB event, and 
 replacement event from scratch could drop or change any of these values. So if you called `updateEvent` on a MongoDB
 event store running 0.33.0 or earlier, some of your events may be damaged.
 
-Position-ordered reads and position-based catch-up only return an event whose `position` is a number above zero and
-no greater than the store's position counter. DCB reads, `exists` and `count` also need a DCB event's `dcbTags` array. A
-damaged event fails one of these, so reads leave it out without any error. A damaged DCB event is also left out of
-the conflict query behind a conditional append, so an append that should have been refused is accepted.
+Position-ordered reads and position-based catch-up skip an event whose `position` is a string or missing, and DCB
+reads, `exists` and `count` also skip a DCB event without its `dcbTags` array. Reads leave a damaged event out
+without any error. A damaged DCB event is also left out of the conflict query behind a conditional append, so an
+append that should have been refused is accepted.
 
 A MongoDB event store that writes `position` checks for a `position` stored as a string when it starts, and logs a
 warning that points at the repair. On a store that was never damaged the check adds almost nothing to startup, because
@@ -780,9 +780,9 @@ described under [what the repair cannot find](#update-event-repair-limits).
 To make the store refuse to start over such an event, set `requireRepairedEvents(true)` on its
 `EventStoreConfig.Builder`. It is off by default. It refuses while any event's `position` is anything other than a
 positive integer no greater than the store's position counter, or any DCB event lacks its `dcbTags` array. That takes
-in a string `position`, a `null` one, a DCB event whose position is gone and a position set by hand that no store
-would assign, so it also finds damage the warning cannot see. A non DCB event with no `position` field at all is left to
-`requireBackfilledPosition`.
+in a string `position`, a `null` one, `NaN`, an array, a DCB event whose position is gone and a position set by hand
+that no store would assign, so it also finds damage the warning cannot see. A non DCB event with no `position` field
+at all is left to `requireBackfilledPosition`.
 
 The Spring Boot starters have no property for `requireRepairedEvents`, so there you define your own `EventStoreConfig`
 bean.
