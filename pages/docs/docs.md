@@ -4085,7 +4085,7 @@ When the model `ReactorDurableSubscriptionModel` wraps is itself a named reactor
 
 This is the composition the reactive Spring Boot starter wires for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
 
-A reactor catch-up model that's been shut down throws `SubscriptionModelShutdownException` from a `subscribe(..)` with a subscription id before it replays anything, the same as the durable model on top, see [Life-cycle](#durable-subscription-reactive-life-cycle).
+Once shut down, a reactor catch-up model over a named wrapped model throws `SubscriptionModelShutdownException` from a `subscribe(..)` with a subscription id before it replays anything, the same as the durable model on top, see [Life-cycle](#durable-subscription-reactive-life-cycle).
 
 If you compose `Durable(Catchup(customModel))` with your own `customModel` that implements only the cold `FluxSubscriptionModel` primitive, there's nothing underneath for the catch-up model to delegate the live half to, and the named `subscribe(..)` path refuses:
 
