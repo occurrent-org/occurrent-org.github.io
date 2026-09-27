@@ -3263,7 +3263,7 @@ PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refu
         });
 ```
 
-`accept(..)` doesn't throw for an event that no subscription takes, because it's also called from the write path, for example as the listener you pass to an `InMemoryEventStore`. There the event is already stored, and throwing would fail the write. [ADR 104](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0104-an-undeliverable-push-event-is-refused-not-acknowledged.md) has the reasoning.
+`accept(..)` doesn't throw for an event that no subscription takes, because it's also called from the in-memory event store's write path, as the listener you pass to an `InMemoryEventStore`. There the event is already stored, and throwing would fail the write. [ADR 104](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0104-an-undeliverable-push-event-is-refused-not-acknowledged.md) has the reasoning.
 
 Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` if the subscription's filter also needs to match on fields inside the event's `data`.
 
@@ -3295,7 +3295,7 @@ A running replay finishes by itself, so redelivering a message held for it event
 
 A broker listener that can redeliver a message should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
 
-Plain `accept(..)` buffers that event and reports `DELIVERED`, which is right for the write path, where nothing would ever deliver the event again.
+Plain `accept(..)` buffers that event and reports `DELIVERED`, which is right for the in-memory event store's write path, where nothing would ever deliver the event again.
 
 The reported outcome always matches what happened to the event, even when a `stop()`, a pause or a resume happens at the same moment. That's because the report and the routing use the same filter check.
 
@@ -5465,7 +5465,7 @@ Three guards keep a projection from silently doing the wrong thing. `DomainEvent
 
 A fourth guard covers the time before anything is registered. `DomainEventFeed.accept(..)` throws an `IllegalStateException` when no projection is registered on the feed, and on the reactor stack the returned `Mono` fails with one. Refusing matters because you acknowledge the broker message once `accept` returns, and acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch. `catchUpAll()` refuses on a feed with no projection for the same reason.
 
-This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the write path (as an `InMemoryEventStore` listener, say), where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker, or pass it a [`PushObserver`](#push-subscription-blocking-observer), which is told how each event it is asked to deliver was routed.
+This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the in-memory event store's write path, as an `InMemoryEventStore` listener, where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker, or pass it a [`PushObserver`](#push-subscription-blocking-observer), which is told how each event it is asked to deliver was routed.
 
 ### Read-your-writes
 
