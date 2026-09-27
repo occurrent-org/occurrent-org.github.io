@@ -3296,7 +3296,7 @@ A running replay finishes by itself, so redelivering a message held for it event
 
 A broker listener that can redeliver a message should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
 
-Plain `accept(..)` buffers that event and reports `DELIVERED`, which is right for the in-memory event store's write path, where nothing would ever deliver the event again.
+Plain `accept(..)` buffers that event and reports `DELIVERED`, which is right for the in-memory event store's write path, because the store's listener never offers the event a second time.
 
 The reported outcome always matches what happened to the event, even when a `stop()`, a pause or a resume happens at the same moment. That's because the report and the routing use the same filter check.
 
