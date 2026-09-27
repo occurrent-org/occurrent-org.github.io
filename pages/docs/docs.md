@@ -4611,9 +4611,10 @@ As on the blocking side, one model feeds one consumer, and a second projection r
 
 The reactive model also takes an optional `PushObserver`, for the same reason as the [blocking model](#push-subscription-blocking-observer). The constructor arguments, the six outcomes, and what happens when the filter or the observer itself throws are the same on both stacks.
 
-Five things differ.
+Six things differ.
 
 * The reactive `acceptRedeliverable(CloudEvent)` returns a `Mono<RoutingOutcome>` rather than the `RoutingOutcome` itself, so a broker listener acknowledges the message only when that `Mono` completes with `DELIVERED` or `FILTERED`.
+* Behind a `CatchupThenPushSubscriptionModel` whose replay is still running, the `Mono` that `accept(..)` returns completes only once the event has been applied, where the blocking `accept(..)` reports `DELIVERED` and returns as soon as it has buffered the event. A full buffer or a failed replay fails that `Mono`, and a stopped catch-up completes it with the event dropped, as on the blocking side.
 * A handler that fails with a checked exception is reported `DELIVERED`, like any other exception. Only an `Error` other than `AssertionError` from the handler skips the observer.
 * The observer doesn't always run on the thread that called `accept(..)`. `UNAVAILABLE`, `FILTERED` and a filter that threw are reported on the thread that subscribed to the returned `Mono`. The other outcomes are reported once your handler, or the `CatchupThenPushSubscriptionModel` in front of it, has finished with the event, on whichever thread that happened.
 * An `InterruptedException` from the observer sets the interrupt flag on the thread the observer ran on. A pooled Reactor worker clears that flag before its next task, so the caller may never see it.
