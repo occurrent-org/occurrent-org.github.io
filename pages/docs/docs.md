@@ -4044,7 +4044,7 @@ that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionMod
 
 `ReactorDurableSubscriptionModel` can be stopped, started, paused per subscription and shut down like any other reactor `SubscriptionModel`. A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`, so it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
 
-A shut-down model stays shut down. Subscribing to it throws `SubscriptionModelShutdownException`, which is an `IllegalStateException`, before any history is replayed:
+A shut-down model stays shut down. Subscribing to it with a subscription id throws `SubscriptionModelShutdownException`, which is an `IllegalStateException`, before any history is replayed:
 
 ```java
 durableModel.shutdown();
@@ -4055,7 +4055,7 @@ durableModel.subscribe("order-status", filter, startAt, action);
 
 That includes a durable model over a catch-up model, which is what the reactive Spring Boot starter builds. In 0.33.0 a subscription on it that started at the beginning or at an explicit position replayed its history into the handler first, and failed only when it switched to live events.
 
-A subscribe that runs at the same time as `shutdown()` either throws the same exception or is cancelled by the shutdown.
+A subscribe with a subscription id that runs at the same time as `shutdown()` either throws the same exception or is cancelled by the shutdown.
 
 What differs is whether that captured position is written to the `CheckpointStorage` right away. When the wrapped model is itself a named reactor `SubscriptionModel`, which is what [delegation](#durable-subscription-reactive-delegation) below means and what every shipped composition does, the position is stored at registration, so a subscription that's registered and then never started still leaves a checkpoint behind, and resumes from there rather than from the beginning if it's ever started later. When the wrapped model offers only the raw `Flux`-returning `subscribe`, which does nothing until something subscribes to it (what Reactor calls cold), nothing is stored until the subscription actually starts, so one that never starts leaves nothing behind. Either way, a registration asking for the subscription model default start position loses no event written while it waits to be started, mirroring the guarantee the blocking stack's manual-start wrapper gives.
 
@@ -4085,7 +4085,7 @@ When the model `ReactorDurableSubscriptionModel` wraps is itself a named reactor
 
 This is the composition the reactive Spring Boot starter wires for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
 
-A reactor catch-up model that's been shut down throws `SubscriptionModelShutdownException` from `subscribe(..)` before it replays anything, the same as the durable model on top, see [Life-cycle](#durable-subscription-reactive-life-cycle).
+A reactor catch-up model that's been shut down throws `SubscriptionModelShutdownException` from a `subscribe(..)` with a subscription id before it replays anything, the same as the durable model on top, see [Life-cycle](#durable-subscription-reactive-life-cycle).
 
 If you compose `Durable(Catchup(customModel))` with your own `customModel` that implements only the cold `FluxSubscriptionModel` primitive, there's nothing underneath for the catch-up model to delegate the live half to, and the named `subscribe(..)` path refuses:
 
@@ -7129,7 +7129,7 @@ Reactor refuses to block on such a thread, and subscribing to the `ReactorDurabl
 
 | Start position | What happens |
 |:---------------|:-------------|
-| The beginning, or an explicit position | Subscribes on `Schedulers.boundedElastic()` just after the bean is returned. |
+| The beginning, or an explicit position | Subscribes on `Schedulers.boundedElastic()`. |
 | `NOW` | Subscribes on the thread that builds the bean, which works on the model the starter builds. |
 | `DEFAULT` | The bean fails to build on the model the starter builds. |
 
@@ -7146,7 +7146,7 @@ Some failures fail the same way every time. These are logged once, and Occurrent
 * a subscription model that was shut down
 * an `Error`
 
-A bean the subscribe needs that failed to build, `CheckpointStorage` for example, is judged by why it failed. One whose factory threw an `IllegalStateException` is tried again, and Occurrent gives up on one that needs a bean the context doesn't have.
+When a bean the subscribe needs, `CheckpointStorage` for example, failed to build, the root cause of that failure decides whether the subscription is tried again.
 
 Occurrent gives up on the handlers after the failing one on the same bean as well, since they subscribe one after the other, and the log names them. Fix the cause, then restart the application for a singleton bean, since Spring builds a singleton only once. For a bean that isn't a singleton, the next instance Spring builds tries to register them again.
 
