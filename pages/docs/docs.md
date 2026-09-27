@@ -3252,7 +3252,7 @@ public void onMessage(byte[] body) {
 
 No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
-Feeding the push model from an event store's write path, through `accept(CloudEvent)`, is supported only for the in-memory event store, where a crash before the handler has run loses the event from the store too. The push model keeps no record of which events a subscription has handled, so with a durable event store, such as MongoDB, an event written just before a crash would never reach the subscription. Use a [durable subscription](#durable-subscriptions-blocking) there, or forward the events to a broker and call `acceptRedeliverable(CloudEvent)` from its listener, as described below.
+Feeding the push model from an event store's write path, through `accept(CloudEvent)`, is supported only for the in-memory event store, where a crash before the handler has run loses the event from the store too. The push model keeps no record of which events a subscription has handled, so with a durable event store, such as MongoDB, the subscription never sees an event when the application crashes after the write has committed but before the handler has run. Use a [durable subscription](#durable-subscriptions-blocking) there, or forward the events to a broker and call `acceptRedeliverable(CloudEvent)` from its listener, as described below.
 
 Fed from a broker, don't acknowledge a message just because `accept(..)` returned. It returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused, so the broker never sends those events again.
 
@@ -4109,7 +4109,7 @@ For `UNAVAILABLE` and `DEFERRED`, leave the message unacknowledged rather than r
 
 `accept(CloudEvent)` is for the in-memory event store's write path, and its `Mono` completes normally for an event no subscription takes as well.
 
-Feeding `accept(CloudEvent)` from the write path of a durable event store, such as MongoDB, isn't supported. The model keeps no record of which events a subscription has handled, so an event written just before a crash would never reach the subscription. Use a [durable subscription](#durable-subscriptions-reactive) there, or a broker listener that calls `acceptRedeliverable(CloudEvent)`.
+Feeding `accept(CloudEvent)` from the write path of a durable event store, such as MongoDB, isn't supported. The model keeps no record of which events a subscription has handled, so the subscription never sees an event when the application crashes after the write has committed but before the handler has run. Use a [durable subscription](#durable-subscriptions-reactive) there, or a broker listener that calls `acceptRedeliverable(CloudEvent)`.
 
 A handler that feeds another push model from inside its own subscription has to act on the outcome the `Mono` from `acceptRedeliverable(..)` completes with, because nothing delivers an event it refuses there again. Error on anything but `DELIVERED` or `FILTERED`, say, so the outer handler fails instead of completing as if the event had been handled. Calling `accept(..)` there is no safer, since its `Mono` also completes normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
 
