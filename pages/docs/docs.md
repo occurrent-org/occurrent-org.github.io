@@ -784,11 +784,12 @@ The Spring Boot starters have no property for `requireRepairedEvents`, so there 
 bean.
 
 With `requireRepairedEvents(true)` the store runs the check even when it writes no `position`. Finding a missing tag
-array cannot use an index, so the check reads the whole collection at every startup.
+array cannot use an index, so a startup that finds no damage reads the whole collection.
 
-The events the repair [reports instead of fixing](#update-event-repair-unrecoverable) still look damaged after a
-run, except one whose only problem is a lost position. Each of them keeps a store with `requireRepairedEvents(true)`
-from starting until you fix it by hand or turn the setting off.
+An event the repair [reports instead of fixing](#update-event-repair-unrecoverable) can still look damaged after a
+run. It then keeps a store with `requireRepairedEvents(true)` from starting until you fix it by hand, as step 5 of
+the [repair runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/update-event-repair.md)
+describes, or turn the setting off.
 
 The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`, and you run it
 yourself. The store only warns or refuses to start. It never changes a damaged event.
