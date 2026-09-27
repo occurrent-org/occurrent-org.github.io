@@ -3269,7 +3269,7 @@ Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` if the s
 
 The observer is called once for each event, after the subscription's handler has run, or straight away when no handler runs. It's called whether the handler succeeded or threw.
 
-`outcome` is a `RoutingOutcome` with six values. It tells "the filter declined this event" apart from "nothing was there to receive it", so a broker listener can acknowledge the first and redeliver the second.
+`outcome` is a `RoutingOutcome` with six values. It tells "the filter declined this event" apart from "nothing was there to receive it".
 
 Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of the handler. That's the wrapper that replays the event store before it delivers live events, and it's described further down in this section.
 
@@ -3282,7 +3282,7 @@ Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of
 | `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event, for example because its live buffer is full while the replay is still running. The exception propagates out of `accept(..)` either way. |
 | `REFUSED` | The `CatchupThenPushSubscriptionModel` in front of the handler refused the event because its replay failed, and it refuses every event from then on. The exception propagates out of `accept(..)`. |
 
-If you acknowledge broker messages yourself, `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. `DELIVERED` can arrive together with the handler's exception, so acknowledge only once `accept(..)` has also returned normally.
+If you acknowledge broker messages yourself, acknowledge on the outcome `acceptRedeliverable(..)` returns, described below, and not on what the observer is told. `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. The observer is told `DELIVERED` for a handler that threw, and, behind a `CatchupThenPushSubscriptionModel`, for an event `accept(..)` only buffered.
 
 `outcome.disposition()` sorts the six outcomes into the four things a broker bridge can do with a message, so a bridge you write yourself switches on four values rather than six:
 
@@ -3295,7 +3295,7 @@ A running replay finishes by itself, so redelivering a message held for it event
 
 A broker listener that can redeliver a message should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
 
-Plain `accept(..)` buffers that event and reports `DELIVERED`, which is right for the in-memory event store's write path, because the store's listener never offers the event a second time.
+Plain `accept(..)` buffers that event and reports `DELIVERED` before the handler has applied it, which is right for the in-memory event store's write path, because the store's listener never offers the event a second time. When the buffer is full it throws instead, and while the catch-up is stopped it drops the event and reports `DEFERRED`.
 
 The reported outcome always matches what happened to the event, even when a `stop()`, a pause or a resume happens at the same moment. That's because the report and the routing use the same filter check.
 
