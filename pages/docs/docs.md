@@ -807,12 +807,13 @@ yourself. The store only warns or refuses to start. It never changes a damaged e
 `report()` counts the damage and writes nothing. `run()` repairs it and only touches events that still look damaged,
 so running it twice is safe. If a run is killed, start it again and it resumes from a checkpoint document.
 
-The run retries the MongoDB errors that MongoDB's retryable reads and retryable writes specifications retry, with a
-backoff that grows to 2 seconds and no limit on attempts, and each retry is logged at `WARN`. That is a lost
-connection, a cleared connection pool, an error labelled `RetryableWriteError`, and a command or write concern error
-with one of the codes those specifications list, a primary stepping down or a server shutting down for instance. Any
-other error ends the run at once, a user without the privileges the run needs for instance, and so does finding no
-server before the driver's server selection timeout runs out. Fix the cause and start it again.
+The run retries the errors the MongoDB driver retries a read or a write on, as MongoDB's retryable reads and
+retryable writes specifications define them, with a backoff that grows to 2 seconds and no limit on attempts, and
+each retry is logged at `WARN`. That is a lost connection, a cleared connection pool, an error labelled
+`RetryableWriteError`, a command or write concern error with one of the codes those specifications list, and a
+failure to authenticate that one of those caused. A primary stepping down and a server shutting down are two of the
+listed codes. Any other error ends the run at once, a user without the privileges the run needs for instance, and so
+does finding no server before the driver's server selection timeout runs out. Fix the cause and start it again.
 
 Both of them read the whole collection, since finding an event whose tag array does not hold its tags cannot use an index, so run
 them during a quiet period on a large store. Run one repair at a time, because two runs at once share one checkpoint
