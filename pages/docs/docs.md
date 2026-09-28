@@ -3373,7 +3373,7 @@ On the reactor stack, `accept(...)` called from inside the projection completes 
 
 The feed recognizes the call when the projection returns it as part of its own `Mono`, or subscribes it on the thread the feed called it on, by blocking on it say. A projection that blocks on the call from a thread it switched to waits forever.
 
-When applying an event the projection fed fails, the feed refuses every `accept(...)` that does not come from the projection with an `IllegalStateException`, applies the events it has already queued and those the projection feeds it meanwhile, and then fails for good. Build a new feed, and its catch-up replays the history. An event that no replay holds is lost only when applying it failed.
+When applying an event the projection fed fails, the feed starts failing, and a failed catch-up starts it failing the same way. It deletes its catch-up marker, refuses every `accept(...)` that does not come from the projection with an `IllegalStateException`, applies the events it has already queued and those the projection feeds it meanwhile, and then fails for good. Build a new feed, and once the marker is gone its catch-up replays the history. When deleting the marker still fails after 3 retries, the feed logs an error naming the feed id, and the marker has to be deleted from the `CheckpointStorage` by hand before building a new feed. An event that no replay holds is lost only when applying it failed.
 
 On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
 
