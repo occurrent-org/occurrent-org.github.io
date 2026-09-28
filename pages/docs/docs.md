@@ -3331,6 +3331,8 @@ Only `Failed` carries a cause, so you cannot ask for one on a projection that is
 
 Where the id is fed by a `PushSubscriptionModel`, `CatchingUp`, `Live` and `NotStarted` are read from the subscription model each time you ask rather than recorded once, so stopping and starting the model, which replays the history again, reports `CatchingUp` again. A projection with `catchup = NONE` has no history to work through, so it reports `Live` as soon as it is running. A `@Saga(source = PUSH)` is covered the same way.
 
+On the reactor stack, a push projection on a bean built after startup never waits for its replay, whatever `startupMode` says, and a failed replay is recorded on `PushCatchupStatus` the same as a `BACKGROUND` one's. [When Annotations Register](#when-annotations-register) says which beans are built after startup.
+
 Add `catchup = Catchup.NONE` when the feed carries events that are not in this application's event store, which is the case when another application writes them. The wrapper is skipped entirely and the bare `PushSubscriptionModel` is used instead, so no `PositionOrderedReader` or `CheckpointStorage` bean is needed. Left at the default `Catchup.FROM_EVENT_STORE`, a missing one of those beans now fails naming `catchup = Catchup.NONE` as the fix, rather than a bare missing-bean error. `startAt`, `startAtGlobalPosition` and `resumeBehavior` stay rejected either way. `startupMode` only applies under the default, since `Catchup.NONE` has no replay for `startupMode = BACKGROUND` to move off the startup path.
 
 ##### Life-cycle {#push-subscription-blocking-life-cycle}
@@ -4042,6 +4044,19 @@ that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionMod
 
 `ReactorDurableSubscriptionModel` can be stopped, started, paused per subscription and shut down like any other reactor `SubscriptionModel`. A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`, so it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
 
+A shut-down model stays shut down. Subscribing to it with a subscription id throws `SubscriptionModelShutdownException`, which is an `IllegalStateException`, before any history is replayed:
+
+```java
+durableModel.shutdown();
+
+// Throws SubscriptionModelShutdownException, and the handler receives nothing
+durableModel.subscribe("order-status", filter, startAt, action);
+```
+
+That includes a durable model over a catch-up model, which is what the reactive Spring Boot starter builds. In 0.33.0 a subscription on it that started at the beginning or at an explicit position replayed its history into the handler first, and failed only when it switched to live events.
+
+A subscribe with a subscription id that runs at the same time as `shutdown()` either throws the same exception or is cancelled by the shutdown.
+
 What differs is whether that captured position is written to the `CheckpointStorage` right away. When the wrapped model is itself a named reactor `SubscriptionModel`, which is what [delegation](#durable-subscription-reactive-delegation) below means and what every shipped composition does, the position is stored at registration, so a subscription that's registered and then never started still leaves a checkpoint behind, and resumes from there rather than from the beginning if it's ever started later. When the wrapped model offers only the raw `Flux`-returning `subscribe`, which does nothing until something subscribes to it (what Reactor calls cold), nothing is stored until the subscription actually starts, so one that never starts leaves nothing behind. Either way, a registration asking for the subscription model default start position loses no event written while it waits to be started, mirroring the guarantee the blocking stack's manual-start wrapper gives.
 
 That position has to be readable for any of this to hold. A read that fails at registration, and one that answers nothing, both refuse the subscription rather than being taken again once it starts, since a read taken then answers with wherever the feed has reached by then and starting from that is the loss this guarantee is about. An answer of nothing used to fall back to `StartAt.now()`, which looked harmless for a subscription that starts at the moment it registers and isn't, because a wrapped model applies a start position when it opens its feed rather than when it receives one. So it's refused whether this model is running or stopped, which is also how the blocking `ManualStartSubscriptionModel` answers a `null` position from this release on.
@@ -4069,6 +4084,8 @@ The `occurrent-testing-junit-jupiter-reactor` extension covers the reactive stac
 When the model `ReactorDurableSubscriptionModel` wraps is itself a named reactor `SubscriptionModel`, rather than only the cold `Flux` primitive, the durable model hands the subscription straight to it instead of driving that primitive itself. Everything the wrapped model already does for a named subscription applies from there. An unsupported `SubscriptionFilter` is refused when you call `subscribe(..)`, instead of surfacing later once the change stream has already started, and a failing action is retried with the wrapped model's own configured backoff instead of ending the subscription. There's no separate retry configuration on `ReactorDurableSubscriptionModel` for this path. The wrapped model's is the only one that applies.
 
 This is the composition the reactive Spring Boot starter wires for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
+
+Once shut down, a reactor catch-up model over a named wrapped model throws `SubscriptionModelShutdownException` from a `subscribe(..)` with a subscription id before it replays anything, the same as the durable model on top, see [Life-cycle](#durable-subscription-reactive-life-cycle).
 
 If you compose `Durable(Catchup(customModel))` with your own `customModel` that implements only the cold `FluxSubscriptionModel` primitive, there's nothing underneath for the catch-up model to delegate the live half to, and the named `subscribe(..)` path refuses:
 
@@ -4120,7 +4137,7 @@ The same limits apply as on the blocking side. A push subscription only ever see
 
 The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records that the catch-up finished so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so the projection must tolerate seeing the same event twice, and rebuild the projection if the consumer is offline longer than the broker retains the backlog. The tunables and the handler-concurrency contract are documented on the [blocking one](#push-subscription-blocking) and apply the same way here.
 
-`startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to be applied. Stopping the model itself now interrupts an in-flight catch-up replay too, the same 0.32.0 fix as on the blocking stack.
+`startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A projection on a bean built after startup never waits, see [When Annotations Register](#when-annotations-register). A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to be applied. Stopping the model itself now interrupts an in-flight catch-up replay too, the same 0.32.0 fix as on the blocking stack.
 
 ##### Life-cycle {#push-subscription-reactive-life-cycle}
 
@@ -7044,6 +7061,8 @@ Here's a summary of the different startup modes:
 | `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.CheckpointStorage`, it'll never miss an event during startup.                                                                                      |
 | `BACKGROUND`         | The subscription will NOT wait until it's started up fully before Spring continues starting the rest of the application; instead, it will be started in the background. Typically, this is useful if you instruct the subscription to start at an earlier date (such as the beginning of time), and you have a lot of events to read before the subscription has caught up. In this case, you may wish to start the Spring application before the subscription has fully started (i.e., before all historic events have been replayed) because waiting for all events to replay takes too long. The subscription will then replay all historic events in the background before switching to continuous mode. |
 
+These modes decide what happens while the application starts. A bean built after startup is past that point, so its subscription handlers never wait for their replay, whatever `startupMode` says. [When Annotations Register](#when-annotations-register) says which beans that is.
+
 #### Spring Advice on Handler Methods
 
 A handler method runs through the bean's Spring proxy, so `@Transactional` or any other aspect on it, or on its class, applies to every delivery:
@@ -7093,7 +7112,43 @@ public class NotifierConfig {
 }
 ```
 
-A `FactoryBean` whose product nothing has asked for yet registers the same way. Such a registration doesn't wait for its replay, whatever `startupMode` says, since the application is already up. A bean that nothing ever builds never registers its handlers.
+A `FactoryBean` whose product nothing has asked for yet registers the same way. A bean that nothing ever builds never registers its handlers.
+
+A `@Subscription`, `@StreamSubscription` or `@DcbSubscription` registered this way doesn't wait for its replay, whatever `startupMode` says, since the application is already up. On the reactor stack neither does a `@Projection` or `@Snapshot`.
+
+##### A Bean Built on a Reactor Non-Blocking Thread
+
+On the reactor stack the bean can be built on a Reactor non-blocking thread, for example when a WebFlux handler asks for it:
+
+```java
+Mono.fromCallable(() -> applicationContext.getBean(OrderNotifier.class))
+        .subscribeOn(Schedulers.parallel());
+```
+
+Reactor refuses to block on such a thread, and subscribing to the `ReactorDurableSubscriptionModel` that the reactive MongoDB starter builds can block to read a stored position. On any other thread every handler subscribes on the thread that builds the bean. On a non-blocking thread it depends on where the handler starts:
+
+| Start position | What happens |
+|:---------------|:-------------|
+| The beginning, or an explicit position | Subscribes on `Schedulers.boundedElastic()`. |
+| `NOW` | Subscribes on the thread that builds the bean, which works on the model the starter builds. |
+| `DEFAULT` | The bean fails to build on the model the starter builds. |
+
+A handler that starts at `NOW` or `DEFAULT` subscribes on the calling thread because it starts from wherever the event feed is when it subscribes. Subscribing it later could skip what the caller writes in between. A start at the beginning or at an explicit position receives the same events whenever it subscribes.
+
+When a `DEFAULT` handler makes the bean fail to build, the exception says what to do. Build the bean on a thread that may block, with `Schedulers.boundedElastic()` instead of `Schedulers.parallel()` above, or start the handler at the beginning or at an explicit position.
+
+A subscribe moved to `Schedulers.boundedElastic()` has no caller to throw to, so a failure there is logged at `ERROR`. A failure that can go away, an unreachable storage for example, is tried again until an attempt succeeds or the application context closes. The delay doubles from 100 ms up to 30 seconds, and the handler receives no events until then.
+
+Some failures fail the same way every time. These are logged once, and Occurrent gives up on the subscription. They include:
+
+* a duplicate subscription id, or a filter or start position the model refuses
+* a bean the context doesn't have, has with another type, or has only as an abstract definition
+* a subscription model that was shut down
+* an `Error`
+
+When a bean the subscribe needs, `CheckpointStorage` for example, failed to build, the root cause of that failure decides whether the subscription is tried again.
+
+Occurrent gives up on the handlers after the failing one on the same bean as well, since they subscribe one after the other, and the log names them. Fix the cause, then restart the application for a singleton bean, since Spring builds a singleton only once. For a bean that isn't a singleton, the next instance Spring builds tries to register them again.
 
 # Testing
 
