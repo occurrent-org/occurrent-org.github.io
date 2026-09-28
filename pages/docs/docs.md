@@ -3369,6 +3369,12 @@ When the event is not applied, `accept(...)` throws an `IllegalStateException`, 
 
 On the blocking stack, an `accept(...)` called from inside the projection or a view while the catch-up replays history into it is refused, and that refusal fails the catch-up. The feed then refuses every event until you build a new one, and a caller that catches the refusal and continues drops the event it fed.
 
+On the reactor stack, `accept(...)` called from inside the projection completes once the event is queued rather than once it is applied. The feed applies one event at a time, so it applies the new event after the projection returns, in the order it was fed, or once the replay has ended for an event fed during the replay. `acceptCloudEvent(...)` on a `DomainEventFeed` answers `DEFERRED` while the feed is not live, as it does for any other caller, and `DELIVERED` once the event is queued.
+
+The feed recognizes the call when the projection returns it as part of its own `Mono`, or subscribes it on the thread the feed called it on, by blocking on it say. A projection that blocks on the call from a thread it switched to waits forever.
+
+When applying an event the projection fed fails, the feed refuses every `accept(...)` that does not come from the projection with an `IllegalStateException`, applies the events it has already queued and those the projection feeds it meanwhile, and then fails for good. Build a new feed, and its catch-up replays the history. An event that no replay holds is lost only when applying it failed.
+
 On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
 
 A long replay keeps the listener waiting. A Kafka consumer that waits past its `max.poll.interval.ms`, five minutes by default, is taken out of its group and the record is delivered again. RabbitMQ delivers a message again once a consumer has held on to it without acknowledging it for longer than `consumer_timeout`, 30 minutes by default. Either costs a redelivery rather than the event.
