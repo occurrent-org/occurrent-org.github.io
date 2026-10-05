@@ -3776,11 +3776,11 @@ it happened before T2. Thus this event is missed! Whether or not this is actuall
 at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](#reactive-subscription-checkpoint-storage)
 _before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.               
 
-Since 0.34.0 the interface also has `globalCheckpointAsOfNow()`. It takes the moment when you call it, and works out the position for that moment when the `Mono` is subscribed to. A subscription started from the position it emits receives every event written after the call, even if you subscribe to the `Mono` long after it, as long as the clock of the server that answers is right.
+Since 0.34.0 the interface also has `globalCheckpointAsOfNow()`. It takes the moment when you call it, and works out the position for that moment when the `Mono` is subscribed to. A subscription started from the position it emits receives every event written after the call, even if you subscribe to the `Mono` long after it.
 
-`globalCheckpoint()` on `ReactorMongoSubscriptionModel` works out the position when its `Mono` is subscribed to instead, so an event written between the call and the subscription can be skipped. The position from `globalCheckpointAsOfNow()` can be earlier than the call, so the subscription can also receive an event written just before it.
+`globalCheckpoint()` on `ReactorMongoSubscriptionModel` works out the position when its `Mono` is subscribed to instead, so an event written between the call and the subscription can be skipped. The position from `globalCheckpointAsOfNow()` can be earlier than the call, so the subscription can also receive events written before it.
 
-`ReactorMongoSubscriptionModel` answers `globalCheckpointAsOfNow()` the same way it starts `StartAt.now()`, see [Reactive Subscription using Spring ReactiveMongoTemplate](#reactive-subscription-using-spring-reactivemongotemplate). The reactor catch-up models ask the model they wrap, and any other model answers what `globalCheckpoint()` answers.
+`ReactorMongoSubscriptionModel` answers `globalCheckpointAsOfNow()` the same way it starts `StartAt.now()`, so what [Reactive Subscription using Spring ReactiveMongoTemplate](#reactive-subscription-using-spring-reactivemongotemplate) says about how far before the call the position can reach, and when it can be later than the call, applies to it. The reactor catch-up models ask the model they wrap, and any other model answers what `globalCheckpoint()` answers.
 
 ### Reactive Subscription Filters
 
@@ -3828,7 +3828,7 @@ implementation of the `org.occurrent.subscription.Checkpoint` interface which pr
 You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](#reactive-subscription-checkpoint-storage)
 available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
 
-With `ReactorMongoSubscriptionModel`, `StartAt.now()` and the default start from the moment `subscribe(..)` is called, so the subscription can also receive an event written up to a second before the call, see [Reactive Subscription using Spring ReactiveMongoTemplate](#reactive-subscription-using-spring-reactivemongotemplate).
+With `ReactorMongoSubscriptionModel`, `StartAt.now()` and the default start from the moment `subscribe(..)` is called, so the subscription can also receive events written before the call, see [Reactive Subscription using Spring ReactiveMongoTemplate](#reactive-subscription-using-spring-reactivemongotemplate).
 
    
 ### Reactive Subscription Checkpoint Storage {#reactive-subscription-checkpoint-storage}
@@ -4001,7 +4001,9 @@ Note that you can provide a [filter](#reactive-subscription-filters), [start pos
 
 Since 0.34.0, a subscription started with `StartAt.now()`, or without a `StartAt`, starts from the moment `subscribe(..)` is called. For the plain `Flux` from `subscribe(filter, startAt)` it's the moment you subscribe to the `Flux`. An event written right after `subscribe(..)` returns is delivered, where before 0.34.0 it was skipped, because the model decided where the present was when the change stream was about to open.
 
-When the change stream opens, the model sends `hello`, subtracts the time since the call from the server clock in the reply, and opens the change stream at the start of that second. So a new subscription can also receive an event written up to a second before the call, plus the time the reply to `hello` took to reach the client. A handler that expects only events written after `subscribe(..)` has to cope with those.
+The model also reads the newest cluster time the MongoDB driver has seen on that client. When the change stream opens, it sends `hello` and subtracts the time since the call from the server clock in the reply, which gives the start of the second the clock showed at the call. It opens the change stream just after the cluster time it read, or at the start of that second if that is earlier.
+
+So a new subscription can also receive events written up to 16 seconds before the call, plus the time the reply to `hello` took to reach the client. Events written through the same `MongoClient` reach back at most a second, plus that time. A handler that expects only events written after `subscribe(..)` has to cope with those.
 
 The moment is taken while the model is stopped too. A subscription you make then receives the events written between `subscribe(..)` and `start()`, where 0.33.0 started it at the present of `start()`.
 
@@ -4009,7 +4011,11 @@ A subscription whose change stream first opens longer after `subscribe(..)` than
 
 To restart at the present instead, skipping the events written in between, create the model with `ReactorMongoSubscriptionModelConfig.withConfig().restartSubscriptionsOnChangeStreamHistoryLost(true)`. The reactive Spring Boot starter turns it on unless `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` is `false`.
 
-Every event written after the call is delivered as long as the server's clock is right. The start can be later than the call, and the subscription then skips the events written in between, in three cases:
+When the cluster time the model read is at most 15 seconds older than the server's clock, every event written through the same `MongoClient` after the call is delivered, whatever the server's clock shows. So is every event another client writes to a replica set, unless another member becomes primary in between. On a sharded cluster, and after another member becomes primary, MongoDB can give another client's write a cluster time earlier than the one the model read. That write is delivered only when its cluster time is no earlier than the start of the second the server's clock showed at the call.
+
+The model starts from the server's clock alone when it can't read the driver's cluster time, when the driver has seen none yet, and when the one it has seen is more than 15 seconds older than the server's clock. The driver keeps its cluster time internal, so the model reads it by reflection and logs a warning the first time it can't. The driver only learns a newer cluster time when the client sends a command, so a client that has sent none for more than 15 seconds falls in the last case.
+
+The start can then be later than the call, and the subscription skips the events written in between, in three cases:
 
 * The server's clock is stepped forward between the call and the reply.
 * The primary fails over to a replica set member whose clock is ahead.
