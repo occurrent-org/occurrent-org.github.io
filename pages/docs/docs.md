@@ -5623,7 +5623,7 @@ The MongoDB starters configure a store for you, one document per projection id a
 
 Without Spring Boot you do the same by hand. `Projections.recordingAppliedAppends(view, projectionId, store)` wraps the projection, on the blocking stack and the reactor stack alike.
 
-`AppliedAppendStore.inMemory()` gives you a store for tests or for a single-process application. It keeps the 10000 most recent appends per projection, and a wait for one it has dropped times out.
+`AppliedAppendStore.inMemory()` gives you a store for tests or for a single-process application. It keeps the 10000 most recent appends per projection, or the number you pass to `AppliedAppendStore.inMemory(int)`, and a wait for one it has dropped times out.
 
 Nothing tells the wrapper when a catch-up begins and ends unless you arrange it. Pass it to [`listenForCatchup`](#subscription-model-capabilities) on the subscription model the projection runs on, before you subscribe.
 
@@ -5698,9 +5698,9 @@ So a write issued right after your application starts is recorded even though th
 
 The stream and DCB catch-up models are different. Their history read can pick up a write that was still committing when the catch-up began, and that delivery isn't recorded.
 
-Their history read also adds nothing to the cache of event ids the live subscription checks for duplicates. So the live subscription delivers the same event again and records the append. The wait answers `true`, and the projection applies that event twice.
+Their history read also adds nothing to the cache of event ids and sources the live subscription checks for duplicates. So the live subscription delivers the same event again and records the append. The wait answers `true`, and the projection applies that event twice.
 
-`CatchupThenPushSubscriptionModel` does keep the ids of the events its replay delivered. When the live feed offers one of them again, it drops that copy and tells the projection with `alreadyDeliveredByReplay(event)`, so the append is recorded and the event is applied once.
+`CatchupThenPushSubscriptionModel` does keep the id and source of each event its replay delivered. When the live feed offers one of those events again, it drops that copy and tells the projection with `alreadyDeliveredByReplay(event)`, so the append is recorded and the event is applied once.
 
 Waiting for an append the catch-up is still working through is a wait like any other. It answers as soon as the projection has applied one of that append's events, which can be well before the catch-up hands over to live delivery.
 
