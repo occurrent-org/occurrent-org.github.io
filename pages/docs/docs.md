@@ -7125,17 +7125,16 @@ Mono.fromCallable(() -> applicationContext.getBean(OrderNotifier.class))
         .subscribeOn(Schedulers.parallel());
 ```
 
-Reactor refuses to block on such a thread, and subscribing to the `ReactorDurableSubscriptionModel` that the reactive MongoDB starter builds can block to read a stored position. On any other thread every handler subscribes on the thread that builds the bean. On a non-blocking thread it depends on where the handler starts:
+Reactor refuses to block on such a thread, and subscribing a handler that starts at the beginning or at an explicit position can block while the starter reads the position stored for it. On any other thread every handler subscribes on the thread that builds the bean. On a non-blocking thread it depends on where the handler starts:
 
 | Start position | What happens |
 |:---------------|:-------------|
 | The beginning, or an explicit position | Subscribes on `Schedulers.boundedElastic()`. |
-| `NOW` | Subscribes on the thread that builds the bean, which works on the model the starter builds. |
-| `DEFAULT` | The bean fails to build on the model the starter builds. |
+| `NOW` or `DEFAULT` | Subscribes on the thread that builds the bean, which works on the model the starter builds. |
 
 A handler that starts at `NOW` or `DEFAULT` subscribes on the calling thread because it starts from wherever the event feed is when it subscribes. Subscribing it later could skip what the caller writes in between. A start at the beginning or at an explicit position receives the same events whenever it subscribes.
 
-When a `DEFAULT` handler makes the bean fail to build, the exception says what to do. Build the bean on a thread that may block, with `Schedulers.boundedElastic()` instead of `Schedulers.parallel()` above, or start the handler at the beginning or at an explicit position.
+When another subscription model blocks while subscribing a `NOW` or `DEFAULT` handler, the bean fails to build instead, and the exception says what to do. Build the bean on a thread that may block, with `Schedulers.boundedElastic()` instead of `Schedulers.parallel()` above, or start the handler at the beginning or at an explicit position.
 
 A subscribe moved to `Schedulers.boundedElastic()` has no caller to throw to, so a failure there is logged at `ERROR`. A failure that can go away, an unreachable storage for example, is tried again until an attempt succeeds or the application context closes. The delay doubles from 100 ms up to 30 seconds, and the handler receives no events until then.
 
