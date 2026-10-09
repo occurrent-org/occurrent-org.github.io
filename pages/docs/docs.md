@@ -3379,7 +3379,7 @@ When applying an event the projection fed fails, the feed starts failing, and a 
 
 On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
 
-A `catchUp()`, `catchUp(id)` or `catchUpAll()` that the view calls on its own feed, while the feed is calling it, doesn't wait for the replay, which runs after the view's code returns. Returning, or the `Mono` completing, then means the catch-up was asked for, not that it has run. A view that hands the call to another thread and waits for it waits forever.
+A `catchUp()`, `catchUp(id)` or `catchUpAll()` that the view calls on its own feed, while the feed is calling it, doesn't wait for the replay, which runs after the view's code returns. Returning, or the `Mono` completing, then means the catch-up was asked for, not that it has run. A view that hands the call to another thread and waits for it waits for a replay that can't start before the view returns, so it waits until its thread is interrupted.
 
 A long replay keeps the listener waiting. A Kafka consumer that waits past its `max.poll.interval.ms`, five minutes by default, is taken out of its group and the record is delivered again. RabbitMQ delivers a message again once a consumer has held on to it without acknowledging it for longer than `consumer_timeout`, 30 minutes by default. Either costs a redelivery rather than the event.
 
@@ -3396,6 +3396,8 @@ feed.goLive();
 It skips the replay and starts delivering the buffered and future live events directly, writing no completion marker, so a later real `catchUp()` on the same feed still replays the full history rather than treating it as already done.
 
 A `goLive()` or `goLive(id)` called while a catch-up of the same projection is still replaying waits for that replay to end, and on the reactor stack its `Mono` completes then. When a catch-up of the projection fails while it waits, it throws an `IllegalStateException`, or its `Mono` errors with one, whose cause is that failure. A call the view makes while the feed is calling it, to apply an event or in a callback such as `replayStarted()`, doesn't wait.
+
+On the blocking stack, a catch-up that fails on an interrupted thread isn't recorded as a failure, so `goLive()` and `goLive(id)` don't throw for it.
 
 A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
