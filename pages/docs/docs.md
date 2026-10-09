@@ -3408,19 +3408,23 @@ ProjectionRunner.agnostic(pushModel, cloudEventConverter)
 
 One model feeds one consumer. Registering a second projection or saga on the same `PushSubscriptionModel` fails at startup, naming both. A broker message carries one acknowledgement decision, so consumers sharing a model would share it too: one that kept failing would hold up every consumer behind it on every redelivery, and once the broker gave up on the message none of them would see it. Declare one model per projection, and give each its own queue, subscription, or consumer group on the broker, so that a message one projection cannot handle stops only that projection. A subscription model reading an event store is unaffected and still serves any number of subscriptions, since each has its own cursor and checkpoint.
 
-On the producer side, forward the stored `CloudEvent` to the broker as CloudEvents JSON, unchanged. On the listener side, reconstruct it from that CloudEvents JSON payload before handing it to the model, for example in a Spring `@RabbitListener`:
+On the producer side, forward the stored `CloudEvent` to the broker as CloudEvents JSON, unchanged. On the listener side, reconstruct it from that CloudEvents JSON payload, hand it to `acceptRedeliverable(CloudEvent)` and act on the `RoutingOutcome` it returns. In the example below, `acknowledge()`, `redeliverLater()`, `applyFailurePolicy()` and `stopConsuming()` stand for the calls your broker client makes:
 
 ```java
-@RabbitListener(queues = "orders")
-public void onMessage(byte[] body) {
+void onMessage(byte[] body) {
     CloudEvent cloudEvent = EventFormatProvider.getInstance()
             .resolveFormat(JsonFormat.CONTENT_TYPE)
             .deserialize(body);
-    pushModel.accept(cloudEvent);
+    switch (pushModel.acceptRedeliverable(cloudEvent)) {
+        case DELIVERED, FILTERED -> acknowledge();
+        case DEFERRED, UNAVAILABLE -> redeliverLater();
+        case NOT_DELIVERABLE -> applyFailurePolicy();
+        case REFUSED -> stopConsuming();
+    }
 }
 ```
 
-`accept(CloudEvent)` runs the registered handler synchronously, on the calling thread, when the event matches its filter. The handler's exception propagates back to the caller, which is what lets the listener decide whether to acknowledge the message or trigger a redelivery. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
+`acceptRedeliverable(CloudEvent)` runs the registered handler synchronously, on the calling thread, when the event matches its filter. An exception from the handler or the filter propagates back to the listener, which handles it the same way as `NOT_DELIVERABLE`.
 
 ##### Observing pushed events {#push-subscription-blocking-observer}
 
@@ -3494,9 +3498,23 @@ In a batch fed through `accept(Iterable<CloudEvent>)`, the first event whose rou
 
 No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
+Feeding the push model from an event store's write path is supported only for the in-memory event store, whose listener calls `accept(Iterable<CloudEvent>)`, and where a crash before the handler has run loses the event from the store too. The push model keeps no record of which events a subscription has handled, so with a durable event store, such as MongoDB, the subscription never sees an event when the application crashes after the write has committed but before the handler has run. Use a [durable subscription](#durable-subscriptions-blocking) there, or forward the events to a broker and call `acceptRedeliverable(CloudEvent)` from its listener, as described below.
+
+Fed from a broker, don't acknowledge a message just because `accept(..)` returned. It returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused. Behind a `CatchupThenPushSubscriptionModel` it can also return before the handler has applied the event, or without the handler ever applying it. The broker never sends an acknowledged message again.
+
+Call `acceptRedeliverable(CloudEvent)` instead. It returns the event's `RoutingOutcome`, and you acknowledge the message only when that is `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`.
+
+It returns `UNAVAILABLE` for an event no subscription takes, and while the model is stopped or the subscription is paused. With a `CatchupThenPushSubscriptionModel` in front it returns `DEFERRED` for an event that arrives before that model has gone live, while its catch-up is stopped, or while an earlier delivery of the same event is still in progress on another thread. The broker delivers any of those again if you don't acknowledge the message.
+
+Once a catch-up in front has failed it returns `REFUSED` for every event, and you stop consuming, because the broker would only deliver the message into the same refusal. A `CatchupThenPushSubscriptionModel` in front tells events apart by id, so it returns `NOT_DELIVERABLE` for an event whose `getId()` is `null`. Handle that the same way as a handler that throws.
+
+The RabbitMQ and Kafka bridges do all of this for you.
+
+A handler that feeds another push model from inside its own subscription has to act on what `acceptRedeliverable(..)` returns, because nothing delivers an event it refuses there again. Throw on anything but `DELIVERED` or `FILTERED`, say, so the outer handler fails instead of returning as if the event had been handled. Calling `accept(..)` there is no safer, since it also returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
+
 A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
 
-`CatchupThenPushSubscriptionModel` automates that catch-up. Wrap it around the push model and give it the event store as the replay source. On the first subscribe it replays the projection's history in position order, then hands over to the live feed, buffering the feed during the replay and de-duplicating the overlap by each event's id and source so nothing is lost or delivered twice across the replay-to-live handover:
+`CatchupThenPushSubscriptionModel` automates that catch-up. Wrap it around the push model and give it the event store as the replay source. On the first subscribe it replays the projection's history in position order, then hands over to the live feed. During the replay `acceptRedeliverable(..)` returns `DEFERRED`, so the broker delivers the event again, and `accept(..)` buffers it. The overlap is de-duplicated by event id and source together, so nothing is lost or delivered twice across the replay-to-live handover, within the two limits described below:
 
 ```java
 PushSubscriptionModel pushModel = new PushSubscriptionModel();
@@ -3514,7 +3532,7 @@ At the default of 10000 the two caches together hold up to 20000 events, twice t
 
 If the replay and the live feed overlap by more than `dedupCacheSize` events, an event can reach your handler twice, so make sure that applying an event a second time doesn't change your read model.
 
-The second, `maxBufferedEvents`, caps the live events buffered during the replay, at 100000 by default. When the buffer is full, the model throws instead of dropping events. Pass `CatchupThenLiveOptions` to change either:
+The second, `maxBufferedEvents`, caps the live events buffered during the replay, at 100000 by default. It is a fail-loud ceiling rather than a throttle. Only `accept(..)` fills it, since `acceptRedeliverable(..)` refuses an event during the replay instead of buffering it. When the buffer is full, the in-memory event store's write call throws although the store has kept the event. The push model's `accept(events)` stops at that event, so it routes none of the write's later events either, and the subscription can miss all of them. Pass `CatchupThenLiveOptions` to change either:
 
 ```java
 CatchupThenPushSubscriptionModel model = new CatchupThenPushSubscriptionModel(
@@ -4831,20 +4849,48 @@ ReactiveProjectionRunner.agnostic(pushModel, cloudEventConverter)
         .project("order-status", orderStatusProjection(), repository);
 ```
 
-Reconstruct the `CloudEvent` from the CloudEvents JSON payload on the listener side, then hand it to the model:
+Reconstruct the `CloudEvent` from the CloudEvents JSON payload on the listener side, then hand it to the model and act on the outcome. In the example below, `acknowledge()`, `redeliverLater()`, `applyFailurePolicy()` and `stopConsuming()` each return a `Mono<Void>` that makes the matching call on your broker client:
 
 ```java
 Mono<Void> onMessage(byte[] body) {
     CloudEvent cloudEvent = EventFormatProvider.getInstance()
             .resolveFormat(JsonFormat.CONTENT_TYPE)
             .deserialize(body);
-    return pushModel.accept(cloudEvent);
+    return pushModel.acceptRedeliverable(cloudEvent).flatMap(outcome -> switch (outcome) {
+        case DELIVERED, FILTERED -> acknowledge();
+        case DEFERRED, UNAVAILABLE -> redeliverLater();
+        case NOT_DELIVERABLE -> applyFailurePolicy();
+        case REFUSED -> stopConsuming();
+    });
 }
 ```
 
-`accept(CloudEvent)` returns a `Mono<Void>` and runs the registered handler when the event matches its filter. A handler error propagates through that `Mono`, so the caller decides whether to acknowledge the message, retry it, or route it to the broker's failed-message queue, where the broker has one.
+`acceptRedeliverable(CloudEvent)` runs the registered handler when the event matches its filter and returns a `Mono<RoutingOutcome>`. Acknowledge the message only when that `Mono` completes with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`, the two outcomes `mayAcknowledge()` is true for.
 
-As on the blocking side, one model feeds one consumer, and a second projection registering on it fails at startup. The reasoning is in the [blocking section](#push-subscription-blocking): a broker message carries one acknowledgement, so sharing a model would let one failing consumer strand the others. There's also an `accept(Iterable<CloudEvent>)` overload for delivering several events at once.
+* `DELIVERED` once the handler has applied the event, or once a `CatchupThenPushSubscriptionModel` in front finds it had already applied it.
+* `FILTERED` when the subscription's filter declined the event.
+* `UNAVAILABLE` when nothing is registered, the model is stopped or the subscription is paused.
+* `DEFERRED` when a `CatchupThenPushSubscriptionModel` in front hasn't gone live, because its replay is still running, say.
+* `REFUSED` once a `CatchupThenPushSubscriptionModel` in front has failed its catch-up.
+* `NOT_DELIVERABLE` for any other refusal decided before the handler would run, a full live buffer in a `CatchupThenPushSubscriptionModel` in front, say.
+
+For `UNAVAILABLE` and `DEFERRED`, leave the message unacknowledged rather than routing it to the broker's failed-message queue, and the broker delivers it again. A handler or filter error propagates through the `Mono`, so the caller decides whether to retry the message or route it to the failed-message queue, where the broker has one. Handle `NOT_DELIVERABLE` the same way. On `REFUSED`, stop consuming, because the broker would only deliver the message into the same refusal.
+
+`accept(..)` is for the in-memory event store's write path, and its `Mono` completes normally for an event no subscription takes as well. There's no reactive in-memory event store, so that means a listener on the blocking `InMemoryEventStore` that calls `accept(Iterable<CloudEvent>)` and waits for the `Mono`, such as `events -> pushModel.accept(events).block()`. The `Mono` does nothing until something subscribes to it, so `new InMemoryEventStore(pushModel::accept)` compiles but delivers nothing.
+
+The store calls that listener on the thread that wrote, once it has kept the events, so write from a thread that may block. On a Reactor non-blocking thread, such as a WebFlux event loop, `block()` throws, and the write call fails although the store holds the events. Occurrent ships no reactive `PositionOrderedReader` over the in-memory event store for a reactive `CatchupThenPushSubscriptionModel` in front to replay.
+
+Behind a reactive `CatchupThenPushSubscriptionModel`, a handler that writes an event its own subscription takes does not wait for that event. The model hands the subscription one event at a time, so it cannot apply the new event before the handler returns, and the write returns once the event is queued. The handler gets the events it wrote in the order it wrote them, once it has returned, and for a write made during the replay once the subscription has gone live. A replay that ends before that writes no catch-up marker, so the next replay hands the handler the same history again.
+
+`acceptRedeliverable(..)` called from the handler on the model feeding it decides between `DELIVERED` and `DEFERRED` as it does for any other caller, so it completes with `DEFERRED` during a replay, and with `DELIVERED` once the event is queued when the subscription is live. The model recognizes the handler's call when the handler returns it as part of its own `Mono`, or subscribes it on the thread it was called on, by blocking on it say. A handler that blocks on the call from a thread it switched to waits forever.
+
+When applying an event the handler wrote fails, the write has already returned. The subscription then starts failing, and a failed catch-up starts it failing the same way. It deletes its catch-up marker, refuses every later event that does not come from its handler, applies the events it has already taken in and those its handler writes meanwhile, and then fails for good. A failed catch-up also refuses each event from anywhere else that is still waiting, and does not apply it. Cancel it and subscribe again, and once the marker is gone its catch-up replays the history. When deleting the marker still fails after 3 retries, the subscription logs an error naming the subscription id, and the marker has to be deleted from the `CheckpointStorage` by hand before subscribing again. An event that no replay can bring back is lost only when applying it failed.
+
+Feeding `accept(..)` from the write path of a durable event store, such as MongoDB, isn't supported. The model keeps no record of which events a subscription has handled, so the subscription never sees an event when the application crashes after the write has committed but before the handler has run. Use a [durable subscription](#durable-subscriptions-reactive) there, or a broker listener that calls `acceptRedeliverable(CloudEvent)`.
+
+A handler that feeds another push model from inside its own subscription has to act on the outcome the `Mono` from `acceptRedeliverable(..)` completes with, because nothing delivers an event it refuses there again. Error on anything but `DELIVERED` or `FILTERED`, say, so the outer handler fails instead of completing as if the event had been handled. Calling `accept(..)` there is no safer, since its `Mono` also completes normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
+
+As on the blocking side, one model feeds one consumer, and a second projection registering on it fails at startup. The reasoning is in the [blocking section](#push-subscription-blocking): the broker takes one acknowledgement decision per message, so a consumer that kept failing would hold up every other consumer on the same model.
 
 The reactive model also takes an optional `PushObserver`, for the same reason as the [blocking model](#push-subscription-blocking-observer). The constructor arguments, the six outcomes, and what happens when the filter or the observer itself throws are the same on both stacks.
 
@@ -5043,7 +5089,7 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 | `RepositionableSubscriptions` | yes | no | `resumeSubscription(id, startAt)`, resume at an explicit position instead of wherever the model stopped | `findIn(model)` |
 | `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `findIn(..)` walks through | declare or cast |
 | `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, and cloud events carrying a checkpoint you can store yourself | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
-| `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`, the target a broker listener feeds events into | implemented directly by the push models, declare or cast |
+| `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`. An `InMemoryEventStore` listener calls `accept(events)`, and a broker listener calls the push model's `acceptRedeliverable(cloudEvent)` instead, which `Pushable` doesn't declare | implemented directly by the push models, declare or cast |
 
 `CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the first three are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
 
@@ -7444,7 +7490,7 @@ The annotation and the DSL class share the name `Saga`, so a Java factory method
 
 #### Fed from a broker {#saga-push-source}
 
-A saga does not have to read the event store. Set `source = Source.PUSH` and point it at a [`PushSubscriptionModel`](#push-subscription-blocking) bean, and it reacts to whatever your listener hands that model, from RabbitMQ, Kafka, an HTTP endpoint or anything else:
+A saga does not have to read the event store. Set `source = Source.PUSH` and point it at a [`PushSubscriptionModel`](#push-subscription-blocking) bean, and it reacts to whatever your listener hands that model, from RabbitMQ, Kafka, or any other source that delivers an event again when it isn't acknowledged:
 
 {% capture kotlin %}
 import org.occurrent.annotation.Saga
@@ -7503,9 +7549,9 @@ class OrderEventsConfig {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Your listener calls `accept(cloudEvent)` on that bean and the saga takes it from there, using the same `correlateAll`, the same steps, the same timeouts, and the same state store it always did.
+Your listener calls `acceptRedeliverable(cloudEvent)` on that bean and acts on the `RoutingOutcome` it returns, as shown for the [push subscription model](#push-subscription-blocking), and the saga takes it from there, using the same `correlateAll`, the same steps, the same timeouts, and the same state store it always did.
 
-An event the saga does not declare is ignored rather than refused. The saga subscribes with a filter on its declared event types, so when the queue delivers something else, `accept` matches nothing, returns normally, and your listener acknowledges as usual, with nothing logged. A queue that also delivers event types the saga never declared therefore works fine, each extra event costs one filter check. Note that the redelivery check described under [Forward the Occurrent extensions](#forward-the-occurrent-extensions) below only runs for events the saga declares, so a listener that drops the Occurrent extensions shows up only once a declared event arrives without them.
+An event the saga does not declare is ignored rather than refused. The saga subscribes with a filter on its declared event types, so when the queue delivers something else, `acceptRedeliverable` returns `FILTERED` and your listener acknowledges as usual, with nothing logged. A queue that also delivers event types the saga never declared therefore works fine, each extra event costs one filter check. Note that the redelivery check described under [Forward the Occurrent extensions](#forward-the-occurrent-extensions) below only runs for events the saga declares, so a listener that drops the Occurrent extensions shows up only once a declared event arrives without them.
 
 `subscriptionModelName` is only needed when there is something to choose between. A `PushSubscriptionModel` feeds exactly one saga or projection, because your listener gets one acknowledgement decision per message and two consumers would have to share it. An application with several push sagas therefore declares several feed beans, and each `@Saga` names its own. With a single feed bean, as here, the name can be dropped and the starter finds the bean on its own. It refuses to guess between several, with a message naming them.
 
@@ -8613,14 +8659,14 @@ Reaching for `await` here would hide the bug you are testing for, because a wait
 
 ### Fed from a broker, without a broker {#testing-projection-push}
 
-A projection fed from RabbitMQ or Kafka is driven by `accept(...)`, and your test can call that itself. Register against the push subscription model, then hand it the events your listener would have handed it. No broker, no container:
+A projection fed from RabbitMQ or Kafka is driven by `acceptRedeliverable(...)`, and your test can call that itself. Register against the push subscription model, then hand it the events your listener would have handed it. No broker, no container:
 
 {% capture kotlin %}
 ProjectionRunner.agnostic(pushModel, converter).project("order-status", projection, repository)
 
 // Stand in for the listener
-pushModel.accept(converter.toCloudEvent(OrderPlaced("order-1", "The Pragmatic Programmer")))
-pushModel.accept(converter.toCloudEvent(OrderShipped("order-1")))
+pushModel.acceptRedeliverable(converter.toCloudEvent(OrderPlaced("order-1", "The Pragmatic Programmer")))
+pushModel.acceptRedeliverable(converter.toCloudEvent(OrderShipped("order-1")))
 
 assertThat(store["order-1"]).isEqualTo(OrderStatusView("order-1", "The Pragmatic Programmer", "SHIPPED"))
 {% endcapture %}
@@ -8628,8 +8674,8 @@ assertThat(store["order-1"]).isEqualTo(OrderStatusView("order-1", "The Pragmatic
 ProjectionRunner.agnostic(pushModel, converter).project("order-status", projection, repository);
 
 // Stand in for the listener
-pushModel.accept(converter.toCloudEvent(new OrderPlaced("order-1", "The Pragmatic Programmer")));
-pushModel.accept(converter.toCloudEvent(new OrderShipped("order-1")));
+pushModel.acceptRedeliverable(converter.toCloudEvent(new OrderPlaced("order-1", "The Pragmatic Programmer")));
+pushModel.acceptRedeliverable(converter.toCloudEvent(new OrderShipped("order-1")));
 
 assertThat(store.get("order-1")).isEqualTo(new OrderStatusView("order-1", "The Pragmatic Programmer", "SHIPPED"));
 {% endcapture %}
