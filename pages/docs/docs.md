@@ -3780,7 +3780,9 @@ Since 0.34.0 the interface also has `globalCheckpointAsOfNow()`. It takes the mo
 
 `globalCheckpoint()` on `ReactorMongoSubscriptionModel` works out the position when its `Mono` is subscribed to instead, so an event written between the call and the subscription can be skipped. The position from `globalCheckpointAsOfNow()` can be earlier than the call, so the subscription can also receive events written before it.
 
-`ReactorMongoSubscriptionModel` answers `globalCheckpointAsOfNow()` the same way it starts `StartAt.now()`, so what [Reactive Subscription using Spring ReactiveMongoTemplate](#reactive-subscription-using-spring-reactivemongotemplate) says about how far before the call the position can reach, and when it can be later than the call, applies to it. The reactor catch-up models ask the model they wrap, and any other model answers what `globalCheckpoint()` answers.
+`ReactorMongoSubscriptionModel` answers `globalCheckpointAsOfNow()` the same way it starts `StartAt.now()`, so what [Reactive Subscription using Spring ReactiveMongoTemplate](#reactive-subscription-using-spring-reactivemongotemplate) says about how far before the call the position can reach, and when it can be later than the call, applies to it. The reactor catch-up models ask the model they wrap.
+
+A subscription model of your own has to implement `globalCheckpointAsOfNow()` and answer for the moment of the call. Returning what `globalCheckpoint()` answers can make `ReactorDurableSubscriptionModel` skip events written after its `subscribe(..)` returned. A model that wraps another one passes the call on to the model it wraps.
 
 ### Reactive Subscription Filters
 
