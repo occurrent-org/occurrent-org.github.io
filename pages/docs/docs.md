@@ -4977,6 +4977,10 @@ The predicate is handed the throwable from the last attempt, so you can answer d
 
 Keep the predicate free of side effects, because a single attempt can read it many times.
 
+A `RetryStrategy` you implement yourself, rather than one built from `RetryStrategy.retry()` or `RetryStrategy.none()`, ignores the predicate and runs the action the same way `execute(..)` without a predicate does.
+
+`NativeMongoLeaseCompetingConsumerStrategy`, `SpringMongoLeaseCompetingConsumerStrategy` and `InMemoryDeadlineConsumerRegistry` log a `WARN` when they're created with such a strategy, since a shutdown can't stop their retries then.
+
 Put a lifecycle flag here rather than in `retryIf`. A `retryIf` predicate is only read between attempts, so a shutdown during a backoff waits out the rest of it, and `retryIf` replaces whatever retry predicate the strategy already had rather than adding to it.
 
 ## Retry and Transactions
