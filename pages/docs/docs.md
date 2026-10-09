@@ -7910,7 +7910,7 @@ Most of the mechanical changes between Occurrent versions (type renames, package
 
 The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
 
-The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) has 25 sections, and the paragraphs below link to each one.
+The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) has 26 sections, and the paragraphs below link to each one.
 
 Six changes break compilation for the code named next to each:
 
@@ -7992,6 +7992,8 @@ The reactor `cancelSubscription(..)` returns a `Mono<Void>` that completes once 
 When the wrapped model throws from its own `shutdown()`, `CompetingConsumerSubscriptionModel.shutdown()` gives up none of its leases. The MongoDB lease strategies are already shut down by then and no longer refresh them, so another node can take the subscriptions over once they expire. Call `shutdown()` again once the wrapped model can shut down. See [section 24](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#24-a-competing-consumer-whose-wrapped-model-fails-to-shut-down-lets-its-leases-expire).
 
 A `ReactorDurableSubscriptionModel` over a model that manages named subscriptions, `ReactorMongoSubscriptionModel` for one, returns from a `subscribe(..)` from the model default without waiting for storage. A refusal found after the call, an unsupported filter for example, fails `waitUntilStarted()` instead of being thrown from `subscribe(..)`. See [section 25](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#25-a-durable-reactor-subscribe-from-the-model-default-returns-without-waiting-for-storage).
+
+A position catch-up that stores its position while it replays now stores the live start it read before the replay with it, and a resume goes live from that live start, so a resume can deliver some events a second time. A storage that keeps strings, such as `SpringRedisCheckpointStorage`, stores a form 0.33.0 cannot read, so let the catch-ups reach live delivery before you roll back. When the oplog no longer has the live start, the catch-up replays again, and it fails with `IllegalStateException` once the live start is gone after 4 replays in a row. See [section 26](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#26-a-position-catch-up-stores-the-live-start-it-read-before-the-replay).
 
 ## Upgrading to 0.33.0 {#upgrading-to-0-33-0}
 
