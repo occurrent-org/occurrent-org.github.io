@@ -6863,7 +6863,7 @@ A refusal is thrown when the filter is derived, and each place derives it at a d
 
 `ExecuteFilter.excludeTypes(..)` widens instead of refusing, because excluding a supertype has to exclude everything under it. It excludes the declared type and every concrete type it can find below it by following `permits` clauses, and a type it cannot reach stays in the read.
 
-`excludeTypes(..)` still refuses an array or a primitive type. It also refuses an interface or a non-sealed abstract class with nothing concrete found below it, since no event is stored under that type's own name with the mappers Occurrent ships.
+`excludeTypes(..)` refuses an array or a primitive type. It also refuses an interface or a non-sealed abstract class with nothing concrete found below it, since no event is stored under that type's own name with the mappers Occurrent ships.
 
 `excludeTypes(..)` doesn't refuse a sealed type that permits an interface or abstract class that is not sealed. With `ReflectionCloudEventTypeMapper` it excludes nothing below that interface or abstract class, so seal the hierarchy or exclude the concrete types.
 
