@@ -3272,7 +3272,7 @@ A handler that feeds another push model from inside its own subscription has to 
 
 A push subscription only ever sees the live tail. A broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first, with [EventStore Queries](#eventstore-queries) or a [catch-up subscription](#catch-up-subscription-blocking), and only then attach the push feed to keep the projection current.
 
-`CatchupThenPushSubscriptionModel` automates that catch-up. Wrap it around the push model and give it the event store as the replay source. On the first subscribe it replays the projection's history in position order, then hands over to the live feed. During the replay `acceptRedeliverable(..)` returns `DEFERRED`, so the broker delivers the event again, and `accept(..)` buffers it. The overlap is de-duplicated by event id, so nothing is lost or delivered twice across the replay-to-live handover, within the two limits described below:
+`CatchupThenPushSubscriptionModel` automates that catch-up. Wrap it around the push model and give it the event store as the replay source. On the first subscribe it replays the projection's history in position order, then hands over to the live feed. During the replay `acceptRedeliverable(..)` returns `DEFERRED`, so the broker delivers the event again, and `accept(..)` buffers it. The overlap is de-duplicated by event id and source together, so nothing is lost or delivered twice across the replay-to-live handover, within the two limits described below:
 
 ```java
 PushSubscriptionModel pushModel = new PushSubscriptionModel();
