@@ -3593,9 +3593,43 @@ Two things the fixture supplies that nothing on the interface can. First, a `new
 
 The suite takes no position on *how* a strategy coordinates. Nothing in it knows a lease exists, waits one out, or asserts when one expires, and Occurrent's own two MongoDB-backed strategies assert that timing separately, in deterministic tests against the MongoDB support class with a clock the test moves itself. What the suite asserts instead is the property a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
 
-It also asserts the contract both ways Occurrent relies on it. `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock. `SagaRunner` registers a consumer, never adds a listener at all, and asks `hasLock(subscriptionId, subscriberId)` on every poll instead. A strategy that reports changes only through a listener, or only answers correctly when asked directly, fails half of what the suite checks.
+It also asserts the contract both ways Occurrent relies on it. `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock, and also asks `hasLock(subscriptionId, subscriberId)` before it hands each event to the handler. `SagaRunner` registers a consumer, never adds a listener at all, and asks `hasLock` on every poll instead. A strategy that reports changes only through a listener, or only answers correctly when asked directly, fails half of what the suite checks.
 
 A released competing consumer no longer reports it still holds the lock. `hasLock` used to answer yes for up to half the lease time after `releaseCompetingConsumer`, which reached `SagaRunner`'s poll directly. `unregisterCompetingConsumer` and `releaseCompetingConsumer` do two different things. Unregistering keeps a consumer out until you register it again, which is what a user-paused subscription needs. Releasing keeps it registered so it may take the lock back on its own, which is what a system-paused one needs.
+
+##### Delivering While Holding the Lease {#competing-consumer-subscription-blocking-lease-check}
+
+`CompetingConsumerSubscriptionModel` asks the strategy's `hasLock(subscriptionId, subscriberId)` before it hands each event of a competing subscription to the handler, and holds the event back while that returns `false`. A `hasLock` that throws counts as `false`.
+
+A held-back event is never dropped. It goes to the handler once `hasLock` returns `true`, or without the lease in the cases the javadoc of `CompetingConsumerSubscriptionModel` lists, such as when the model pauses the subscription after losing its lease. So the same event can reach the handler on two nodes.
+
+Both MongoDB strategies answer `false` three quarters of the lease time after the request that last set the lease was sent, 15 seconds with the default lease time of 20 seconds, also when every refresh since has failed. They time this by the node's own clock while MongoDB expires the lease by its clock, so after a failover to a primary whose clock is more than a quarter of the lease time ahead, `hasLock` can answer `true` after another node has taken the lease.
+
+A `CompetingConsumerStrategy` of your own has its `hasLock` called on every event, so it should answer from what it keeps in memory rather than by asking a database, and answer `false` once the lock could have expired.
+
+A wrapped subscription model of your own shouldn't hold a lock while it hands an event to the handler. An event that waits for the lease keeps that lock, and every call that needs it, `isRunning(id)` among them, waits until this node holds the lease again or the model lets the event through. The subscription models that ship with Occurrent hold no such lock.
+
+With the MongoDB strategies, unregistering and releasing a consumer make at most 5 attempts per MongoDB call, fewer when the configured `RetryStrategy` allows fewer. So pausing a subscription or stopping the model while MongoDB can't be reached doesn't wait for it indefinitely, and a lease that isn't removed expires on its own after the lease time. A `RetryStrategy` you implement yourself, rather than build with `RetryStrategy.retry()`, runs its own retry loop and isn't capped.
+
+##### Life-cycle {#competing-consumer-subscription-blocking-life-cycle}
+
+When the wrapped model isn't running as the `CompetingConsumerSubscriptionModel` is built, such as a `SpringMongoSubscriptionModel` with [`autoStartup(false)`](#spring-mongo-subscription-defer-startup), the competing consumer model is stopped until you call its own `start()`. That call starts the wrapped model too.
+
+Calling `start()` only on the wrapped model runs the subscriptions that opted out of competing consumption, but no competing subscription competes for its lease, so every event the wrapped model hands a competing subscription waits. A warning is logged the first time that happens for each such subscription. Calling `start()` on both models, in either order, runs a competing subscription once this node holds its lease.
+
+When the `CompetingConsumerStrategy` or the wrapped model throws for a competing subscription, `start(..)` and `resumeSubscription(..)` log the failure as a warning and return. A thread of its own tries the subscription again, with a backoff, until it is registered for its lease and runs only while this node holds it. Every fifth try that fails is logged as a warning.
+
+`stop()`, `pauseSubscription(..)` and `cancelSubscription(..)` throw such a failure, and `resumeSubscription(..)` throws it when it's an `Error`. `start(..)` throws when the wrapped model, or a subscription that opted out of competing consumption, fails to start, once every subscription has had its turn.
+
+`isRunning()` says whether the competing consumer model is started, and says nothing about whether this node delivers anything. It returns `true` on a started node that holds no lease, and `false` after `stop()` until the next `start(..)`, after a `start(..)` that threw until a later one returns without throwing, and for good once `shutdown()` has begun.
+
+To find out whether this node delivers a subscription's events, call `isRunning(id)`. It asks the wrapped model, which runs a competing subscription only on the node that holds its lease.
+
+Pause a competing subscription with `pauseSubscription(..)` on the `CompetingConsumerSubscriptionModel`, which gives up this node's lease so another node can take the subscription over. A pause made directly on the wrapped model lasts only until the competing consumer model's next `start(..)`, a grant of the subscription's lease or a `resumeSubscription(..)` of it, each of which runs the subscription again while this node holds its lease.
+
+`shutdown()` shuts the `CompetingConsumerStrategy` down, then the wrapped model, and then makes one attempt to give up each lease, waiting at most 5 seconds for all of them. The MongoDB strategies stop refreshing their leases once they are shut down, so a lease that isn't given up expires after the lease time.
+
+When the wrapped model's own `shutdown()` throws, `shutdown()` throws that failure and gives up no lease, since the wrapped model may still deliver. Each event the wrapped model hands over after that waits for `hasLock` again, so this node stops delivering once the strategy stops reporting the lease held. Calling `shutdown()` again once the wrapped model can shut down makes the attempt to give the leases up.
 
 #### Checkpoint Fencing (Blocking) {#checkpoint-fencing-blocking}
 
@@ -7847,6 +7881,10 @@ class MySubscriptionModelTest extends SubscriptionModelConformance {
 
 One thing to know if you pause a subscription and resume it later. Both MongoDB models carry on from the position they had read to, so an event written while the subscription was paused still arrives once it resumes. The price is that the same event can arrive twice, because a model that resumes from the last position it stored, rather than from just after it, hands that event over a second time. A handler has to cope with that. `stop()` on the model pauses every subscription it holds, so a `stop()` followed by a `start()` is the same situation.
 
+If a `CompetingConsumerSubscriptionModel` wraps your model, implement `SubscriptionModel.subscribePaused(..)`. The competing consumer model makes each competing subscription in your model through it, and resumes it there only while this node holds the lease.
+
+The default `subscribePaused(..)` throws `UnsupportedOperationException`, and the competing consumer model then calls `subscribe(..)` once this node wins the lease, so a subscription made while the competing consumer model is stopped can deliver before its `start()`. `SubscriptionModelConformance` accepts both, a model that holds such a subscription paused until it's resumed and one that refuses it with `UnsupportedOperationException`.
+
 The TCK carries the same version number as the rest of Occurrent, and a minor release may add suites and tighten what the existing ones assert. Upgrading can therefore turn a green build red. That is the suite doing what it is for, and there are two things to do about it, fix the implementation or stay on the Occurrent version you were on. Holding the TCK back on its own is not a third option, because each artifact is compiled against the runtime API of its own version.
 
 Your fixture keeps compiling either way. A new fixture member always arrives with a `default`, and where a default value would be a lie it arrives as a `default` that throws and names itself, so a minor upgrade never breaks compilation. Removing a member or a whole suite waits for a major release.
@@ -7871,7 +7909,7 @@ Two things the fixture supplies that nothing on the interface can. First, a `new
 
 The suite takes no position on *how* a strategy coordinates. It asserts one property, which a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
 
-It also asserts the contract both ways it can be consumed. A strategy that reports lock changes only through its listener, or that only answers correctly when `hasLock(subscriptionId, subscriberId)` is asked directly, fails half of what the suite checks, since real consumers use one or the other.
+It also asserts the contract both ways it can be consumed. A strategy that reports lock changes only through its listener, or that only answers correctly when `hasLock(subscriptionId, subscriberId)` is asked directly, fails half of what the suite checks, since `CompetingConsumerSubscriptionModel` relies on both and `SagaRunner` only asks `hasLock`.
 
 ## The Reactive Bridge {#subscription-reactive-bridge}
 
