@@ -3367,6 +3367,12 @@ feed.catchUp();
 
 When the event is not applied, `accept(...)` throws an `IllegalStateException`, or its `Mono` errors with one. That happens when the catch-up was stopped before the feed went live, the event was fed after such a stop and before the next catch-up, or the catch-up failed. On the blocking stack it also happens when the waiting thread was interrupted, when another delivery of the same event was still running, and when `accept(...)` was called while the feed was not live from inside the projection, a view or another callback of the same feed, where the thread would wait for work it holds up itself. Do not acknowledge the message then, and the broker delivers it again.
 
+On the reactor stack, a `stopCatchUp()` on a feed that hasn't gone live and has no catch-up running stops the feed too. The `Mono` of an event fed before that stop, or after it and before the next catch-up, errors with an `IllegalStateException`. A catch-up started after the stop doesn't apply that event, so it comes back only when the broker delivers it again.
+
+The `Mono` of each event that was still waiting errors on the thread that called `stopCatchUp()`, so your error handling runs there unless your own pipeline switches threads.
+
+A catch-up counts as running from the `CatchupProjectionFeed.catchUp()` or `goLive()` call, and from the subscription to the `Mono` that `DomainEventFeed.catchUpAll()`, `catchUp(id)` or `goLive(id)` returns, not from the call. It stops counting once the feed goes live, its replay notices a stop, or it fails.
+
 On the blocking stack, an `accept(...)` called from inside the projection or a view while the catch-up replays history into it is refused, and that refusal fails the catch-up. The feed then refuses every event until you build a new one, and a caller that catches the refusal and continues drops the event it fed.
 
 A catch-up on the blocking stack that fails on an interrupted thread is not recorded as a failure. `catchUp()` throws it, but the feed doesn't refuse later events for it, and `DomainEventFeed.refusesPermanently()` stays `false`.
