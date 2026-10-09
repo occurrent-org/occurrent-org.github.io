@@ -7910,9 +7910,16 @@ Most of the mechanical changes between Occurrent versions (type renames, package
 
 The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
 
-The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) has eleven sections, and the paragraphs below link to each one.
+The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) has 25 sections, and the paragraphs below link to each one.
 
-The removal of `join` and a new component on `WriteResult` and `DcbAppendResult` both break compilation.
+Six changes break compilation for the code named next to each:
+
+* the removal of `join`, `expect<T>` and `Expectation`, for any code that uses them
+* a fourth component on `WriteResult` and `DcbAppendResult`, for a record pattern that deconstructs either
+* `SagaStatus.QUARANTINED`, `SagaInstance.failure()` and new record components on `SagaEnvelope` and `SagaRunnerConfig`, for an exhaustive `switch` or Kotlin `when` over `SagaStatus`, a class that implements `SagaInstance`, or a record pattern over either record
+* the removed `protected` constructor of `SpringMongoSubscription`, for a subclass or code that creates one
+* `globalCheckpointAsOfNow()`, which has no default, for a reactor `CheckpointAwareSubscriptionModel` of your own
+* the `Mono<Void>` the reactor `cancelSubscription(..)` returns, for a class that implements it
 
 The flow saga's deprecated `join`, Kotlin's `expect<T>`, and `Expectation` are removed. That is the saga DSL itself, so it applies whether or not you run Spring Boot.
 
@@ -7940,7 +7947,7 @@ The changes below alter what already-running code does.
 
 A flow saga's `stepWindow` counts only events of the types its steps declare, plus repeats of the type that starts the flow. See [section 2](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#2-a-flow-sagas-stepwindow-now-caps-its-declared-events-and-the-start-type).
 
-A projection, a subscription, a query, a snapshot view, an `ExecuteFilter` or a `DcbCriteriaBuilder` that declares an event type whose concrete subtypes cannot be found is refused, the way a saga and an annotation-based subscription already were. A concrete class that is neither final nor sealed is refused everywhere, sagas included. [Section 3](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#3-declaring-an-event-type-whose-concrete-subtypes-cannot-be-found-is-refused) has the remedies.
+A projection, a subscription, a query, a snapshot view, an `ExecuteFilter` or a `DcbCriteriaBuilder` that declares an event type whose concrete subtypes cannot be found is refused, the way a saga and an annotation-based subscription already were. A concrete class that is neither final nor sealed is refused wherever a filter is derived from it, sagas included, except by `ExecuteFilter.excludeTypes(..)`, which widens instead of refusing and so excludes only the events stored under that class's own CloudEvent type. [Section 3](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#3-declaring-an-event-type-whose-concrete-subtypes-cannot-be-found-is-refused) has the remedies.
 
 A `@Projection`, `@Saga` or `@Snapshot` bean's class-level advice, `@Transactional` or a custom aspect for example, no longer runs once at startup as a side effect of building its descriptor. That was never documented behavior, just an accident of CGLIB proxying the bean's factory method by default.
 
@@ -7955,6 +7962,34 @@ A reactor catch-up subscription can deliver a write that was in flight during it
 An event `updateEvent` rewrote on 0.33.0 or earlier was stored with a string `position` and without its `dcbTags`, and it needs a one-off repair. See [section 10](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#10-events-updateevent-damaged-before-0340-need-a-one-off-repair).
 
 A subscription handler method Spring's proxy cannot invoke fails startup with `SubscriptionHandlerNotInvocableException`. Every annotation-based subscription handler also registers only after all singletons are created, so a live-only subscription does not see an event a bean writes from its own `@PostConstruct`. See [section 11](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#11-a-subscription-handler-spring-cannot-invoke-now-fails-startup-and-a-live-subscription-can-miss-a-startup-write).
+
+On the blocking stack, `CatchupProjectionFeed.accept(..)` and `DomainEventFeed.accept(..)` wait until the event is applied, before the feed goes live and while a catch-up runs, and throw `IllegalStateException` when it wasn't applied. Never call `accept(..)` on the thread that later calls `catchUp()` or `goLive()`, since that thread then waits for a catch-up it never gets to start. On the reactor stack, the `Mono` that `accept(..)` returns errors for an event fed while the feed is stopped. See [section 12](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#12-a-projection-feeds-accept-waits-until-the-event-is-applied-and-fails-when-it-is-not).
+
+Feeding a push model's `accept(..)` is supported only from an `InMemoryEventStore` listener, because neither push model keeps a record of what it has delivered. A RabbitMQ or Kafka listener, or an HTTP endpoint whose caller retries, calls `acceptRedeliverable(CloudEvent)` instead, and a listener on the write path of a durable event store becomes a durable subscription. See [section 13](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#13-only-the-in-memory-event-stores-write-path-may-feed-a-push-models-accept).
+
+A projection feed's `goLive()` called while a catch-up of the same projection replays waits for that replay to end. It throws `IllegalStateException`, or its reactor `Mono` errors with one, when a catch-up of that projection failed while it waited. See [section 14](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#14-a-projection-feeds-golive-waits-for-a-running-catch-up).
+
+A reactor subscription handler that feeds an event back into its own `CatchupThenPushSubscriptionModel` subscription no longer waits forever, and neither does the code that applies events to a reactor `CatchupProjectionFeed` or `DomainEventFeed` when it feeds the same feed. The call completes once the event is queued. When applying that event fails, the subscription or feed fails for good, so cancel and subscribe again, or build a new feed. See [section 15](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#15-feeding-a-reactor-catch-up-from-its-own-handler-no-longer-waits-forever).
+
+On `NativeMongoSubscriptionModel`, a subscription made while the model is stopped opens no change stream until `start()` or a resume. A call that waits for it to start, such as `SagaRunner.run(..)`, hangs when it runs before `start()` on the thread that calls `start()`. See [section 16](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#16-a-native-mongodb-subscription-made-while-the-model-is-stopped-starts-with-start).
+
+A blocking catch-up subscription from `StartAtTime.offsetDateTime(time)` also replays the events stored at `time`, so passing the time of the last event you handled delivers that event again. See [section 17](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#17-startattimeoffsetdatetime-includes-the-events-stored-at-that-time).
+
+`CompetingConsumerSubscriptionModel.start(..)` and `resumeSubscription(..)` no longer throw what the lease strategy or the wrapped model threw for a competing subscription. They log it as a warning and return, and the model tries the subscription again on a thread of its own, so code that caught the exception to call again can be removed. See [section 18](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#18-a-competing-consumers-start-and-resumesubscription-log-a-failure-and-return).
+
+`SpringMongoSubscriptionModel` no longer skips an event whose action keeps failing. It reads each change stream itself instead of through Spring Data's `MessageListenerContainer`, so `SpringMongoSubscription` has no `protected` constructor. A durable subscription over a MongoDB subscription model, blocking or reactor, can also save its position once a minute while no event matches its filter. [Section 19](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#19-springmongosubscriptionmodel-reads-its-own-cursor-and-a-quiet-durable-subscription-saves-its-position) lists the rest.
+
+`CompetingConsumerSubscriptionModel.isRunning()` says whether the model is started, where it used to return what the wrapped model returned. A competing subscription you paused directly on the wrapped model runs again on the next `start(..)`, a grant of its lease or a resume, so pause it through the competing consumer model instead. See [section 20](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#20-a-competing-consumers-isrunning-says-whether-the-model-is-started).
+
+A `ReactorMongoSubscriptionModel` subscription started at the present starts from the moment `subscribe(..)` is called, so it can also receive events written up to 16 seconds before the call, plus the time the model's `hello` reply took to arrive. A reactor `CheckpointAwareSubscriptionModel` of your own must implement `globalCheckpointAsOfNow()`, which has no default. See [section 21](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#21-a-reactive-mongodb-subscription-started-at-the-present-starts-from-the-subscribe-call).
+
+A new `CompetingConsumerSubscriptionModel` over a wrapped model that is not running, such as a `SpringMongoSubscriptionModel` built with `autoStartup(false)`, is stopped until you call its own `start(..)`. Calling `start()` only on the wrapped model never lets a competing subscription compete for its lease, so its events wait. See [section 22](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#22-a-competing-consumer-over-a-wrapped-model-that-is-not-running-waits-for-its-own-start).
+
+The reactor `cancelSubscription(..)` returns a `Mono<Void>` that completes once the checkpoint or catch-up marker stored for that id is deleted. Wait for it before you subscribe the same id again from its own `StartAt`. The recipe changes a Java implementation that returns `void`, and [section 23](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#23-a-reactor-cancelsubscription-returns-a-mono-that-completes-once-the-stored-state-is-deleted) lists what you still change by hand.
+
+When the wrapped model throws from its own `shutdown()`, `CompetingConsumerSubscriptionModel.shutdown()` gives up none of its leases. The MongoDB lease strategies are already shut down by then and no longer refresh them, so another node can take the subscriptions over once they expire. Call `shutdown()` again once the wrapped model can shut down. See [section 24](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#24-a-competing-consumer-whose-wrapped-model-fails-to-shut-down-lets-its-leases-expire).
+
+A `ReactorDurableSubscriptionModel` over a model that manages named subscriptions, `ReactorMongoSubscriptionModel` for one, returns from a `subscribe(..)` from the model default without waiting for storage. A refusal found after the call, an unsupported filter for example, fails `waitUntilStarted()` instead of being thrown from `subscribe(..)`. See [section 25](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#25-a-durable-reactor-subscribe-from-the-model-default-returns-without-waiting-for-storage).
 
 ## Upgrading to 0.33.0 {#upgrading-to-0-33-0}
 
