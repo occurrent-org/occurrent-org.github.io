@@ -3479,7 +3479,11 @@ By default, events are sorted by time and then stream version (if two or more ev
 
 The model keeps the replay that `stop()` cut short, and until it runs again the subscription counts as paused, so `isPaused(id)` returns `true` and `isRunning(id)` returns `false`. The same goes for a subscription made while the model is stopped.
 
-`start(true)` or `resumeSubscription(id)` runs the replay again, from the last position it stored, or from where it started when it stored none. It stores positions only when you configured checkpoint persistence during replay (see above). The events it delivered after that position are delivered again. After `start(false)` the subscription stays paused.
+`start(true)` or `resumeSubscription(id)` runs the replay again, from the last position it stored, or from where it started when it stored none. It stores positions only when you configured checkpoint persistence during replay (see above). The events it delivered after that position are delivered again.
+
+After `start(false)` the subscription usually stays paused. A `start(false)` that comes right after `stop()`, before the model has finished keeping the cut-short replay for later, runs that replay, so its events can reach your action although nothing resumed the subscription. [#1225](https://github.com/johanhaleby/occurrent/issues/1225) tracks that.
+
+When the model is stopped and `start(..)` throws because the wrapped model failed to start, the model stays stopped and the subscription stays paused, as after `stop()`. That doesn't hold when the wrapped model runs anyway, or when another `start(..)` or `resumeSubscription(..)` call came while the wrapped model was starting.
 
 ##### Catch-up Subscription Usage
 
@@ -4183,6 +4187,12 @@ Implement the reactor `SubscriptionModel` on your model, the way every model Occ
 A reactor catch-up subscription can deliver an event twice when the event was written while the replay ran, since the replay can read it and the live subscription then delivers it again. So the handler has to be safe to run twice on the same event.
 
 The `handoverCacheSize` you can pass to a reactor catch-up model, 100000 events by default, only fills with the events of the replay's final read, which picks up what was written while the replay ran. So it needs room for those rather than for the whole history. A cache that's too small gives more duplicate deliveries, never a lost event.
+
+`stop()` on a reactor catch-up model cuts a running replay short. The subscription then counts as paused until `start(true)` or `resumeSubscription(id)` runs the replay again, and so does a subscription made while the model is stopped. After `start(false)` both stay paused.
+
+While such a subscription waits, `isPaused(id)` returns `true`, `isRunning(id)` returns `false`, and `pauseSubscription(id)` throws `SubscriptionNotRunningException`. The replay runs again from where it started, so the events it delivered before the stop are delivered again.
+
+A `resumeSubscription(id)` of a paused subscription on a stopped model calls `start(false)` first, so the model's other paused subscriptions stay paused.
 
 #### Push Subscription (Reactive)
 
