@@ -3087,11 +3087,13 @@ The "eventCollectionName" specifies the event collection in MongoDB where events
 used by the `EventStore` implementation. Secondly, we have the `TimeRepresentation.RFC_3339_STRING` that is passed as the third constructor argument, which you can read more about 
 [here](#mongodb-time-representation). It's also very important that this is configured the same way as the `EventStore`.
 
-It should also be noted that Spring takes care of re-attaching to MongoDB if there's a connection issue or other transient errors. This can be configured when creating the `MongoTemplate` instance. 
+Each subscription reads its change stream with a cursor of its own, on a thread from the model's executor. When the change stream fails, for example because the connection to MongoDB is lost, the model opens it again from the position the subscription had reached, and retries that with its `RetryStrategy`.
 
 When it comes to retries, if the "action" fails (i.e. if the higher-order function you provide when calling `subscribe` throws an exception), either using something like [Spring Retry](https://github.com/spring-projects/spring-retry)
 or the [Occurrent Retry Module](#retry-configuration-blocking). By default, all subscription models will use the Occurrent retry module with exponential backoff starting with 100 ms and progressively
  go up to max 2 seconds wait time between each retry when reading/saving/deleting the checkpoint. You can customize this by passing an instance of `RetryStrategy` to the `SpringMongoSubscriptionModel` constructor.  
+
+When the action still throws after the `RetryStrategy` gives up, the model opens the change stream again at the position before that event and delivers the event again, so it's never skipped. When the strategy gives up opening the change stream as well, the model logs an error and the subscription receives nothing more until you pause and resume it.
 
 If you want to disable the Occurrent retry module, pass `RetryStrategy.none()` to the `SpringMongoSubscriptionModel` constructor and then handle retries anyway you find fit. For example, let's say you want to use `spring-retry`, and you have a simple Spring bean that writes each cloud event to a repository:
 
@@ -3144,14 +3146,22 @@ Note that you can provide a [filter](#blocking-subscription-filters), [start pos
 ##### Restart Subscription when Oplog Lost 
 
 If there's not enough history available in the MongoDB oplog to resume a subscription created from a `SpringMongoSubscriptionModel`, you can configure it to restart the subscription from the current 
-time automatically. This is only of concern when an application is restarted, and the subscriptions are configured to start from a position in the oplog that is no longer available. It's disabled by default since it might not 
+time automatically.
+
+A subscription runs into this whenever it opens its change stream at a position the oplog no longer has. That happens when an application restarts with a subscription configured to start from such a position, and when a subscription is resumed, or its change stream restarts, after being paused or disconnected for longer than the oplog keeps history. A subscription that hasn't handled an event yet gets the same handling.
+
+It's disabled by default since it might not 
 be 100% safe (meaning that you can miss some events when the subscription is restarted). It's not 100% safe if you run subscriptions in a different process than the event store _and_ you have lot's of 
 writes happening to the event store. It's safe if you run the subscription in the same process as the writes to the event store _if_ you make sure that the
 subscription is started _before_ you accept writes to the event store on startup. To enable automatic restart, you can do like this:
   
 ```java
-var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, SpringSubscriptionModelConfig.withConfig("events", TimeRepresentation.RFC_3339_STRING).restartSubscriptionsOnChangeStreamHistoryLost(true));
+var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, SpringMongoSubscriptionModelConfig.withConfig("events", TimeRepresentation.RFC_3339_STRING).restartSubscriptionsOnChangeStreamHistoryLost(true));
 ```
+
+With automatic restart turned off, the model logs an error and removes the subscription, so its id can be subscribed again.
+
+With automatic restart turned on and a [`DurableSubscriptionModel`](#durable-subscriptions-blocking) wrapping the model, the position the subscription restarts from is stored as its checkpoint before the restart, unless another node has written the checkpoint with a newer lease. So a process restart before the next event doesn't open the change stream at the lost position again.
 
 An alternative approach to restarting automatically is to use a [catch-up subscription](#catch-up-subscription-blocking) and restart the subscription from an earlier date.
 
@@ -3167,7 +3177,11 @@ var config = SpringMongoSubscriptionModelConfig
 var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, config);
 ```
 
-A subscription registered on a model created this way comes back paused, the same as if you'd called `stop()` right after construction. Nothing runs and no change stream opens until you call `start()` or `resumeSubscription(id)` yourself. Use it to bring subscriptions up under your own control, behind a leader election or a health check for example, or in a test that wants to choose which subscriptions actually run before the context finishes starting.
+A subscription registered on a model created this way comes back paused, the same as if you'd called `stop()` right after construction. No change stream opens until you call `start()` or `resumeSubscription(id)` yourself.
+
+`subscribe(..)` asks MongoDB for its current operation time on the model's executor, without waiting for the answer, and a subscription from `StartAt.now()`, or with no `StartAt`, starts at that time. So it receives the events written from shortly after `subscribe(..)` returns, including those written before `start()`.
+
+Use `autoStartup(false)` to bring subscriptions up under your own control, behind a leader election or a health check for example, or in a test that wants to choose which subscriptions actually run before the context finishes starting.
 
 #### Tuning the MongoDB change stream {#change-stream-tuning}
 
@@ -3185,7 +3199,7 @@ var config = NativeMongoSubscriptionModelConfig.withConfig()
 var subscriptionModel = new NativeMongoSubscriptionModel(database, "events", TimeRepresentation.DATE, executor, config);
 ```
 
-**The two models do not offer the same options, and that is a Spring Data limitation rather than a choice.** `NativeMongoSubscriptionModel` has both, because it drives the sync driver's `ChangeStreamIterable` directly. `SpringMongoSubscriptionModel` has `maxAwaitTime` only:
+The two models don't offer the same options. `NativeMongoSubscriptionModel` has both. `SpringMongoSubscriptionModelConfig` has `maxAwaitTime` only:
 
 ```java
 var config = SpringMongoSubscriptionModelConfig
@@ -3193,9 +3207,9 @@ var config = SpringMongoSubscriptionModelConfig
         .maxAwaitTime(Duration.ofMillis(500));
 ```
 
-Spring Data's change-stream API exposes no batch size, so `SpringMongoSubscriptionModel` supports `maxAwaitTime` only. Use `NativeMongoSubscriptionModel` when you need `batchSize`.
+Use `NativeMongoSubscriptionModel` when you need `batchSize`.
 
-`ReactorMongoSubscriptionModel` offers neither yet. Spring Data's `ReactiveMongoTemplate.changeStream` and its `ChangeStreamOptions` carry neither option, so exposing them means driving the raw reactive driver, which is left as a follow-up.
+`ReactorMongoSubscriptionModel` offers neither.
 
 #### InMemory Subscription
 
@@ -3403,6 +3417,22 @@ that stores the checkpoint, and combine them to a `DurableSubscriptionModel`:
 
 {% include macros/subscription/blocking/util/autopersistence/example.md %}
 
+##### Saving the Position of a Quiet Subscription {#durable-subscription-blocking-quiet-position}
+
+When the filter of a subscription matches no events for a long time, its stored checkpoint stays at the last event it handled, and the MongoDB oplog can drop that position while the subscription is still up to date. A resume after a pause, a lease handover between competing consumers, or a restart would then start from a position the oplog no longer has.
+
+To prevent that, `DurableSubscriptionModel` saves the position the wrapped model has read to as the subscription's checkpoint, when a read of the change stream returns no event for it. It saves at most once a minute, and a checkpoint saved for an event starts that minute over, so a subscription that stores a checkpoint for an event at least once a minute gets no extra write.
+
+Only a wrapped model that implements `QuietPositionReportingSubscriptions` reports that position. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` do.
+
+Change the interval with `saveQuietPositionEvery(Duration)`, and keep it well below the oplog window. Turn the save off with `neverSaveQuietPosition()`:
+
+```java
+var config = new DurableSubscriptionModelConfig(1).saveQuietPositionEvery(Duration.ofSeconds(30));
+```
+
+A persist predicate that declines some events, such as `EveryN` with `n` above 1, can delay the save. A subscription that goes quiet right after an event the predicate declined gets no position saved until the predicate stores one. A subscription from a `StartAt` of your own gets none saved until the predicate has stored the position of an event.
+
 #### Catch-up Subscription (Blocking)
 
 When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events
@@ -3447,7 +3477,9 @@ By default, events are sorted by time and then stream version (if two or more ev
 
 `stop()` now reaches a catch-up replay that's already running, not just the live subscription behind it. Before, stopping the model while a subscription was still replaying history left that replay running to completion regardless, since only the live delegate was told to stop. Now `stop()` interrupts it at the next event, so a shutdown or a deliberate stop no longer waits for the whole backlog to be delivered.
 
-An interrupted replay isn't resumed automatically. `start()` only allows the *next* `subscribe(..)` call to run a catch-up. It doesn't pick the interrupted one back up on its own, so bring the subscription back by subscribing again with the same id and `StartAt`. If you configured checkpoint persistence during replay (see above), that resumes from the last stored replay position rather than from the beginning, exactly as it would after a crash.
+The model keeps the replay that `stop()` cut short, and until it runs again the subscription counts as paused, so `isPaused(id)` returns `true` and `isRunning(id)` returns `false`. The same goes for a subscription made while the model is stopped.
+
+`start(true)` or `resumeSubscription(id)` runs the replay again, from the last position it stored, or from where it started when it stored none. It stores positions only when you configured checkpoint persistence during replay (see above). The events it delivered after that position are delivered again. After `start(false)` the subscription stays paused.
 
 ##### Catch-up Subscription Usage
 
@@ -3498,6 +3530,8 @@ val offsetDateTime = OffsetDateTime.of(2024, 2, 3, 10, 4, 2, 0, ZoneOffset.UTC)
 subscriptionModel.subscribe("subscriptionId", StartAt.offsetDateTime(offsetDateTime)) { e -> println("Event: $e") }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Several events can share a time, so the replay includes the events stored at exactly that time. If you pass the time of the last event you handled, to continue where you left off, that event is delivered again.
 
 #### Competing Consumer Subscription (Blocking)
 
@@ -3670,9 +3704,13 @@ subscription.waitUntilStarted(Duration.ofSeconds(10)); // still true, "orders" i
 
 Once a subscription has started, its handle keeps answering `true` even after you pause it, stop it, or it loses a competing consumer lock. Ask `isRunning(id)` and `isPaused(id)` when you want to know what's happening right now.
 
-A handle answers `false` only for a subscription you still have to start yourself. That covers a registration withheld under `occurrent.subscription.mode=manual`, one registered while a `PushSubscriptionModel` or a `SynchronousSubscriptionModel` is stopped, and a catch-up replay that `stop()` interrupted. A start that failed and won't be retried throws instead of answering.
+A handle answers `false` only for a subscription you still have to start yourself. That covers a registration withheld under `occurrent.subscription.mode=manual`, one registered while a `PushSubscriptionModel`, a `SynchronousSubscriptionModel`, a `NativeMongoSubscriptionModel` or a `SpringMongoSubscriptionModel` is stopped, and a catch-up replay that `stop()` interrupted. A start that failed and won't be retried throws instead of answering.
+
+`waitUntilStarted()` without a timeout keeps waiting for such a subscription, so don't call it on the thread that is going to call `start()`.
 
 On the reactor stack, `waitUntilStarted()` returns a `Mono<Void>` instead of blocking. It completes once the subscription has started and errors if the start failed, so a subscription that hasn't started yet is a `Mono` that hasn't completed.
+
+On `ReactorDurableSubscriptionModel` the `Mono` fails with `CancellationException` when the subscription is cancelled before it started. When the durable model drives the subscription itself, because the model it wraps isn't a reactor `SubscriptionModel`, a pause or a `stop()` before the subscription started fails it the same way, unless it was made while the model was stopped.
 
 Note the difference between cancelling and pausing a subscription. Cancelling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
@@ -4272,6 +4310,8 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 | `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `findIn(..)` walks through | declare or cast |
 | `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, and cloud events carrying a checkpoint you can store yourself | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
 | `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`, the target a broker listener feeds events into | implemented directly by the push models, declare or cast |
+| `QuietPositionReportingSubscriptions` | yes | yes | `addQuietPositionListener(..)`, tells a listener the position a subscription has read to when a read returned no event for it, which a durable model [saves as the checkpoint](#durable-subscription-blocking-quiet-position). The MongoDB models implement it | `findIn(model)` |
+| `HistoryLossReportingSubscriptions` | yes | no | `addHistoryLossListener(..)`, tells a listener the position a subscription restarts from after the oplog dropped its position, before the restart. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` implement it | `findIn(model)` |
 
 `CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the first three are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
 
