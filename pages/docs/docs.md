@@ -4267,7 +4267,29 @@ By default, events are sorted by time and then stream version (if two or more ev
 
 The model keeps the replay that `stop()` cut short, and until it runs again the subscription counts as paused, so `isPaused(id)` returns `true` and `isRunning(id)` returns `false`. The same goes for a subscription made while the model is stopped.
 
-`start(true)` or `resumeSubscription(id)` runs the replay again, from the last position it stored, or from where it started when it stored none. It stores positions only when you configured checkpoint persistence during replay (see above). The events it delivered after that position are delivered again. After `start(false)` the subscription stays paused.
+`start(true)` or `resumeSubscription(id)` runs the replay again, from the last position it stored, or from where it started when it stored none. It stores positions only when you configured checkpoint persistence during replay (see above). The events it delivered after that position are delivered again.
+
+After `start(false)` the subscription usually stays paused. A `start(false)` that comes right after `stop()`, before the model has finished keeping the cut-short replay for later, runs that replay, so its events can reach your action although nothing resumed the subscription. [#1225](https://github.com/johanhaleby/occurrent/issues/1225) tracks that.
+
+When the model is stopped and `start(..)` throws because the wrapped model failed to start, the model stays stopped and the subscription stays paused, as after `stop()`. That doesn't hold when the wrapped model runs anyway, or when another `start(..)` or `resumeSubscription(..)` call came while the wrapped model was starting.
+
+##### Resuming a Replay from a Stored Checkpoint {#catch-up-subscription-blocking-resume}
+
+This applies to a position catch-up that stores its position while it replays, which the blocking MongoDB Spring Boot starter does every 1000 events. The position catch-ups are `StreamCatchupSubscriptionModel` and `DcbCatchupSubscriptionModel`, and on the reactor stack `ReactorStreamCatchupSubscriptionModel` and `ReactorDcbCatchupSubscriptionModel`.
+
+Before its replay, the catch-up reads the live start, the change-stream position that live delivery picks up from. Since 0.34.0 the checkpoint it stores during the replay holds that live start next to the position. A MongoDB event store reserves an event's position before the transaction that writes it commits, so the event at position 1 can commit after the event at position 2. A catch-up restarted after it stored `position:2` replays from position 3 up to the head of the event store as the earlier run read it, and goes live from the stored live start, so the event at position 1 reaches the subscription even when it committed late. In 0.33.0 the catch-up read a new live start after the restart, and that event was never delivered. The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) shows what the stored checkpoint looks like in MongoDB and in a storage that keeps strings.
+
+A resume can deliver some events a second time, because live delivery starts from the stored live start. If your action isn't safe to run twice on the same event, key the work by the CloudEvent id.
+
+MongoDB keeps a limited oplog, so a stored live start can be gone. The catch-up asks the wrapped model with `canResumeFrom(checkpoint)` when it resumes, and again once its replay is done, before it goes live. When the answer is `false`, the catch-up logs a warning, reads a new live start and replays again from the position its replay first started from, which delivers that part of the history a second time. When the live start is gone after 4 replays in a row, the catch-up fails with an `IllegalStateException` that names the subscription, and nothing reaches live delivery. Size the oplog for the longest rebuild, and for the longest time a catch-up can be stopped in the middle of a replay.
+
+The check once the replay is done and the change stream that live delivery opens are two calls. A live start the oplog drops between them is still handed over. With `restartSubscriptionsOnChangeStreamHistoryLost(true)`, which the Spring Boot starter sets by default through `occurrent.subscription.mongodb.restart-on-change-stream-history-lost`, the MongoDB model then goes live from the present and skips the events in between. [#1232](https://github.com/johanhaleby/occurrent/issues/1232) tracks closing that gap.
+
+On the reactor stack the checkpoint from the replay stays stored after the catch-up goes live, until `ReactorDurableSubscriptionModel` stores the position of a live event or saves a quiet position. A restart before that replays up to the same head again and goes live from the stored live start.
+
+A `position:N` checkpoint stored by 0.33.0 has no live start. It resumes as in 0.33.0, with a live start read after the restart, and logs a warning that names the subscription.
+
+Since 0.34.0 a blocking catch-up whose replay fails logs the failure at `ERROR`, as well as throwing it from `waitUntilStarted()`. Before, a caller that never waits learned nothing about it, and the Spring Boot starter doesn't wait for a subscription that replays history unless its `startupMode` says so. A catch-up that was cancelled, stopped, shut down or replaced by a newer subscribe for the same id isn't logged. On the reactor stack the subscription fails with the error.
 
 ##### Catch-up Subscription Usage
 
@@ -5044,6 +5066,12 @@ A reactor catch-up subscription can deliver an event twice when the event was wr
 
 The `handoverCacheSize` you can pass to a reactor catch-up model, 100000 events by default, only fills with the events of the replay's final read, which picks up what was written while the replay ran. So it needs room for those rather than for the whole history. A cache that's too small gives more duplicate deliveries, never a lost event.
 
+`stop()` on a reactor catch-up model cuts a running replay short. The subscription then counts as paused until `start(true)` or `resumeSubscription(id)` runs the replay again, and so does a subscription made while the model is stopped. After `start(false)` both stay paused.
+
+While such a subscription waits, `isPaused(id)` returns `true`, `isRunning(id)` returns `false`, and `pauseSubscription(id)` throws `SubscriptionNotRunningException`. The replay runs again from where it started, so the events it delivered before the stop are delivered again.
+
+A `resumeSubscription(id)` of a paused subscription on a stopped model calls `start(false)` first, so the model's other paused subscriptions stay paused.
+
 #### Push Subscription (Reactive)
 
 The reactive twin of the [blocking push subscription](#push-subscription-blocking). Use it when the writing application forwards events to a broker such as RabbitMQ or Kafka instead of a MongoDB change stream, and a reactive listener consumes them. `org.occurrent.subscription.push.reactor.PushSubscriptionModel` is a register-only `Subscribable` with no start position, checkpoint, catch-up, or replay of its own.
@@ -5312,6 +5340,8 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 | `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `findIn(..)` walks through | declare or cast |
 | `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, on the reactor stack also `globalCheckpointAsOfNow()`, and cloud events carrying a checkpoint you can store yourself | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
 | `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`. An `InMemoryEventStore` listener calls `accept(events)`, and a broker listener calls the push model's `acceptRedeliverable(cloudEvent)` instead, which `Pushable` doesn't declare | implemented directly by the push models, declare or cast |
+| `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, cloud events with a checkpoint you can store yourself, and `canResumeFrom(checkpoint)`, which answers false when the model no longer has the history back to that checkpoint, for example a MongoDB change-stream position older than the oldest entry in the oplog. It returns a `boolean` on blocking and a `Mono<Boolean>` on reactor, and answers true unless the model overrides it. A position catch-up calls it when it resumes from a stored checkpoint that holds a live start, before the resumed replay, and again once its replay is done, before it goes live | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
+| `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`, the target a broker listener feeds events into | implemented directly by the push models, declare or cast |
 
 `CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the mixins reached with `findIn(model)` are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
 
