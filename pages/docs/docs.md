@@ -3359,7 +3359,7 @@ Live-resume stays the broker's job. The model persists no live position watermar
 
 The record that the catch-up finished is kept per subscription id. The model's `cancelSubscription(id)` deletes it, so subscribing the same id again replays the history.
 
-The delete runs before anything else is cancelled. If it throws, the subscription keeps running, and you can call `cancelSubscription(id)` again.
+On the blocking stack the delete runs before anything else is cancelled. If it throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
 
 On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the record is deleted. Wait for it when a restart must not skip the history, and call `cancelSubscription(id)` again if it fails.
 
