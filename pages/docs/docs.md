@@ -3405,20 +3405,6 @@ to `DurableSubscriptionModelConfig`. There's a pre-defined predicate, `org.occur
 the checkpoint to be stored for _every n_ event instead of simply _every_ event. There's also a shortcut, e.g. `new DurableSubscriptionModelConfig(3)` that 
 creates an instance of `EveryN` that stores the checkpoint for every third event. 
 
-If you want full control, it's recommended to pick a [checkpoint storage](#blocking-subscription-checkpoint-storage) implementation, 
-and store the checkpoint yourself using its API.
-
-To use it, first we need to add the dependency:
-
-{% include macros/subscription/blocking/util/autopersistence/maven.md %}
-
-Then we should instantiate a `CheckpointAwareSubscriptionModel`, that subscribes to the events from the event store, and an instance of a `CheckpointStorage`, 
-that stores the checkpoint, and combine them to a `DurableSubscriptionModel`: 
-
-{% include macros/subscription/blocking/util/autopersistence/example.md %}
-
-##### Saving the Position of a Quiet Subscription {#durable-subscription-blocking-quiet-position}
-
 When the filter of a subscription matches no events for a long time, its stored checkpoint stays at the last event it handled, and the MongoDB oplog can drop that position while the subscription is still up to date. A resume after a pause, a lease handover between competing consumers, or a restart would then start from a position the oplog no longer has.
 
 To prevent that, `DurableSubscriptionModel` saves the position the wrapped model has read to as the subscription's checkpoint, when a read of the change stream returns no event for it. It saves at most once a minute, and a checkpoint saved for an event starts that minute over, so a subscription that stores a checkpoint for an event at least once a minute gets no extra write.
@@ -3432,6 +3418,18 @@ var config = new DurableSubscriptionModelConfig(1).saveQuietPositionEvery(Durati
 ```
 
 A persist predicate that declines some events, such as `EveryN` with `n` above 1, can delay the save. A subscription that goes quiet right after an event the predicate declined gets no position saved until the predicate stores one. A subscription from a `StartAt` of your own gets none saved until the predicate has stored the position of an event.
+
+If you want full control, it's recommended to pick a [checkpoint storage](#blocking-subscription-checkpoint-storage) implementation, 
+and store the checkpoint yourself using its API.
+
+To use it, first we need to add the dependency:
+
+{% include macros/subscription/blocking/util/autopersistence/maven.md %}
+
+Then we should instantiate a `CheckpointAwareSubscriptionModel`, that subscribes to the events from the event store, and an instance of a `CheckpointStorage`, 
+that stores the checkpoint, and combine them to a `DurableSubscriptionModel`: 
+
+{% include macros/subscription/blocking/util/autopersistence/example.md %}
 
 #### Catch-up Subscription (Blocking)
 
@@ -4075,7 +4073,7 @@ The "eventCollectionName" specifies the event collection in MongoDB where events
 used by the `EventStore` implementation. Secondly, we have the `TimeRepresentation.RFC_3339_STRING` that is passed as the third constructor argument, which you can read more about 
 [here](#mongodb-time-representation). It's also very important that this is configured the same way as the `EventStore`.
 
-It should also be noted that Spring takes care of re-attaching to MongoDB if there's a connection issue or other transient errors. This can be configured when creating the `ReactiveMongoTemplate` instance. 
+When the change stream of a subscription fails, for example because the connection to MongoDB is lost, `ReactorMongoSubscriptionModel` opens it again from the position the subscription had reached, and keeps trying with the wait set by `ReactorMongoSubscriptionModelConfig.backoff(minBackoff, maxBackoff)`. When the oplog no longer has that position, it opens the change stream again only with `restartSubscriptionsOnChangeStreamHistoryLost(true)`, and then from the present.
 
 Note that you can provide a [filter](#reactive-subscription-filters), [start position](#reactive-subscription-start-position) and [checkpoint persistence](#reactive-subscription-checkpoint-storage) for this subscription implementation.
 
@@ -4162,15 +4160,15 @@ A wrapped model of your own that doesn't implement `IntrospectableSubscriptions`
 
 This is the composition the reactive Spring Boot starter wires for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
 
-A reactor catch-up subscription can deliver an event twice when the event was written while the replay ran, since the replay can read it and the live subscription then delivers it again. So the handler has to be safe to run twice on the same event.
-
-The `handoverCacheSize` you can pass to a reactor catch-up model, 100000 events by default, only fills with the events of the replay's final read, which picks up what was written while the replay ran. So it needs room for those rather than for the whole history. A cache that's too small gives more duplicate deliveries, never a lost event.
-
 If you compose `Durable(Catchup(customModel))` with your own `customModel` that implements only the cold `FluxSubscriptionModel` primitive, there's nothing underneath for the catch-up model to delegate the live half to, and the named `subscribe(..)` path refuses:
 
 > `ReactorStreamCatchupSubscriptionModel` can only manage named subscriptions when the model it wraps manages them itself (implements `SubscriptionModel`). The wrapped `<your class>` only offers the plain (cold) `subscribe(filter, startAt)` primitive, so use that primitive directly, or wrap a model that manages named subscriptions.
 
 Implement the reactor `SubscriptionModel` on your model, the way every model Occurrent ships now does, and the composition inherits its retry and validation. If you can't, subscribe to the catch-up model's cold `Flux` directly instead and manage delivery yourself. Only the named `subscribe(..)` paths refuse on such a composition. The model-wide life-cycle methods stay safe: `shutdown()` and `stop()` are no-ops, `isRunning()` answers `false`, and cancelling an id the composition never knew is ignored, so an application that keeps a cold-only composition around but never subscribes by name still starts, health-checks, and shuts down cleanly.
+
+A reactor catch-up subscription can deliver an event twice when the event was written while the replay ran, since the replay can read it and the live subscription then delivers it again. So the handler has to be safe to run twice on the same event.
+
+The `handoverCacheSize` you can pass to a reactor catch-up model, 100000 events by default, only fills with the events of the replay's final read, which picks up what was written while the replay ran. So it needs room for those rather than for the whole history. A cache that's too small gives more duplicate deliveries, never a lost event.
 
 #### Push Subscription (Reactive)
 
@@ -4396,13 +4394,13 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 | `IntrospectableSubscriptions` | yes | yes | `subscriptionIds()`, every id the model knows, running or paused | `findIn(model)` (blocking) / `instanceof` (reactor) |
 | `ReplayAwareSubscriptions` | yes | yes | `isCatchingUp(id)`, true only while that subscription is still replaying history, which `isRunning(id)` can't tell you since it stays true throughout a replay | `findIn(model)` (blocking) / `instanceof` (reactor) |
 | `RepositionableSubscriptions` | yes | no | `resumeSubscription(id, startAt)`, resume at an explicit position instead of wherever the model stopped | `findIn(model)` |
+| `QuietPositionReportingSubscriptions` | yes | yes | `addQuietPositionListener(..)`, tells a listener the position a subscription has read to when a read returned no event for it, which a durable model [saves as the checkpoint](#durable-subscriptions-blocking). The MongoDB models implement it | `findIn(model)` |
+| `HistoryLossReportingSubscriptions` | yes | no | `addHistoryLossListener(..)`, tells a listener the position a subscription restarts from after the oplog dropped its position, before the restart. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` implement it | `findIn(model)` |
 | `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `findIn(..)` walks through | declare or cast |
 | `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, and cloud events carrying a checkpoint you can store yourself | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
 | `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`, the target a broker listener feeds events into | implemented directly by the push models, declare or cast |
-| `QuietPositionReportingSubscriptions` | yes | yes | `addQuietPositionListener(..)`, tells a listener the position a subscription has read to when a read returned no event for it, which a durable model [saves as the checkpoint](#durable-subscription-blocking-quiet-position). The MongoDB models implement it | `findIn(model)` |
-| `HistoryLossReportingSubscriptions` | yes | no | `addHistoryLossListener(..)`, tells a listener the position a subscription restarts from after the oplog dropped its position, before the restart. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` implement it | `findIn(model)` |
 
-`CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the first three are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
+`CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the mixins reached with `findIn(model)` are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
 
 ### Typed views
 
