@@ -3875,7 +3875,7 @@ When `pushModel` feeds a `@Projection` or `@Saga` with `source = PUSH`, the brid
 
 With `declare-topology` left on, a bridge needs the resolver to know which routing keys to bind. The starter's resolver is a `RabbitMqTopicExchangeDestinationResolver` on `occurrent.broker.rabbitmq.exchange`, and it needs a `CloudEventTypeMapper` bean, which the MongoDB starter supplies.
 
-The same resolver backs the `CloudEventSink` bean, a `RabbitMqCloudEventSink`. The sink is built the first time something injects it, so an application that only consumes, with `declare-topology` off, needs no `exchange`. With a `CloudEventConverter` bean there's also a `RabbitMqDomainEventSink`.
+The same resolver backs the `CloudEventSink` bean, a `RabbitMqCloudEventSink`. The sink is built the first time something injects it, so an application that only consumes, with `declare-topology` off, needs no `exchange`. A bridge opens no channel until you build it, so an application that only publishes just never calls `forQueue(..)`. With a `CloudEventConverter` bean there's also a `RabbitMqDomainEventSink`.
 
 Your own `CloudEventSink` or `DestinationResolver` bean replaces the starter's.
 
@@ -3900,6 +3900,8 @@ occurrent.broker.kafka.topic=orders
 ```
 
 `topic` gives the sink a `KafkaSharedTopicDestinationResolver` on that topic. The factories are `KafkaDomainEventBridgeFactory.forGroup(groupId, feed)` and `KafkaCloudEventBridgeFactory.forGroup(groupId, pushModel)`, used the same way as the RabbitMQ ones.
+
+The sink is built the first time something injects it, and a bridge opens no consumer until you build it. So an application that only publishes never calls `forGroup(..)`, and one that only consumes never injects the sink. A bridge still needs `topic` to know which topic to read, unless you pass `bindings(..)` to its builder.
 
 `forGroup(..)` sets `group.id` to the group you pass and `enable.auto.commit` to `false`. Any other Kafka client setting goes under `producer.additional-properties` or `consumer.additional-properties`, for example `occurrent.broker.kafka.consumer.additional-properties.max.poll.records=100`.
 
