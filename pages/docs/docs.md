@@ -3671,31 +3671,56 @@ CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
 feed.catchUp();
 ```
 
-`accept(...)` returns, or its `Mono` completes, only once the event has been applied. An event fed before the feed goes live, or while a catch-up runs on a feed that already went live, is held until the replay finishes and applied then, so a listener that acknowledges when `accept(...)` returns never acknowledges an event that is only held in memory.
+`accept(...)` returns, or its `Mono` completes, only once the event has been applied. An event fed before the feed goes live, or while a catch-up runs on a feed that's already live, is held until the replay finishes and is applied after that. So a listener that acknowledges the message when `accept(...)` returns never acknowledges an event that is only held in memory.
 
-When the event is not applied, `accept(...)` throws an `IllegalStateException`, or its `Mono` errors with one. That happens when the catch-up was stopped before the feed went live, the event was fed after such a stop and before the next catch-up, or the catch-up failed. On the blocking stack it also happens when the waiting thread was interrupted, when another delivery of the same event was still running, and when `accept(...)` was called while the feed was not live from inside the projection, a view or another callback of the same feed, where the thread would wait for work it holds up itself. Do not acknowledge the message then, and the broker delivers it again.
+When the event is not applied, `accept(...)` throws an `IllegalStateException`, or its `Mono` errors with one. That happens when:
+
+* the catch-up was stopped before the feed went live
+* the event was fed after such a stop and before the next catch-up
+* the catch-up failed
+
+On the blocking stack it also happens when:
+
+* the waiting thread was interrupted
+* another delivery of the same event was still running
+* `accept(...)` was called from inside the projection, a view or another callback of the same feed while the feed wasn't live, since the thread would then wait for work it is holding up itself
+
+In that case, don't acknowledge the message, and the broker delivers it again.
 
 On the reactor stack, a `stopCatchUp()` on a feed that hasn't gone live and has no catch-up running stops the feed too. The `Mono` of an event fed before that stop, or after it and before the next catch-up, errors with an `IllegalStateException`. A catch-up started after the stop doesn't apply that event, so it comes back only when the broker delivers it again.
 
 The `Mono` of each event that was still waiting errors on the thread that called `stopCatchUp()`, so your error handling runs there unless your own pipeline switches threads.
 
-A catch-up counts as running from the `CatchupProjectionFeed.catchUp()` or `goLive()` call, and from the subscription to the `Mono` that `DomainEventFeed.catchUpAll()`, `catchUp(id)` or `goLive(id)` returns, not from the call. It stops counting once the feed goes live, its replay notices a stop, or it fails.
+A catch-up counts as running from the moment you call `CatchupProjectionFeed.catchUp()` or `goLive()`. For `DomainEventFeed.catchUpAll()`, `catchUp(id)` and `goLive(id)`, it counts as running from when you subscribe to the `Mono` they return, not from the call. It stops counting as running once the feed goes live, its replay notices a stop, or it fails.
 
-On the blocking stack, an `accept(...)` called from inside the projection or a view while the catch-up replays history into it is refused, and that refusal fails the catch-up. The feed then refuses every event until you build a new one, and a caller that catches the refusal and continues drops the event it fed.
+On the blocking stack, the feed refuses an `accept(...)` called from inside the projection or a view while the catch-up replays history into it, and that refusal makes the catch-up fail. From then on the feed refuses every event until you build a new feed. A caller that catches the refusal and moves on drops the event it fed.
 
-A catch-up on the blocking stack that fails on an interrupted thread is not recorded as a failure. `catchUp()` throws it, but the feed doesn't refuse later events for it, and `DomainEventFeed.refusesPermanently()` stays `false`.
+A catch-up on the blocking stack that fails on an interrupted thread is not recorded as a failure. `catchUp()` still throws the exception, but the feed doesn't start refusing later events because of it, and `DomainEventFeed.refusesPermanently()` stays `false`.
 
-On the reactor stack, `accept(...)` called from inside the projection completes once the event is queued rather than once it is applied. The feed applies one event at a time, so it applies the new event after the projection returns, in the order it was fed, and an event fed during the replay once the feed has gone live. A replay that ends before that writes no catch-up marker, so the next replay hands the projection the same history again. `acceptCloudEvent(...)` on a `DomainEventFeed` answers `DEFERRED` while the feed is not live, as it does for any other caller, and `DELIVERED` once the event is queued.
+On the reactor stack, `accept(...)` called from inside the projection completes once the event is queued rather than once it is applied. The feed applies one event at a time, so the new event is applied after the projection returns, in the order it was fed. An event fed during the replay is applied once the feed has gone live. A replay that ends before the feed goes live writes no catch-up marker, so the next replay hands the projection the same history again.
 
-The feed recognizes the call when the projection returns it as part of its own `Mono`, or subscribes it on the thread the feed called it on, by blocking on it say. A projection that blocks on the call from a thread it switched to waits forever.
+On the reactor stack, when the projection calls `acceptCloudEvent(...)` on its `DomainEventFeed`, the `Mono` completes with `DEFERRED` while the feed is not live, as it does for any other caller, and with `DELIVERED` once the event is queued.
 
-When applying an event the projection fed fails, the feed starts failing, and a failed catch-up starts it failing the same way. It deletes its catch-up marker, refuses every later `accept(...)` that does not come from the projection with an `IllegalStateException`, applies the events it has already taken in and those the projection feeds it meanwhile, and then fails for good. A failed catch-up also refuses each event from anywhere else that is still waiting, and does not apply it. Build a new feed, and once the marker is gone its catch-up replays the history. When deleting the marker still fails after 3 retries, the feed logs an error naming the feed id, and the marker has to be deleted from the `CheckpointStorage` by hand before building a new feed. An event that no replay can bring back is lost only when applying it failed.
+The feed recognizes the call as coming from the projection when the projection returns it as part of its own `Mono`, or subscribes to it on the thread the feed called the projection on, for example by blocking on it. If the projection switches to another thread and blocks on the call there, it waits forever.
+
+The feed starts failing when applying an event the projection fed fails, or when a catch-up fails. Once it starts failing, the feed:
+
+* deletes its catch-up marker
+* refuses every later `accept(...)` that doesn't come from the projection, with an `IllegalStateException`
+* applies the events it has already taken in, and those the projection feeds it meanwhile
+* then fails for good
+
+A failed catch-up also refuses each event from anywhere else that is still waiting, and doesn't apply it.
+
+To recover, build a new feed. Once the marker is gone, its catch-up replays the history. If deleting the marker still fails after 3 retries, the feed logs an error naming the feed id, and you have to delete the marker from the `CheckpointStorage` by hand before building a new feed.
+
+An event that no replay can bring back is lost only when applying it failed.
 
 On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
 
-A `catchUp()`, `catchUp(id)` or `catchUpAll()` that the view calls on its own feed, while the feed is calling it, doesn't wait for the replay, which runs after the view's code returns. Returning, or the `Mono` completing, then means the catch-up was asked for, not that it has run. A view that hands the call to another thread and waits for it waits for a replay that can't start before the view returns, so it waits until its thread is interrupted.
+When a view calls `catchUp()`, `catchUp(id)` or `catchUpAll()` on its own feed while the feed is calling the view, the call doesn't wait for the replay. The replay runs after the view's code returns, so the call returning, or its `Mono` completing, only means the catch-up was asked for, not that it has run. A view that hands the call to another thread and waits for it ends up waiting for a replay that can't start until the view returns, so it waits until its thread is interrupted.
 
-A long replay keeps the listener waiting. A Kafka consumer that waits past its `max.poll.interval.ms`, five minutes by default, is taken out of its group and the record is delivered again. RabbitMQ delivers a message again once a consumer has held on to it without acknowledging it for longer than `consumer_timeout`, 30 minutes by default. Either costs a redelivery rather than the event.
+A long replay keeps the listener waiting. A Kafka consumer that waits past its `max.poll.interval.ms`, 5 minutes by default, is taken out of its group and the record is delivered again. RabbitMQ delivers a message again once a consumer has held on to it without acknowledging it for longer than `consumer_timeout`, 30 minutes by default. In both cases the event is delivered again rather than lost.
 
 Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
 
@@ -3703,7 +3728,7 @@ Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying th
 
 A stopped replay isn't treated as a failure. It doesn't record that the catch-up finished, so the next start replays the whole history again.
 
-When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still holds every `accept(...)` back until told to stop, so nothing is applied. On the blocking stack each listener thread stalls in its first `accept(...)`, and the broker delivers that message again once one of the timeouts above runs out. On the reactor stack events pile up until the buffer's cap is reached, and further ones are refused. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
+When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still holds every `accept(...)` back until told to stop, so nothing is applied. On the blocking stack each listener thread stalls in its first `accept(...)`, and the broker delivers that message again once one of the timeouts above runs out. On the reactor stack, events pile up until the buffer is full, and after that new ones are refused. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
 
 ```java
 feed.goLive();
@@ -3713,7 +3738,7 @@ It skips the replay and starts delivering the buffered and future live events di
 
 If you call `goLive()` after a stop, it also delivers the live copy of an event the stopped replay already delivered. A view that holds events back until the replay finishes discarded them when the replay stopped, so it needs that copy. A view that saved each event as it arrived gets it twice.
 
-A `goLive()` or `goLive(id)` called while a catch-up of the same projection is still replaying waits for that replay to end, and on the reactor stack its `Mono` completes then. When a catch-up of the projection fails while it waits, it throws an `IllegalStateException`, or its `Mono` errors with one, whose cause is that failure. A call the view makes while the feed is calling it, to apply an event or in a callback such as `replayStarted()`, doesn't wait.
+If you call `goLive()` or `goLive(id)` while a catch-up of the same projection is still replaying, the call waits for that replay to end, and on the reactor stack its `Mono` completes then. If a catch-up of the projection fails while the call waits, the call throws an `IllegalStateException` whose cause is that failure, or its `Mono` errors with one. When the view itself makes the call while the feed is calling the view, to apply an event or in a callback such as `replayStarted()`, the call doesn't wait.
 
 On the blocking stack, a catch-up that fails on an interrupted thread isn't recorded as a failure, so `goLive()` and `goLive(id)` don't throw for it.
 
