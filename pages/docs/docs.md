@@ -2618,11 +2618,11 @@ If you are upgrading an existing store to start writing `position`, see the [pos
 
 #### DCB capability
 
-These three indexes are created for a store with the `DCB` capability, in addition to the `streamid`+`streamversion` and `position` indexes above.
+These indexes are created for a store with the `DCB` capability, in addition to the `streamid`+`streamversion` and `position` indexes above. The `dcbTags` index is created only for a store that has both `STREAM` and `DCB`, the other two for every store with `DCB`.
 
 |  Name | Fields | Unique | Sparse | Purpose |
 |:----|:------|:----|:----|:-----|
-| `dcbTags` | ascending `dcbTags` | no | yes | Backs a DCB boundary query that filters by tag. Without it, a tag-only query scans the whole collection. |
+| `dcbTags` | ascending `dcbTags` | no | yes | Created only for a store with both `STREAM` and `DCB`. Backs a DCB query that matches every DCB event (a read, `count` or `exists` with `DcbCriteria.all()`), and the append check of `DcbAppendCondition.wholeStoreLock()`. Only DCB events have a `dcbTags` field, so this index holds just those, and the query reads the DCB events instead of every stream event that has a `position` in the range. A test with 200,000 stream events and 200 DCB events examined 200 documents with this index and 200,200 without it. The `dcbTags` + `position` index can't do this, because it also holds every stream event that has a `position`. A DCB-only store doesn't get this index, because when its collection holds only DCB events, the index would hold the same events as the `position` index and add an entry per tag to every append. |
 | `type` + `position` | ascending `type`, ascending `position` | no | yes | Backs a DCB query that has a type but no tags to match. Without it, the query walks the `position` index instead and checks the `type` of every DCB event in the range, one document at a time. A test on a 50k-event, 50-match skewed dataset examined all 50,050 documents to return 50 without this index. |
 | `dcbTags` + `position` | ascending `dcbTags`, ascending `position` | no | yes | Backs a DCB tag-boundary query that also needs results in position order. Without it, the results are sorted in memory, or spilled to disk on MongoDB 6.0 and later, after every matching document is fetched. A test on a 305,000-event dataset with a 5,000-event popular tag used an in-memory sort stage instead of reading the index in order, without this index. |
 
@@ -2630,9 +2630,29 @@ All indexes above are created automatically at startup. You do not need to creat
 
 #### Adding a capability to an existing store
 
-Declaring a new capability on a store that already holds events builds the new indexes when the application starts. Enabling `DCB` on a stream store adds `dcbTags`, `type` + `position` and `dcbTags` + `position`. The shared `streamid` + `streamversion` index is already there. Enabling `STREAM` on a DCB store adds nothing new for the same reason.
+Declaring a new capability on a store that already holds events builds the new indexes when the application starts. Enabling `DCB` on a stream store adds `dcbTags`, `type` + `position` and `dcbTags` + `position`. The shared `streamid` + `streamversion` index is already there.
 
-On a large collection, do not let startup run those builds. Create the new indexes yourself before deploying the version that declares the capability, as a rolling build on MongoDB Atlas or any replica set, the same way [step 1 of the position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) pre-builds the `position` index. Startup then finds identical indexes and creates nothing. Only an index with the same fields but different options fails startup, which is the fail-fast check described above.
+Enabling `STREAM` on a DCB-only store adds the `dcbTags` index, which a store with both capabilities needs. Without it, a DCB query with `DcbCriteria.all()` and the append check of `DcbAppendCondition.wholeStoreLock()` read every stream event that has a `position` as well as the DCB events. The results are the same, but the queries are slower, and they get slower as the number of stream events grows.
+
+Unless the collection already has the index, startup builds `dcbTags` over the whole collection, and the store doesn't start until MongoDB has finished building it.
+
+On a large collection, do not let startup run those builds. Create the new indexes yourself before deploying the version that declares the capability, as a rolling build on MongoDB Atlas or any replica set, the same way [step 1 of the position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md#1-create-the-position-index) pre-builds the `position` index. For `dcbTags`, run this before you enable `STREAM` on a DCB store:
+
+```javascript
+db.events.createIndex({ dcbTags: 1 }, { sparse: true })
+```
+
+Startup then finds identical indexes and creates nothing. If one of your indexes has the same fields as an index in the tables above but different options, startup can fail. It always fails when your index also has the name the store gives that index, such as `dcbTags_1`.
+
+Removing `STREAM` from a store that has both capabilities keeps the `dcbTags` index, because Occurrent never drops an index. A store that goes from `STREAM` alone to `DCB` alone doesn't get `dcbTags`, though. If its collection still holds stream events that have a `position`, create `dcbTags` yourself with the command above.
+
+A DCB-only store logs a warning with that command at startup when its collection holds a stream event with a numeric `position` and has no usable index on `dcbTags` alone. An index on `dcbTags` is usable when it:
+
+* is keyed on `dcbTags` and nothing else, ascending or descending
+* isn't hidden
+* is sparse with no `partialFilterExpression`, or has `{ dcbTags: { $exists: true } }` as its whole `partialFilterExpression`
+
+If the collection has an index on `dcbTags` alone that isn't usable, the warning names it and gives the commands that drop it and create the sparse one. When being hidden is the only thing wrong with it, the warning gives the `collMod` command that unhides it instead.
 
 To allow for fast queries, for example when using [EventStoreQueries](#eventstore-queries), it's recommended to create additional indexes tailored to the querying behavior of 
 your application. See [MongoDB indexes](https://docs.mongodb.com/manual/indexes/) for more information on how to do this. If you have many adhoc queries it's also worth 
