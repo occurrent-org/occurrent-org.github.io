@@ -2650,7 +2650,7 @@ A DCB-only store logs a warning with that command at startup when its collection
 
 * is keyed on `dcbTags` and nothing else, ascending or descending
 * isn't hidden
-* is sparse, or has the `partialFilterExpression` `{ dcbTags: { $exists: true } }`
+* is sparse with no `partialFilterExpression`, or has `{ dcbTags: { $exists: true } }` as its whole `partialFilterExpression`
 
 If the collection has an index on `dcbTags` alone that isn't usable, the warning names it and gives the commands that drop it and create the sparse one. When being hidden is the only thing wrong with it, the warning gives the `collMod` command that unhides it instead.
 
