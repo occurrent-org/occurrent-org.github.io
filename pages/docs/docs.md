@@ -3560,7 +3560,7 @@ Two settings control the handover, and both have defaults.
 
 The first, `dedupCacheSize`, sets how many recently delivered events the handover remembers by id and source. That's how an event that both the replay and the live feed deliver reaches your handler only once. The handover keeps two of these caches, one for events the replay delivered and one for events delivered live, and `dedupCacheSize` is the size of each.
 
-At the default of 10000 the two caches together hold up to 20000 events, twice the number you set.
+Together the two caches hold up to twice the number you set, so 20000 events at the default of 10000.
 
 If the replay and the live feed overlap by more than `dedupCacheSize` events, an event can reach your handler twice, so make sure that applying an event a second time doesn't change your read model.
 
@@ -4258,7 +4258,7 @@ For example:
 
 {% include macros/subscription/blocking/util/catchup/example.md %}
 
-To reduce the likelihood of duplicate events when switching from replay mode to continuous mode, a `CatchupSubscriptionModel` maintains an in-memory cache keyed by each event's id and source together, since CloudEvents only guarantees that the pair is unique. 
+To reduce the likelihood of duplicate events when switching from replay mode to continuous mode, a `CatchupSubscriptionModel` maintains an in-memory cache that identifies each event by its id and source together, since CloudEvents only guarantees that the combination is unique. 
 The size of this cache is configurable using a `CatchupSubscriptionModelConfig` but it defaults to 100,000. Otherwise, there would be a chance
 that event written _exactly_ when the switch from replay mode to continuous mode takes places, can be lost. To prevent this, the continuous mode subscription 
 starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the 
