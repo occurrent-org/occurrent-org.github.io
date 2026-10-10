@@ -6974,7 +6974,7 @@ SagaRunnerConfig config = SagaRunnerConfig.defaults().withQuarantineAfter(Durati
 
 `withQuarantineAfter(null)` throws, and so does a zero or negative budget. `disableQuarantine()` turns quarantine off again.
 
-On the annotation path you never build a `SagaRunnerConfig`, so the budget is the property `occurrent.saga.quarantine-after`, one value for every `@Saga` in the application. It has no default. Leave it out to keep quarantine off, or set it to a positive duration to turn it on. Zero or a negative value fails startup.
+On the annotation path you never build a `SagaRunnerConfig`, so the budget is the property `occurrent.saga.quarantine-after`, one value for every `@Saga` in the application. It has no default. Leave it out, or leave it blank, to keep quarantine off, or set it to a positive duration to turn it on. Zero or a negative value stops an application with at least one `@Saga` from starting.
 
 ```properties
 occurrent.saga.quarantine-after=5m
