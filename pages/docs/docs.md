@@ -5627,7 +5627,7 @@ There are two ways to write a saga, and both produce the same `Saga<E, S, C>`, s
 
 ### The Core DSL {#saga-core-dsl}
 
-The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state, or no argument at all when the state should start out as `null`. Without one, the state's type is nullable, `@Nullable S` in Java and `S?` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state, or none when the state should start out as `null`. Without one, the state's type is nullable, `@Nullable S` in Java and `S?` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
 
 Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
 
