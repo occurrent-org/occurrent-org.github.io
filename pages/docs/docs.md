@@ -4983,7 +4983,7 @@ A `RetryStrategy` you implement yourself, rather than one built from `RetryStrat
 
 `NativeMongoLeaseCompetingConsumerStrategy`, `SpringMongoLeaseCompetingConsumerStrategy` and `InMemoryDeadlineConsumerRegistry` log a `WARN` when they're created with such a strategy, since a shutdown can't stop their retries then.
 
-Check a flag like `running` in this predicate, not in `retryIf`. A `retryIf` predicate is only called between attempts, so a shutdown that happens during a backoff still waits for the backoff to finish. And `retryIf` replaces whatever retry predicate the strategy already had instead of adding to it.
+Check a flag like `running` in the predicate you pass to `execute`, not in `retryIf`. A `retryIf` predicate is only called between attempts, so a shutdown that happens during a backoff still waits for the backoff to finish. And `retryIf` replaces whatever retry predicate the strategy already had instead of adding to it.
 
 ## Retry and Transactions
 
