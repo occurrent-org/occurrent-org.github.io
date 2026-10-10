@@ -7441,7 +7441,7 @@ If a saga declares a type listed as refused in [Deriving the Event Filter](#deri
 
 To fix a refused declaration, [seal the hierarchy](#derived-filter-seal) or [declare the concrete types](#derived-filter-concrete). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
-Under a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, set that string with `replacementFilter(Filter.type("order-event"))`, as [Setting an Explicit Filter](#saga-explicit-filter) shows. It is the only remedy when the hierarchy is open, because a concrete class that is neither final nor sealed can't be declared either.
+If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, set that string with `replacementFilter(Filter.type("order-event"))`, as [Setting an Explicit Filter](#saga-explicit-filter) shows. It is the only remedy when the hierarchy is open, because a concrete class that is neither final nor sealed can't be declared either.
 
 ### Setting an Explicit Filter {#saga-explicit-filter}
 
@@ -7469,7 +7469,7 @@ saga<OrderEvent, OrderCommand> {
 
 Because a selector is still derived, the hierarchy check from [Declared Event Types](#saga-event-types) still runs under a narrowing.
 
-`replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. Use it under a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, for the reasons under [Set an Explicit Filter](#derived-filter-explicit):
+`replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. Use it when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, for the reasons under [Set an Explicit Filter](#derived-filter-explicit):
 
 {% capture java %}
 Saga.<OrderEvent, OrderState, OrderCommand>builder()
@@ -8293,7 +8293,7 @@ val orderCount = projection<Int, OrderEvent, String>(initialState = 0) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Where the concrete types cannot be found, the declaration is refused with an `IllegalArgumentException` naming the type. These are the declarations whose concrete types cannot be found:
+When Occurrent can't find the concrete types, it refuses the declaration with an `IllegalArgumentException` that names the type. That happens for these declared types:
 
 | Declared type | Java | Kotlin |
 |---|---|---|
@@ -8308,7 +8308,7 @@ A final class is accepted, and so is a sealed type whose subtypes are all sealed
 
 A `sealed class` you can instantiate is accepted too. Its filter names the class itself as well as every type it permits.
 
-An enum is accepted too, including one whose constants have bodies, and so is a sealed interface above one. A constant with a body is stored under its own class, `PaymentEvent$Reserved`, while a constant without one is stored under the enum class itself. Decide whether a constant has a body before you have events in the store.
+Enums are accepted as well, including ones whose constants have bodies, and so is a sealed interface that permits an enum. A constant with a body is stored under its own class, `PaymentEvent$Reserved` for example, while a constant without one is stored under the enum class itself. Decide whether a constant has a body before you have events in the store.
 
 A refusal is thrown when the filter is derived, and each place derives it at a different moment. None of them waits until an event is delivered.
 
@@ -8332,11 +8332,11 @@ A refusal is thrown when the filter is derived, and each place derives it at a d
 
 `excludeTypes(..)` doesn't refuse a sealed type that permits an interface or abstract class that is not sealed. With `ReflectionCloudEventTypeMapper` it excludes nothing below that interface or abstract class, so seal the hierarchy or exclude the concrete types.
 
-A `DcbCriteriaBuilder` seeded with a boundary that excludes types has one more failure. A sealed type passed to `type(..)` or `types(..)` expands to its concrete types, and when one of them is a type the boundary excludes, the call throws `IllegalArgumentException` saying types and excluded types cannot overlap.
+A `DcbCriteriaBuilder` seeded with a boundary that excludes types can fail in one more way. A sealed type passed to `type(..)` or `types(..)` expands to its concrete types, and when one of them is a type the boundary excludes, the call throws `IllegalArgumentException` saying types and excluded types cannot overlap.
 
 A criterion built from a sealed type also matches every concrete type it permits when you use it in `DcbAppendCondition.failIfEventsMatch(..)`, so the append fails on a concurrent write of any of them.
 
-There are three remedies, and which one fits depends on who owns the events.
+There are three ways to fix a refused declaration, and which one fits depends on who owns the events.
 
 ## Seal the hierarchy {#derived-filter-seal}
 
@@ -8368,19 +8368,19 @@ Use this when the hierarchy is not yours to seal, or is deliberately open. List 
 * One handler per concrete type on a `Projection`, a `SnapshotView` or a saga, in place of a single handler on the supertype.
 * `filterFromEventTypes(converter, arrayOf(OrderPlaced::class, PaymentReserved::class))` on the [subscription DSL](#subscription-dsl).
 * `domainEventQueries.query(OrderPlaced.class, PaymentReserved.class)` on the [query DSL](#query-dsl).
-* The concrete types in the `eventTypes` attribute of `@Subscription` and its siblings.
+* The concrete types in the `eventTypes` attribute of `@Subscription` and the other subscription annotations.
 * `ExecuteFilter.includeTypes(OrderPlaced.class, PaymentReserved.class)` on an [application service](#application-service-stream-filtering-and-execute-options).
 * `types(OrderPlaced.class, PaymentReserved.class)` on a `DcbCriteriaBuilder`.
 
 ## Or set an explicit filter {#derived-filter-explicit}
 
-An explicit filter is used instead of deriving one, so nothing is expanded for that declaration and nothing is refused. Where you set it differs:
+An explicit filter is used instead of deriving one, so nothing is expanded for that declaration and nothing is refused. Where you set it depends on where you declared the types:
 
 * `Projection`'s builder and `SnapshotView`'s builder both take a `filter(Filter)`.
-* A saga takes [`replacementFilter(Filter)`](#saga-explicit-filter). Its `narrowingFilter(Filter)` does not count, because a filter is still derived underneath it.
+* A saga takes [`replacementFilter(Filter)`](#saga-explicit-filter). Its `narrowingFilter(Filter)` doesn't work for this, because a filter is still derived underneath it.
 * `DomainEventQueries` has no override on its `Class` and `Collection` overloads, so call `query(Filter, ..)` directly.
 * The subscription DSL has none on `filterFromEventTypes`, so build the `Filter` yourself and pass it to the `subscribe(..)` overload that takes a `StreamSubscriptionFilter` or an `AgnosticSubscriptionFilter`.
-* `@Subscription` and its siblings have none, so declare the concrete types there instead.
+* `@Subscription` and the other subscription annotations have none, so declare the concrete types there instead.
 * An application service takes `ExecuteFilter.from(StreamReadFilter)` in place of `type(..)` or `includeTypes(..)`.
 * `DcbCriteriaBuilder` has none, so build the criterion from CloudEvent type strings with `DcbCriteria.type(String)` or `DcbCriteria.types(String, ..)`.
 
