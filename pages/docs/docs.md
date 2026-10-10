@@ -3385,13 +3385,13 @@ The `Mono` of each event that was still waiting errors on the thread that called
 
 A catch-up counts as running from the moment you call `CatchupProjectionFeed.catchUp()` or `goLive()`. For `DomainEventFeed.catchUpAll()`, `catchUp(id)` and `goLive(id)`, it counts as running from when you subscribe to the `Mono` they return, not from the call. It stops counting as running once the feed goes live, its replay notices a stop, or it fails.
 
-On the blocking stack, the feed refuses an `accept(...)` called from inside the projection or a view while the catch-up replays history into it, and that refusal makes the catch-up fail. From then on the feed refuses every event until you build a new feed. A caller that catches the refusal and moves on loses the event it fed.
+On the blocking stack, the feed refuses an `accept(...)` called from inside the projection or a view while the catch-up replays history into it, and that refusal makes the catch-up fail. From then on the feed refuses every event until you build a new feed. A caller that catches the refusal and moves on drops the event it fed.
 
 A catch-up on the blocking stack that fails on an interrupted thread is not recorded as a failure. `catchUp()` still throws the exception, but the feed doesn't start refusing later events because of it, and `DomainEventFeed.refusesPermanently()` stays `false`.
 
-On the reactor stack, `accept(...)` called from inside the projection completes once the event is queued rather than once it is applied. The feed applies one event at a time, so the new event is applied after the projection returns, in the order it was fed. An event fed during the replay is applied once the feed has gone live. A replay that ends before that writes no catch-up marker, so the next replay hands the projection the same history again.
+On the reactor stack, `accept(...)` called from inside the projection completes once the event is queued rather than once it is applied. The feed applies one event at a time, so the new event is applied after the projection returns, in the order it was fed. An event fed during the replay is applied once the feed has gone live. A replay that ends before the feed goes live writes no catch-up marker, so the next replay hands the projection the same history again.
 
-`acceptCloudEvent(...)` on a `DomainEventFeed` returns `DEFERRED` while the feed is not live, as it does for any other caller, and `DELIVERED` once the event is queued.
+On the reactor stack, when the projection calls `acceptCloudEvent(...)` on its `DomainEventFeed`, the `Mono` completes with `DEFERRED` while the feed is not live, as it does for any other caller, and with `DELIVERED` once the event is queued.
 
 The feed recognizes the call as coming from the projection when the projection returns it as part of its own `Mono`, or subscribes to it on the thread the feed called the projection on, for example by blocking on it. If the projection switches to another thread and blocks on the call there, it waits forever.
 
