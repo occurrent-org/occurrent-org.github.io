@@ -6264,7 +6264,7 @@ val current: NameState? = view.evolveAll(nameDefined, nameWasChanged)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Neither example passes an initial state, so the fold starts from `null` and the state is typed nullable, `@Nullable NameState` in Java and `NameState?` in Kotlin. Pass one with `View.create(initialState, ...)` or `view(initialState) { }` when the fold has a natural starting value.
+Neither example passes an initial state, so the state starts out as `null` and its type is nullable, `@Nullable NameState` in Java and `NameState?` in Kotlin. When the state has a natural starting value, pass it with `View.create(initialState, ...)` or `view(initialState) { }`.
 
 A view can also handle the delivering event's metadata, its stream id and version, global position, and CloudEvent extensions, through the metadata-carrying `evolve(state, metadata, event)` (`View.create(initialState, (state, metadata, event) -> ...)` in Java, `view(initialState) { state, metadata, event -> ... }` in Kotlin). The event-only form applies the event with empty metadata. That lets a view key on the stream id or the global position without carrying either in the event payload. Metadata support was added in 0.31.0.
 
@@ -6359,9 +6359,9 @@ That safety has a limit though. Every event the filter admits is still converted
 
 When you need to select on more than the event type, for example a subject, a source, or a time range, set an explicit `filter(...)` on the builder.
 
-Leave out the initial state when the fold has no natural starting value. `Projection.<CourseSummary, CourseEvent, String>builder()` in Java and `projection<CourseSummary, CourseEvent, String> { }` in Kotlin start the fold from `null`, so the state is typed nullable, `@Nullable CourseSummary` in Java and `CourseSummary?` in Kotlin.
+When the state has no natural starting value, leave the initial state out. `Projection.<CourseSummary, CourseEvent, String>builder()` in Java and `projection<CourseSummary, CourseEvent, String> { }` in Kotlin then start with a `null` state, so its type is nullable, `@Nullable CourseSummary` in Java and `CourseSummary?` in Kotlin.
 
-The single-instance builders below take the same form, `singletonBuilder()` and `singletonProjection { }`, and so does a snapshot view, with `SnapshotView.builder()` and `snapshotView { }`.
+The single-instance builders below have the same no-argument form, `singletonBuilder()` and `singletonProjection { }`, and so does a snapshot view, `SnapshotView.builder()` and `snapshotView { }`.
 
 ### Single-instance projections
 
@@ -6909,7 +6909,7 @@ There are two ways to write a saga, and both produce the same `Saga<E, S, C>`, s
 
 ### The Core DSL {#saga-core-dsl}
 
-The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state when the fold needs one and take none when it starts from `null`, in which case the state is typed nullable, `@Nullable S` in Java and `S?` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state, or none when the state should start out as `null`. Without one, the state's type is nullable, `@Nullable S` in Java and `S?` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
 
 Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
 
