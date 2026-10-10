@@ -9613,7 +9613,7 @@ Most of the mechanical changes between Occurrent versions (type renames, package
 
 The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
 
-The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) has 26 sections, and the paragraphs below link to each one.
+The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) has 27 sections, and the paragraphs below link to each one.
 
 Six changes break compilation for the code named next to each:
 
@@ -9697,6 +9697,8 @@ When the wrapped model throws from its own `shutdown()`, `CompetingConsumerSubsc
 A `ReactorDurableSubscriptionModel` over a model that manages named subscriptions, `ReactorMongoSubscriptionModel` for one, returns from a `subscribe(..)` from the model default without waiting for storage. A refusal found after the call, an unsupported filter for example, fails `waitUntilStarted()` instead of being thrown from `subscribe(..)`. See [section 25](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#25-a-durable-reactor-subscribe-from-the-model-default-returns-without-waiting-for-storage).
 
 A position catch-up that stores its position while it replays now stores the live start it read before the replay with it, and a resume goes live from that live start, so a resume can deliver some events a second time. A storage that keeps strings, such as `SpringRedisCheckpointStorage`, stores a form 0.33.0 cannot read, so let the catch-ups reach live delivery before you roll back. When the oplog no longer has the live start, the catch-up replays again, and it fails with `IllegalStateException` once the live start is gone after 4 replays in a row. See [section 26](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#26-a-position-catch-up-stores-the-live-start-it-read-before-the-replay).
+
+A MongoDB event store with `DCB` and without `STREAM` no longer creates the `dcbTags_1` index. A store created on 0.33.0 or earlier keeps it, and you can drop it by hand unless the collection holds stream events with a `position` or you'll enable `STREAM` later. Enabling `STREAM` on a DCB store builds the index at startup when it's missing, so on a large collection build it before you deploy that change. See [section 27](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#27-a-dcb-only-mongodb-event-store-no-longer-creates-the-dcbtags-index).
 
 ## Upgrading to 0.33.0 {#upgrading-to-0-33-0}
 
