@@ -812,7 +812,7 @@ yourself. The store only warns or refuses to start. It never changes a damaged e
 so running it twice is safe. If a run is killed, start it again and it resumes from a checkpoint document.
 
 The run retries the same errors the MongoDB driver retries a read or a write on, as MongoDB's retryable reads and
-retryable writes specifications define them. It waits a little longer before each attempt, up to 2 seconds, never
+retryable writes specifications define them. It doubles the wait before each new attempt, up to 2 seconds, never
 stops trying, and logs each retry at `WARN`. Those errors are a lost connection, a cleared connection pool, an error labelled
 `RetryableWriteError`, a command or write concern error with one of the codes those specifications list, and a
 failure to authenticate that one of those caused. A primary stepping down and a server shutting down are two of the
@@ -869,7 +869,7 @@ which is a string and so came through intact. It rebuilds the index whenever it 
 lists, and rewrites a `dcbtags` with whitespace around a tag the way an append writes it. It reuses the store's own mappers, so a repaired event is what a running
 store would have written.
 
-The repair restores whatever position value the document holds, and it has no way to check that value. If an update
+A position the repair restores is the value the document holds, and the repair has no way to check that value. If an update
 function set `position` itself, the old write-back kept that number like any other. The repair catches a value that
 another event already holds, one at or below zero, and one above the highest position the store has handed out, and
 reports those instead (see the table below). A wrong value that none of those three checks catches looks exactly like
