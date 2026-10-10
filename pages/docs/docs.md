@@ -7955,7 +7955,7 @@ A reactor factory returning `null` also fails startup with `IllegalStateExceptio
 
 `DurableSubscriptionModel` refuses a first subscription with `IllegalStateException` when it has no checkpoint and the wrapped model cannot give it a start position, which is the case on a shared MongoDB Atlas cluster. See [section 7](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#7-durablesubscriptionmodel-refuses-a-first-subscription-when-no-start-position-can-be-recorded).
 
-A saga instance whose event keeps failing can now be quarantined. `SagaEnvelope` and `SagaRunnerConfig` gain record components, `SagaInstance` gains `failure()`, and `SagaStatus` gains `QUARANTINED`, which `findByStatus(ACTIVE, ..)` does not return. See [section 8](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#8-a-saga-instance-that-keeps-failing-is-quarantined-and-four-saga-types-change-with-it).
+A saga instance whose event keeps failing can now be quarantined. `SagaEnvelope` and `SagaRunnerConfig` gain record components, `SagaInstance` gains `failure()`, and `SagaStatus` gains `QUARANTINED`, which `findByStatus(ACTIVE, ..)` does not return. See [section 8](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#8-a-saga-instance-that-keeps-failing-can-be-quarantined-and-four-saga-types-change-with-it).
 
 A reactor catch-up subscription can deliver a write that was in flight during its replay twice, so its handler has to be safe to run twice on the same event. See [section 9](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#9-a-reactor-catch-up-subscription-can-deliver-a-concurrent-write-twice).
 
