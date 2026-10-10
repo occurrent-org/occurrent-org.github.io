@@ -3631,7 +3631,7 @@ Both MongoDB strategies start answering `false` three quarters of the lease time
 
 A `CompetingConsumerStrategy` of your own has its `hasLock` called on every event, so it should answer from what it keeps in memory rather than by asking a database, and answer `false` once the lock could have expired.
 
-A wrapped subscription model of your own shouldn't hold an internal lock while it hands an event to the handler. An event that waits for the lease keeps that lock, and every call that needs it, `isRunning(id)` among them, waits until this node holds the lease again or the model lets the event through. `InMemorySubscriptionModel`, `NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel` and the blocking `CatchupSubscriptionModel` hold no such lock.
+A wrapped subscription model of your own shouldn't hold a lock while it hands an event to the handler. An event that waits for the lease keeps that lock, and every call that needs it, `isRunning(id)` among them, waits until this node holds the lease again or the model lets the event through. `InMemorySubscriptionModel`, `NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel` and the blocking `CatchupSubscriptionModel` hold no such lock.
 
 With the MongoDB strategies, unregistering and releasing a consumer make at most 5 attempts per MongoDB call, fewer when the configured `RetryStrategy` allows fewer. A lease they don't remove expires on its own after the lease time. A `RetryStrategy` you implement yourself, rather than build with `RetryStrategy.retry()`, runs its own retry loop and isn't capped.
 
@@ -3643,7 +3643,7 @@ If the wrapped model isn't running when the `CompetingConsumerSubscriptionModel`
 
 Calling `start()` only on the wrapped model runs the subscriptions that opted out of competing consumption, but no competing subscription competes for its lease, so every event the wrapped model hands a competing subscription waits. A warning is logged the first time that happens for each such subscription. Calling `start()` on both models, in either order, registers each competing subscription for its lease, and its events reach the handler once this node holds the lease.
 
-When the `CompetingConsumerStrategy` or the wrapped model throws for a competing subscription, `start(..)` and `resumeSubscription(..)` log the failure as a warning and return. The subscription is then tried again on a separate thread, with a pause between tries, until it is registered for its lease, and after that it runs only while this node holds the lease. Every fifth try that fails is logged as a warning.
+When the `CompetingConsumerStrategy` or the wrapped model throws for a competing subscription, `start(..)` and `resumeSubscription(..)` log the failure as a warning and return. The subscription is then tried again on a separate thread, with a wait between tries that grows after each failure, until it is registered for its lease, and after that it runs only while this node holds the lease. Every fifth try that fails is logged as a warning.
 
 `stop()`, `pauseSubscription(..)` and `cancelSubscription(..)` throw such a failure, and `resumeSubscription(..)` throws it when it's an `Error`. `start(..)` throws when the wrapped model, or a subscription that opted out of competing consumption, fails to start, after it has tried to start every subscription.
 
