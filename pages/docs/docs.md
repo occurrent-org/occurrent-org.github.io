@@ -6894,7 +6894,7 @@ The deprecated keys are the ones Occurrent used up to 0.33.0. They still work in
 
 You can set both the old and the new key as long as they have the same value. That way an old key you have not found yet, in an environment variable for example, does not break a configuration you have already migrated. If the two values differ, the application fails at startup with an error that names both keys.
 
-The `org.occurrent.UpgradeToOccurrent_0_34` OpenRewrite recipe renames the keys in your `.properties` and `.yaml` files, as described in [section 4 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb). It cannot see environment variables such as `OCCURRENT_EVENT_STORE_COLLECTION`, so search your deployment configuration for those yourself.
+The `org.occurrent.UpgradeToOccurrent_0_34` OpenRewrite recipe renames the keys in your `.properties` and `.yaml` files, as described in [section 4 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb). It can't rename environment variables such as `OCCURRENT_EVENT_STORE_COLLECTION`, so you have to find those in your deployment configuration and rename them yourself.
 
 ### Deferring Subscription Startup {#deferring-subscription-startup}
 
