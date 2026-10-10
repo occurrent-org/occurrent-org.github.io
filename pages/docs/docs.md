@@ -4957,7 +4957,7 @@ retryStrategy.execute(info -> {
 
 ## Stopping a Retry When Shutting Down
 
-A retry that is between attempts keeps going until its attempts run out, which is a problem when the component doing the retrying is closing down. As of version {{site.occurrentversion}} you can hand `execute` a second argument, a predicate that says whether retrying is still wanted:
+A retry that's waiting between attempts keeps going until its attempts run out. That's a problem when the component doing the retrying is shutting down. As of version {{site.occurrentversion}} you can pass `execute` a second argument, a predicate that tells it whether to keep retrying:
 
 ```java
 private volatile boolean running = true;
@@ -4971,17 +4971,19 @@ public void close() {
 }
 ```
 
-The retry loop reads that predicate before every retry. While it waits out a backoff, it reads the predicate again roughly every 50 milliseconds. A `close()` called one millisecond into a two second backoff therefore stops the retry at the next read instead of two seconds later. When the loop stops this way it rethrows the exception from the last attempt, the same as when the attempts run out.
+The retry loop calls the predicate before every retry, and roughly every 50 milliseconds while it waits out a backoff. So if `close()` is called 1 millisecond into a 2 second backoff, the retry stops the next time the loop calls the predicate, instead of 2 seconds later.
 
-The predicate is handed the throwable from the last attempt, so you can answer differently for different failures. Most callers ignore it and read a flag, as above.
+When the loop stops this way, it rethrows the exception from the last attempt, the same as when the attempts run out.
 
-Keep the predicate free of side effects, because a single attempt can read it many times.
+The predicate gets the `Throwable` from the last attempt, so it can give a different answer for different failures. You can also ignore it and check a flag, as in the example above.
+
+Keep the predicate free of side effects, because it can be called many times between two attempts.
 
 A `RetryStrategy` you implement yourself, rather than one built from `RetryStrategy.retry()` or `RetryStrategy.none()`, ignores the predicate and runs the action the same way `execute(..)` without a predicate does.
 
 `NativeMongoLeaseCompetingConsumerStrategy`, `SpringMongoLeaseCompetingConsumerStrategy` and `InMemoryDeadlineConsumerRegistry` log a `WARN` when they're created with such a strategy, since a shutdown can't stop their retries then.
 
-Put a lifecycle flag here rather than in `retryIf`. A `retryIf` predicate is only read between attempts, so a shutdown during a backoff waits out the rest of it, and `retryIf` replaces whatever retry predicate the strategy already had rather than adding to it.
+Check a flag like `running` in this predicate, not in `retryIf`. A `retryIf` predicate is only called between attempts, so a shutdown that happens during a backoff still waits for the backoff to finish. And `retryIf` replaces whatever retry predicate the strategy already had instead of adding to it.
 
 ## Retry and Transactions
 
