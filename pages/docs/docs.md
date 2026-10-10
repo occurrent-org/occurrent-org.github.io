@@ -8146,7 +8146,7 @@ One timing constraint comes with the annotation path. A `@Saga` factory can only
 
 #### Quarantined Instances {#saga-quarantined-instances}
 
-A saga has one subscription and every instance of that saga is fed by it. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again. Quarantine limits how long that lasts, by suspending the instance and letting the subscription move past the event.
+Each saga gets one subscription, and that subscription delivers the events for all of its instances. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again. Quarantine limits how long that lasts, by suspending the instance and letting the subscription move past the event.
 
 [Delivery Contract](#saga-delivery-contract) says which other events wait behind the failing one in the meantime.
 
