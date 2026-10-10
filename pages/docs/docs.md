@@ -3359,7 +3359,7 @@ Live-resume stays the broker's job. The model persists no live position watermar
 
 The record that the catch-up finished is kept per subscription id. The model's `cancelSubscription(id)` deletes it, so subscribing the same id again replays the history.
 
-On the blocking stack `cancelSubscription(id)` deletes the record before it cancels anything else. If it throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
+On the blocking stack `cancelSubscription(id)` deletes the record before it cancels anything else. If the delete throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
 
 On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the record is deleted. Wait for it when a restart must not skip the history, and call `cancelSubscription(id)` again if it fails.
 
@@ -3714,7 +3714,7 @@ RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(rabbitConnect
         .build();
 ```
 
-Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The bridge then stops pulling messages while the replay runs. That only saves round trips to the broker, because a message that arrives before the replay is done is reported `DEFERRED` and never acknowledged either way.
+Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The bridge then stops pulling messages while the replay runs. That only saves round trips to the broker, because a message that arrives before the catch-up has reached live delivery is reported `DEFERRED` and never acknowledged either way.
 
 The bridge calls `acceptRedeliverable(...)` rather than `accept(...)`. It routes the event the same way, but tells the model that the broker can send the event again later, so the model can refuse the event instead of holding on to it.
 
