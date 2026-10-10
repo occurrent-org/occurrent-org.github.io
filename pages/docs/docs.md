@@ -2642,7 +2642,7 @@ db.events.createIndex({ dcbTags: 1 }, { sparse: true })
 
 Startup then finds identical indexes and creates nothing. An index with the same fields but different options than the tables above list makes startup fail.
 
-Removing `STREAM` from a store that has both capabilities removes no index, since Occurrent never drops one, so the `dcbTags` index stays. A store that goes from `STREAM` alone to `DCB` alone doesn't get it, though. If its collection still holds stream events that have a `position`, create `dcbTags` yourself with the command above.
+Removing `STREAM` from a store that has both capabilities removes no index, since Occurrent never drops one, so the `dcbTags` index stays. A store that goes from `STREAM` alone to `DCB` alone doesn't get it, though. If its collection still holds stream events that have a `position`, create `dcbTags` yourself with the command above. At startup, a DCB-only store logs a warning with that command when its collection has no index on `dcbTags` alone and holds a stream event with a numeric `position`.
 
 To allow for fast queries, for example when using [EventStoreQueries](#eventstore-queries), it's recommended to create additional indexes tailored to the querying behavior of 
 your application. See [MongoDB indexes](https://docs.mongodb.com/manual/indexes/) for more information on how to do this. If you have many adhoc queries it's also worth 
