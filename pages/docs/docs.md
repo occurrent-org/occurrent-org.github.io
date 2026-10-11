@@ -6890,7 +6890,7 @@ The settings that only apply to a MongoDB event store or a MongoDB subscription 
 | `occurrent.subscription.mongodb.collection` | `subscriptions` | `occurrent.subscription.collection` |
 | `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` | `true` | `occurrent.subscription.restart-on-change-stream-history-lost` |
 
-The deprecated keys are the ones Occurrent used up to 0.33.0. They still work in 0.34.0 and will be removed two releases after it.
+The deprecated keys still work, and will be removed two releases after 0.34.0.
 
 You can set both the old and the new key as long as they have the same value. That way an old key you have not found yet, in an environment variable for example, does not break a configuration you have already migrated. If the two values differ, the application fails at startup with an error that names both keys.
 
