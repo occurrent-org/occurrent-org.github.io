@@ -3331,7 +3331,7 @@ Only `Failed` carries a cause, so you cannot ask for one on a projection that is
 
 Where the id is fed by a `PushSubscriptionModel`, `CatchingUp`, `Live` and `NotStarted` are read from the subscription model each time you ask rather than recorded once, so stopping and starting the model, which replays the history again, reports `CatchingUp` again. A projection with `catchup = NONE` has no history to work through, so it reports `Live` as soon as it is running. A `@Saga(source = PUSH)` is covered the same way.
 
-On the reactor stack, a push projection on a bean that's built after startup never waits for its replay, whatever `startupMode` says. If that replay fails, the failure is recorded on `PushCatchupStatus`, the same as for a `BACKGROUND` replay. [When Annotations Register](#when-annotations-register) explains which beans are built after startup.
+On the reactor stack, a push projection on a bean built after startup never waits for its replay, whatever `startupMode` says, see [When Annotations Register](#when-annotations-register). If that replay fails, the failure is recorded on `PushCatchupStatus`, the same as for a `BACKGROUND` replay.
 
 Add `catchup = Catchup.NONE` when the feed carries events that are not in this application's event store, which is the case when another application writes them. The wrapper is skipped entirely and the bare `PushSubscriptionModel` is used instead, so no `PositionOrderedReader` or `CheckpointStorage` bean is needed. Left at the default `Catchup.FROM_EVENT_STORE`, a missing one of those beans now fails naming `catchup = Catchup.NONE` as the fix, rather than a bare missing-bean error. `startAt`, `startAtGlobalPosition` and `resumeBehavior` stay rejected either way. `startupMode` only applies under the default, since `Catchup.NONE` has no replay for `startupMode = BACKGROUND` to move off the startup path.
 
@@ -4042,7 +4042,48 @@ that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionMod
 
 ##### Life-cycle {#durable-subscription-reactive-life-cycle}
 
-`ReactorDurableSubscriptionModel` can be stopped, started, paused per subscription and shut down like any other reactor `SubscriptionModel`. A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`, so it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
+`ReactorDurableSubscriptionModel` can be stopped, started, paused per subscription and shut down like any other reactor `SubscriptionModel`.
+
+The model that `ReactorDurableSubscriptionModel` wraps is called the wrapped model below. It's either a named reactor `SubscriptionModel` or a model that offers only the cold primitive. The cold primitive is the plain `subscribe(filter, startAt)` that returns a `Flux` and does nothing until something subscribes to it, which is what Reactor calls cold.
+
+The `occurrent-testing-junit-jupiter-reactor` extension covers the reactive stack the same way. See [Integration Testing](#integration-testing) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default) for how it stops a reactive subscription by default and lets a test opt it back in.
+
+##### Subscribing While the Model Is Stopped {#durable-subscription-reactive-stopped}
+
+A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`, so it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
+
+Whether that position is written to the `CheckpointStorage` right away depends on the wrapped model:
+
+* When the wrapped model is a named reactor `SubscriptionModel`, as in every shipped composition, the position is stored at registration. So a subscription that's registered and never started still has a checkpoint stored. If it's ever started later, it resumes from there rather than from the beginning. [Delegating to a Named Wrapped Model](#durable-subscription-reactive-delegation) describes this case.
+* When the wrapped model offers only the cold primitive, nothing is stored until the subscription actually starts, so one that never starts has nothing stored.
+
+Either way, a registration that asks for `StartAt.subscriptionModelDefault()` loses no event written while it waits to be started. The blocking stack's manual-start wrapper gives the same guarantee.
+
+##### When No Start Position Can Be Read {#durable-subscription-reactive-no-start-position}
+
+That position has to be readable for any of this to hold. A read that fails at registration, and one that answers nothing, both refuse the subscription rather than being taken again once it starts, since a read taken then answers with wherever the feed has reached by then and starting from that is the loss this guarantee is about. An answer of nothing used to fall back to `StartAt.now()`, which looked harmless for a subscription that starts at the moment it registers and isn't, because a wrapped model applies a start position when it opens its feed rather than when it receives one. So it's refused whether this model is running or stopped, which is also how the blocking `ManualStartSubscriptionModel` answers a `null` position from this release on.
+
+Where the refusal comes out depends on the wrapped model. It's thrown from `subscribe(..)` when that model manages named subscriptions of its own, which is your own call and needs no log to reach you. When the durable model drives the cold primitive itself it can't throw there, so it's logged at `ERROR` and reported on `waitUntilStarted()`, on the handle `resumeSubscription(..)` hands you, and on the handle you got back when you registered as well once that registration asked for the subscription model default and storage has confirmed it holds nothing. A storage that can't be read leaves that handle waiting instead, rather than reporting a refusal the start may not make.
+
+Starting a refused subscription is what drops it from the model, so getting it back means registering it again rather than resuming, and one you never started keeps its id until `cancelSubscription(..)` releases it. `start(true)` starts the other subscriptions all the same.
+
+Two registrations are left alone by all of that. One naming its own `StartAt` isn't read for at all, `StartAt.now()` included, since the model records no position for it and you've said where to begin. One that already has a checkpoint stored begins from that checkpoint and starts even when the read couldn't answer. So a position source that can never answer stops a brand new subscription rather than every subscription the application has.
+
+To start a registration whose read returns nothing, set `startWhenNoStartPositionCanBeRecorded(true)` on `ReactorDurableSubscriptionModelConfig`. With the Spring Boot starter, set `occurrent.subscription.start-when-no-start-position-can-be-recorded=true`.
+
+`ReactorMongoSubscriptionModel` returns nothing when the server refuses the `hostInfo` command, as a shared MongoDB Atlas cluster does. A read that fails is still refused. [When No Start Position Can Be Recorded](#durable-subscription-blocking-no-start-position) explains what you risk by starting without a stored position.
+
+A dynamic start position is read for the same way, but when it's resolved depends on the wrapped model. Delegating to a named model resolves it right inside `subscribe(..)`, so its refusal comes from that call directly instead of through a handle. Driving the cold primitive itself defers that resolution until the subscription starts, so its registration handle keeps waiting and the refusal comes out then.
+
+##### When Two Nodes Register the Same Subscription {#durable-subscription-reactive-two-nodes}
+
+Recording that first position is a conditional write, so only the first one to reach storage is kept. When two nodes register the same brand new subscription at the same moment, the node that can't show the stored position is the one it read has its registration refused with `StartPositionAlreadyPinnedException`, rather than starting from a position it never read. The events between the two positions then reach neither until that interval is replayed, which is only safe while the subscription isn't running anywhere. A position that was already stored when the model read for it is taken without a word, so a node joining a subscription another has been running is unaffected.
+
+With the MongoDB `ReactorCheckpointStorage`, the node whose write reached storage second is refused only when delivery has already moved the stored position forward. Otherwise the storage keeps whichever position has the earlier operation time, and the node starts from that.
+
+One node on its own reaches the same refusal with nobody else registering, when the storage reads that position back from a reader that hasn't seen the write. A storage that retried a write whose answer it never heard gets the write refused too, but what it reads back is then the position it wrote itself, so the registration completes. A re-issued write only ends in a refusal when the read back also fails or is served from behind the write. Starting the node again takes whatever position storage holds by then, unless the reader is still behind the write, which answers the same way every time and needs a reader that has seen it instead.
+
+##### Shutting Down {#durable-subscription-reactive-shutdown}
 
 A shut-down model stays shut down. Subscribing to it with a subscription id throws `SubscriptionModelShutdownException`, which is an `IllegalStateException`, before any history is replayed:
 
@@ -4053,31 +4094,9 @@ durableModel.shutdown();
 durableModel.subscribe("order-status", filter, startAt, action);
 ```
 
-That includes a durable model that wraps a catch-up model, which is what the reactive Spring Boot starter builds. In 0.33.0 a subscription on it that started at the beginning or at an explicit position replayed its history into the handler first, and failed only when it switched to live events.
+That includes a durable model that wraps a catch-up model, which is what the reactive Spring Boot starter builds.
 
 If you subscribe with a subscription id while `shutdown()` is running, the subscribe either throws the same exception or is cancelled by the shutdown.
-
-For a subscription registered while the model is stopped, the wrapped model decides whether the start position resolved at registration is written to the `CheckpointStorage` right away. When the wrapped model is itself a named reactor `SubscriptionModel`, which is what [delegation](#durable-subscription-reactive-delegation) below means and what every shipped composition does, the position is stored at registration, so a subscription that's registered and then never started still leaves a checkpoint behind, and resumes from there rather than from the beginning if it's ever started later. When the wrapped model offers only the raw `Flux`-returning `subscribe`, which does nothing until something subscribes to it (what Reactor calls cold), nothing is stored until the subscription actually starts, so one that never starts leaves nothing behind. Either way, a registration asking for the subscription model default start position loses no event written while it waits to be started, mirroring the guarantee the blocking stack's manual-start wrapper gives.
-
-That position has to be readable for any of this to hold. A read that fails at registration, and one that answers nothing, both refuse the subscription rather than being taken again once it starts, since a read taken then answers with wherever the feed has reached by then and starting from that is the loss this guarantee is about. An answer of nothing used to fall back to `StartAt.now()`, which looked harmless for a subscription that starts at the moment it registers and isn't, because a wrapped model applies a start position when it opens its feed rather than when it receives one. So it's refused whether this model is running or stopped, which is also how the blocking `ManualStartSubscriptionModel` answers a `null` position from this release on.
-
-Where the refusal comes out depends on the wrapped model. It's thrown from `subscribe(..)` when that model manages named subscriptions of its own, which is your own call and needs no log to reach you. When the durable model drives the cold primitive itself it can't throw there, so it's logged at `ERROR` and reported on `waitUntilStarted()`, on the handle `resumeSubscription(..)` hands you, and on the handle you got back when you registered as well once that registration asked for the subscription model default and storage has confirmed it holds nothing. A storage that can't be read leaves that handle waiting instead, rather than reporting a refusal the start may not make.
-
-Starting a refused subscription is what drops it from the model, so getting it back means registering it again rather than resuming, and one you never started keeps its id until `cancelSubscription(..)` releases it. `start(true)` starts the other subscriptions all the same.
-
-Two registrations are left alone by all of that. One naming its own `StartAt` isn't read for at all, `StartAt.now()` included, since the model records no position for it and you've said where to begin. One that already has a checkpoint stored begins from that checkpoint and starts even when the read couldn't answer. So a position source that can never answer stops a brand new subscription rather than every subscription the application has.
-
-To start a registration whose read answers nothing, set `startWhenNoStartPositionCanBeRecorded(true)` on `ReactorDurableSubscriptionModelConfig`, or `occurrent.subscription.start-when-no-start-position-can-be-recorded=true` with the Spring Boot starter. `ReactorMongoSubscriptionModel` answers nothing when the server refuses the `hostInfo` command, as a shared MongoDB Atlas cluster does. A read that fails is still refused. [When No Start Position Can Be Recorded](#durable-subscription-blocking-no-start-position) explains what you risk by starting without a stored position.
-
-A dynamic start position is read for the same way, but when it's resolved depends on the wrapped model. Delegating to a named model resolves it right inside `subscribe(..)`, so its refusal comes from that call directly instead of through a handle. Driving the cold primitive itself defers that resolution until the subscription starts, so its registration handle keeps waiting and the refusal comes out then.
-
-Recording that first position is a conditional write, so only the first one to reach storage is kept. When two nodes register the same brand new subscription at the same moment, the node that can't show the stored position is the one it read has its registration refused with `StartPositionAlreadyPinnedException`, rather than starting from a position it never read. The events between the two positions then reach neither until that interval is replayed, which is only safe while the subscription isn't running anywhere. A position that was already stored when the model read for it is taken without a word, so a node joining a subscription another has been running is unaffected.
-
-With the MongoDB `ReactorCheckpointStorage`, the node whose write reached storage second is refused only when delivery has already moved the stored position forward. Otherwise the storage keeps whichever position has the earlier operation time, and the node starts from that.
-
-One node on its own reaches the same refusal with nobody else registering, when the storage reads that position back from a reader that hasn't seen the write. A storage that retried a write whose answer it never heard gets the write refused too, but what it reads back is then the position it wrote itself, so the registration completes. A re-issued write only ends in a refusal when the read back also fails or is served from behind the write. Starting the node again takes whatever position storage holds by then, unless the reader is still behind the write, which answers the same way every time and needs a reader that has seen it instead.
-
-The `occurrent-testing-junit-jupiter-reactor` extension covers the reactive stack the same way. See [Integration Testing](#integration-testing) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default) for how it stops a reactive subscription by default and lets a test opt it back in.
 
 ##### Delegating to a Named Wrapped Model {#durable-subscription-reactive-delegation}
 
@@ -4085,7 +4104,7 @@ When the model `ReactorDurableSubscriptionModel` wraps is itself a named reactor
 
 This is the composition the reactive Spring Boot starter wires for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
 
-Once shut down, a reactor catch-up model that wraps a named subscription model throws `SubscriptionModelShutdownException` when you call `subscribe(..)` with a subscription id, before it replays anything. The durable model on top does the same, see [Life-cycle](#durable-subscription-reactive-life-cycle).
+Once shut down, a reactor catch-up model that wraps a named subscription model throws `SubscriptionModelShutdownException` when you call `subscribe(..)` with a subscription id, before it replays anything. The durable model on top does the same, see [Shutting Down](#durable-subscription-reactive-shutdown).
 
 If you compose `Durable(Catchup(customModel))` with your own `customModel` that implements only the cold `FluxSubscriptionModel` primitive, there's nothing underneath for the catch-up model to delegate the live half to, and the named `subscribe(..)` path refuses:
 
@@ -4137,7 +4156,15 @@ The same limits apply as on the blocking side. A push subscription only ever see
 
 The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](#push-subscription-blocking). Wrap it around the reactive push model with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`. It replays the history first, then hands over to the live feed with id de-duplication over the overlap, records that the catch-up finished so a restart skips the replay, and leaves live-resume to the broker. Delivery is at-least-once, so the projection must tolerate seeing the same event twice, and rebuild the projection if the consumer is offline longer than the broker retains the backlog. The tunables and the handler-concurrency contract are documented on the [blocking one](#push-subscription-blocking) and apply the same way here.
 
-`startupMode` behaves the same as on the blocking stack. `BACKGROUND` starts the application while the replay runs, `DEFAULT` waits for it, and a background replay's progress and any failure are recorded on `PushCatchupStatus`. A projection on a bean built after startup never waits, see [When Annotations Register](#when-annotations-register). A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to be applied. Stopping the model itself now interrupts an in-flight catch-up replay too, the same 0.32.0 fix as on the blocking stack.
+`startupMode` behaves the same as on the blocking stack:
+
+* `BACKGROUND` starts the application while the replay runs.
+* `DEFAULT` waits for it.
+* A background replay's progress and any failure are recorded on `PushCatchupStatus`.
+
+A projection on a bean built after startup never waits, see [When Annotations Register](#when-annotations-register).
+
+A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to be applied. Stopping the model itself also interrupts an in-flight catch-up replay, the same as on the blocking stack.
 
 ##### Life-cycle {#push-subscription-reactive-life-cycle}
 
@@ -7061,7 +7088,7 @@ Here's a summary of the different startup modes:
 | `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.CheckpointStorage`, it'll never miss an event during startup.                                                                                      |
 | `BACKGROUND`         | The subscription will NOT wait until it's started up fully before Spring continues starting the rest of the application; instead, it will be started in the background. Typically, this is useful if you instruct the subscription to start at an earlier date (such as the beginning of time), and you have a lot of events to read before the subscription has caught up. In this case, you may wish to start the Spring application before the subscription has fully started (i.e., before all historic events have been replayed) because waiting for all events to replay takes too long. The subscription will then replay all historic events in the background before switching to continuous mode. |
 
-These modes decide what happens while the application starts. A bean that's built after startup is created when the application is already running, so its subscription handlers never wait for their replay, whatever `startupMode` says. [When Annotations Register](#when-annotations-register) explains which beans are built after startup.
+These modes decide what happens while the application starts. The subscription handlers of a bean built after startup never wait for their replay, whatever `startupMode` says, see [When Annotations Register](#when-annotations-register).
 
 #### Spring Advice on Handler Methods
 
@@ -7147,7 +7174,7 @@ Some failures happen the same way on every attempt. Occurrent logs these once an
 
 If a bean the subscribe needs, `CheckpointStorage` for example, failed to build, Occurrent looks at the root cause of that build failure to decide whether to try again.
 
-The handlers on one bean subscribe one after the other, so when Occurrent gives up on one handler it also gives up on the handlers after it, and the log names them. For a singleton bean, fix the cause and restart the application, since Spring builds a singleton only once. For a bean that isn't a singleton, the next instance Spring builds tries to register its handlers again.
+The handlers on one bean subscribe one after the other. So when Occurrent gives up on one handler, it also gives up on the handlers after it, and the log names them. For a singleton bean, fix the cause and restart the application, since Spring builds a singleton only once. For a bean that isn't a singleton, the next instance Spring builds tries to register its handlers again.
 
 # Testing
 
