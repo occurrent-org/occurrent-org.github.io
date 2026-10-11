@@ -6226,7 +6226,15 @@ saga<OrderEvent, OrderCommand> {
 
 Setting a replacement switches off the hierarchy check for every event type the saga declares, not only for one whose concrete types you could not enumerate. An array or a primitive declared type is still refused. The check belongs to `Saga.Builder`, `FlowSaga.Builder` and `Saga.create(...)` alone, so a saga you implement directly by hand, rather than through a builder or the factory, never runs it at any `eventTypes()`, and a declared type whose concrete types cannot all be found then leaves it subscribing on a filter that misses events its own handlers would take. Declare the concrete types there, the same thing a builder would otherwise have insisted on. `Saga.create(...)` takes a replacement but not a narrowing, since the saga it returns is an anonymous implementation with nothing left to set afterwards. Implement `Saga` yourself for a narrowing, the same route the factory's own javadoc already sends you down for `onStart` and `isTerminal`.
 
-Both members leave two things for you to get right, since neither is checked for you. The condition has to admit the saga's start events, because one that excludes them means no instance is ever created. It also has to admit the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running. A `replacementFilter` adds two more of its own. Every CloudEvent it admits is converted to a domain event before the saga sees it, so keep it inside what your `CloudEventConverter` can turn into an event, since one it cannot convert fails that delivery rather than being skipped. A flow saga also appends every correlated event it receives to the instance's retained history before it looks at which branch handles it, so a replacement wider than the flow's own types grows that history.
+Neither member checks the condition you give it. Make sure it admits:
+
+* the saga's start events, because a condition that excludes them means no instance is ever created
+* the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running
+
+Two more things apply to a `replacementFilter`:
+
+* Every CloudEvent it admits is converted to a domain event before the saga sees it. Keep it inside what your `CloudEventConverter` can convert, since an event the converter can't convert fails that delivery instead of being skipped.
+* A flow saga appends every correlated event it receives to the instance's retained history before it looks at which branch handles it. So a replacement wider than the flow's own types grows that history.
 
 An event of a type the flow doesn't declare never counts toward a `stepWindow` cap. [Delivery Contract](#saga-delivery-contract) explains when the cap drops such an event, and why a step that only receives such events has no limit from `stepWindow`.
 
@@ -6636,7 +6644,7 @@ A live event and a firing timer do not fail the same way when a `SagaConcurrency
 
 A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`. The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
 
-`stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. An event counts toward the cap when its type is declared, meaning one of the flow's own `on(...)` branches or an `event(...)` check inside a window condition names it. A repeat of the type that started the instance counts too.
+`stepWindow(int events)` caps how many of the current step's own events are kept, and it's applied on every delivery. An event counts toward the cap when its type is declared, meaning one of the flow's own `on(...)` branches or an `event(...)` check inside a window condition names it. A repeat of the type that started the instance counts too.
 
 An event of any other type is still retained, but it doesn't count toward the cap. `stepWindow` drops it only when the cap drops a counted event that arrived after it.
 
