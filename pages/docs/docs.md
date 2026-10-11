@@ -3407,7 +3407,7 @@ that stores the checkpoint, and combine them to a `DurableSubscriptionModel`:
 
 ##### When No Start Position Can Be Recorded {#durable-subscription-blocking-no-start-position}
 
-A new subscription that asks for `StartAt.subscriptionModelDefault()` gets its start position stored before any event is delivered. `DurableSubscriptionModel` gets that position by calling `globalCheckpoint()` on the wrapped model inside `subscribe(..)`. If the application crashes before the first checkpoint is saved, the subscription resumes from that stored position.
+A new subscription that asks for `StartAt.subscriptionModelDefault()` gets its start position stored before any event is delivered. `DurableSubscriptionModel` gets that position by calling `globalCheckpoint()` on the subscription model it wraps, inside `subscribe(..)`. If the application crashes before the first checkpoint is saved, the subscription resumes from that stored position.
 
 When `globalCheckpoint()` returns `null` and nothing is stored for the subscription, `subscribe(..)` throws `IllegalStateException` and registers nothing. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` return `null` when the server refuses the `hostInfo` command, which a shared MongoDB Atlas cluster does.
 
@@ -3422,7 +3422,7 @@ DurableSubscriptionModel subscriptionModel = new DurableSubscriptionModel(wrappe
 
 With the Spring Boot starter, set `occurrent.subscription.start-when-no-start-position-can-be-recorded=true` instead.
 
-The subscription then starts with no stored position. If the application crashes before the first checkpoint is saved, the subscription starts over from wherever the feed has got to by the time it restarts. An event whose delivery failed before the crash is then not delivered again. Up to 0.33.0 every such subscription started this way.
+The subscription then starts with no stored position. If the application crashes before the first checkpoint is saved, the subscription starts over from wherever the feed has got to by the time it restarts. An event whose delivery failed before the crash is then not delivered again.
 
 #### Catch-up Subscription (Blocking)
 
@@ -4052,7 +4052,9 @@ Starting a refused subscription is what drops it from the model, so getting it b
 
 Two registrations are left alone by all of that. One naming its own `StartAt` isn't read for at all, `StartAt.now()` included, since the model records no position for it and you've said where to begin. One that already has a checkpoint stored begins from that checkpoint and starts even when the read couldn't answer. So a position source that can never answer stops a brand new subscription rather than every subscription the application has.
 
-To start a registration whose read answers nothing, set `startWhenNoStartPositionCanBeRecorded(true)` on `ReactorDurableSubscriptionModelConfig`, or `occurrent.subscription.start-when-no-start-position-can-be-recorded=true` with the Spring Boot starter. `ReactorMongoSubscriptionModel` answers nothing when the server refuses the `hostInfo` command, as a shared MongoDB Atlas cluster does. A read that fails is still refused. [When No Start Position Can Be Recorded](#durable-subscription-blocking-no-start-position) explains what you risk by starting without a stored position.
+To start a registration whose read returns nothing, set `startWhenNoStartPositionCanBeRecorded(true)` on `ReactorDurableSubscriptionModelConfig`. With the Spring Boot starter, set `occurrent.subscription.start-when-no-start-position-can-be-recorded=true`.
+
+`ReactorMongoSubscriptionModel` returns nothing when the server refuses the `hostInfo` command, as a shared MongoDB Atlas cluster does. A read that fails is still refused. [When No Start Position Can Be Recorded](#durable-subscription-blocking-no-start-position) explains what you risk by starting without a stored position.
 
 A dynamic start position is read for the same way, but when it's resolved depends on the wrapped model. Delegating to a named model resolves it right inside `subscribe(..)`, so its refusal comes from that call directly instead of through a handle. Driving the cold primitive itself defers that resolution until the subscription starts, so its registration handle keeps waiting and the refusal comes out then.
 
