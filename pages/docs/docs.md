@@ -3776,7 +3776,7 @@ it happened before T2. Thus this event is missed! Whether or not this is actuall
 at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](#reactive-subscription-checkpoint-storage)
 _before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.               
 
-Since 0.34.0 the interface also has `globalCheckpointAsOfNow()`. It records the moment you call it, and works out the position for that moment once the `Mono` is subscribed to. A subscription started from the position it emits receives every event written after the call, even if you subscribe to the `Mono` long after it.
+The interface also has `globalCheckpointAsOfNow()`. It records the moment you call it, and works out the position for that moment once the `Mono` is subscribed to. A subscription started from the position it emits receives every event written after the call, even if you subscribe to the `Mono` long after it.
 
 `globalCheckpoint()` on `ReactorMongoSubscriptionModel` works out the position when its `Mono` is subscribed to instead, so an event written between the call and the subscription can be skipped. The position from `globalCheckpointAsOfNow()` can be earlier than the call, so the subscription can also receive events written before it.
 
@@ -4001,21 +4001,31 @@ Note that you can provide a [filter](#reactive-subscription-filters), [start pos
 
 `ReactorMongoSubscriptionModel` retries a failing action with the same `RetryStrategy` machinery [the blocking stack uses](#retry-configuration-blocking), instead of ending the subscription on the first failure. Before 0.32.0 only the change stream itself was retried here, so one bad delivery could end a named subscription for good. It also refuses an unsupported `SubscriptionFilter` from `subscribe(..)` directly now, rather than accepting it and failing later inside the deferred change-stream pipeline where nobody was listening.
 
-Since 0.34.0, a subscription started with `StartAt.now()`, or without a `StartAt`, starts from the moment `subscribe(..)` is called. For the plain `Flux` from `subscribe(filter, startAt)` it's the moment you subscribe to the `Flux`. An event written right after `subscribe(..)` returns is delivered. Before 0.34.0 it was skipped, because the model only worked out where "now" was just before it opened the change stream.
+A subscription started with `StartAt.now()`, or without a `StartAt`, starts from the moment `subscribe(..)` is called. For the plain `Flux` from `subscribe(filter, startAt)`, it's the moment you subscribe to the `Flux`. An event written right after `subscribe(..)` returns is delivered.
 
-The model also reads the newest cluster time the MongoDB driver has seen on that client. When the change stream opens, it sends `hello` and subtracts the time since the call from the server clock in the reply, which gives the start of the second the clock showed at the call. It opens the change stream just after the cluster time it read, or at the start of that second if that is earlier.
+The model also reads the newest cluster time the MongoDB driver has seen on that client. When the change stream opens, it sends `hello` and subtracts the time since the call from the server clock in the reply. That gives the start of the second the clock showed at the call. It opens the change stream just after the cluster time it read, or at the start of that second if that is earlier.
 
 So a new subscription can also receive events written up to 16 seconds before the call, plus the time the reply to `hello` took to reach the client. For events written through the same `MongoClient`, it reaches back at most a second, plus that time. A handler that expects only events written after `subscribe(..)` has to cope with those.
 
-The model records the moment even while it's stopped. A subscription you make then receives the events written between `subscribe(..)` and `start()`. In 0.33.0 it started from the moment `start()` was called.
+The model records the moment even while it's stopped. A subscription you make then receives the events written between `subscribe(..)` and `start()`.
 
-If a subscription's change stream first opens longer after `subscribe(..)` than the oplog keeps history, because the model was stopped or the subscription paused until then, the history back to the call is gone. `restartSubscriptionsOnChangeStreamHistoryLost` decides what happens then. With the model's default, `false`, the subscription stops, the model logs an error and `isRunning(id)` returns `false`. `waitUntilStarted()` has already reported it started by then, since it reports that when the model asks MongoDB to open the change stream, before MongoDB answers that the history is gone.
+If a subscription's change stream first opens longer after `subscribe(..)` than the oplog keeps history, the history back to the call is gone. That happens when the model was stopped or the subscription paused until then. `restartSubscriptionsOnChangeStreamHistoryLost` decides what happens next.
+
+With the model's default, `false`, the subscription stops, the model logs an error, and `isRunning(id)` returns `false`. `waitUntilStarted()` has already reported it started by then. It reports that when the model asks MongoDB to open the change stream, before MongoDB answers that the history is gone.
 
 To restart at the present instead, skipping the events written in between, create the model with `ReactorMongoSubscriptionModelConfig.withConfig().restartSubscriptionsOnChangeStreamHistoryLost(true)`. The reactive Spring Boot starter turns it on unless `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` is `false`.
 
-When the cluster time the model read is at most 15 seconds older than the server's clock, every event written through the same `MongoClient` after the call is delivered, whatever the server's clock shows. So is every event another client writes to a replica set, unless another member becomes primary in between. On a sharded cluster, and after another member becomes primary, MongoDB can give another client's write a cluster time earlier than the one the model read. That write is delivered only when its cluster time is no earlier than the start of the second the server's clock showed at the call.
+When the cluster time the model read is at most 15 seconds older than the server's clock, every event written through the same `MongoClient` after the call is delivered, whatever the server's clock shows. So is every event another client writes to a replica set, unless another member becomes primary in between.
 
-The model starts from the server's clock alone when it can't read the driver's cluster time, when the driver hasn't seen one yet, or when the one it has seen is more than 15 seconds older than the server's clock. The driver keeps its cluster time internal, so the model reads it by reflection and logs a warning the first time it can't. The driver only learns a newer cluster time when the client sends a command, so a client that has sent none for more than 15 seconds falls in the last case.
+On a sharded cluster, and after another member becomes primary, MongoDB can give another client's write a cluster time earlier than the one the model read. That write is delivered only when its cluster time is no earlier than the start of the second the server's clock showed at the call.
+
+The model starts from the server's clock alone when:
+
+* it can't read the driver's cluster time
+* the driver hasn't seen one yet
+* the one the driver has seen is more than 15 seconds older than the server's clock
+
+The driver keeps its cluster time internal, so the model reads it by reflection and logs a warning the first time it can't. The driver only learns a newer cluster time when the client sends a command, so a client that has sent none for more than 15 seconds falls in the last case.
 
 The start can then be later than the call, and the subscription skips the events written in between, in three cases:
 
