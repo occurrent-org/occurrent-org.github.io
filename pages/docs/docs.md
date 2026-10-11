@@ -3252,7 +3252,13 @@ public void onMessage(byte[] body) {
 
 ##### Observing pushed events {#push-subscription-blocking-observer}
 
-`accept(..)` returns normally for an event that no subscription takes, and it logs nothing about it. So a misconfigured queue binding, a missing declared event type or a typo in a type mapping all look exactly like a saga or projection that got the event and ignored it. Pass a `PushObserver` to the constructor to tell them apart:
+`accept(..)` returns normally for an event that no subscription takes, and it logs nothing about it. So each of these looks exactly like a saga or projection that got the event and ignored it:
+
+* a misconfigured queue binding
+* a missing declared event type
+* a typo in a type mapping
+
+Pass a `PushObserver` to the constructor to tell them apart:
 
 ```java
 PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(),
@@ -3447,17 +3453,35 @@ It skips the replay and starts delivering the buffered and future live events di
 
 A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
+###### What the feed refuses {#feeding-refusals}
+
+A `DomainEventFeed` or `CatchupProjectionFeed` refuses three things rather than let a projection silently do the wrong thing:
+
+* `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, on both the blocking and reactor feeds. The durable checkpoint key it derives from `id` must be unique across every registered projection.
+* A projection keyed by metadata that is fed through the metadata-less `accept(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `accept(metadata, event)` instead.
+* `DomainEventFeed.accept(..)` throws an `IllegalStateException` when no projection is registered on the feed. On the reactor stack the returned `Mono` fails with one. `catchUpAll()` refuses on a feed with no projection for the same reason.
+
+Refusing an event with no projection registered matters because you acknowledge the broker message once `accept` returns. Acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
+
+This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
+
+`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](#push-subscription-blocking-observer). When you drive it from a broker, call `acceptRedeliverable(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, and the broker delivers the message again as long as you don't acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
+
+###### Feeding a `CloudEvent` to the feed {#feeding-cloudevents}
+
 A listener that receives a `CloudEvent` instead of a domain event, a broker consumer for example, hands it to `DomainEventFeed.acceptCloudEvent(..)`. It returns a [`RoutingOutcome`](#push-subscription-blocking-observer) that tells the listener whether to acknowledge the message:
 
 ```java
 RoutingOutcome outcome = feed.acceptCloudEvent(cloudEvent);
 ```
 
-The feed matches the event against the filter the projection was registered with, the same filter its catch-up reads the event store with. An event that doesn't match comes back `FILTERED` and is never decoded, so a converter that only knows this projection's event types never sees another type. Acknowledge it, since redelivering it gets the same answer.
+The feed matches the event against the filter the projection was registered with, the same filter its catch-up reads the event store with. A matching event is decoded with the feed's `CloudEventConverter`. An event that doesn't match is never decoded, so a converter that only knows this projection's event types never sees another type.
 
-A matching event is decoded with the feed's `CloudEventConverter` and comes back `DELIVERED` once the projection has applied it. Acknowledge it.
-
-A matching event that arrives before the projection is live comes back `DEFERRED`. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. Don't acknowledge it. Redeliver it until it comes back `DELIVERED`, which is safe any number of times.
+| Outcome | When | What to do with the message |
+|:---|:---|:---|
+| `FILTERED` | The event doesn't match the filter. | Acknowledge it, since redelivering it gets the same answer. |
+| `DELIVERED` | The event matches, and the projection has applied it. | Acknowledge it. |
+| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. Redeliver it until it comes back `DELIVERED`, which is safe any number of times. |
 
 With no projection registered, `acceptCloudEvent(..)` throws `IllegalStateException`, the same as `accept(..)`.
 
@@ -5440,6 +5464,8 @@ DcbProjection<Boolean, AccountEvent, String> isUsernameClaimed(String username) 
 
 Feed it with a DCB subscription the same way you feed a stream projection: `dcbSubscriptions(dcbSubscriptionModel, cloudEventConverter) { project("...", isUsernameClaimed(username), repository) }`.
 
+A `DcbProjection` rejects a wrapped `Projection` that has its own explicit `filter()`, because that filter would otherwise be silently ignored. A `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter.
+
 ### Reading on demand
 
 When you want a strongly consistent answer at the moment you ask, skip the subscription and apply the projection directly to a query. This reads the events in the boundary and returns the state, with no stored read model to keep in sync:
@@ -5461,12 +5487,6 @@ int total = Projections.project(totalEnrolledStudents, domainEventQueries);
 ```
 
 It's only valid for a single-instance (singleton) projection, since combining every instance of a keyed projection into one blended state on demand would be nonsense; use `Projections.project(projection, queries, instanceId)` to scope a keyed projection to one instance instead. `Projections.project(dcbProjection, dcbQueries)` is the DCB counterpart to both; a DCB projection's criteria already scopes the read to one instance, so there's no keyed/singleton distinction to make.
-
-Three guards keep a projection from silently doing the wrong thing. `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, since the durable checkpoint key it derives from `id` must be unique across every registered projection, on both the blocking and reactor feeds. A `DcbProjection` rejects a wrapped `Projection` that carries its own explicit `filter()`, because that filter would otherwise be silently ignored. A `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter. And a projection keyed by metadata that is fed through the metadata-less `accept(event)` on a `DomainEventFeed` or `CatchupProjectionFeed` throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `accept(metadata, event)` instead.
-
-A fourth guard covers the time before anything is registered. `DomainEventFeed.accept(..)` throws an `IllegalStateException` when no projection is registered on the feed, and on the reactor stack the returned `Mono` fails with one. Refusing matters because you acknowledge the broker message once `accept` returns, and acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch. `catchUpAll()` refuses on a feed with no projection for the same reason.
-
-This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because the in-memory event store calls it too, as an `InMemoryEventStore` listener. By then the event is already stored, so refusing would only make the write call fail, without undoing the write. When you drive it from a broker, call `acceptRedeliverable(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, and the broker delivers the message again as long as you don't acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
 
 ### Read-your-writes
 
