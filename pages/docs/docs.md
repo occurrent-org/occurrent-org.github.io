@@ -216,14 +216,14 @@ The documentation on this page is always for the latest version of Occurrent, cu
 </div>
 
 # Introduction
-<div class="comment">Occurrent is in an early stage so API's, and even the data model, are subject to change in the future.</div>
+<div class="comment">Occurrent is in an early stage so APIs, and even the data model, are subject to change in the future.</div>
 
 Occurrent is an [event sourcing](#event-sourcing) library, or if you wish, a set of event sourcing utilities for the JVM, created by [Johan Haleby](https://code.haleby.se/).
 There are many options for doing event sourcing in Java already so why build another one? There are a few reasons for this besides the
 intrinsic joy of doing something yourself: 
  
 * You should be able to design your domain model without _any_ dependencies to Occurrent or any other library. Your domain model can be expressed with pure functions that returns events. Use Occurrent to store these events.
-  This is a very important design decision! Many people talk about doing this, but I find it rare in practise, and some existing event sourcing frameworks makes this difficult or non-idiomatic.
+  This is a very important design decision! Many people talk about doing this, but I find it rare in practice, and some existing event sourcing frameworks makes this difficult or non-idiomatic.
 * Simple: Pick only the libraries you need, no need for an all or nothing solution. If you don't need subscriptions, then don't use them! Use the infrastructure 
   that you already have and hook these into Occurrent.
 * Occurrent is not a database by itself. The goal is to be a thin wrapper around existing commodity databases that you may already be familiar with.  
@@ -288,7 +288,7 @@ Occurrent automatically adds two [extension attributes]({{cloudevents_spec}}#ext
 
 These are required for Occurrent to operate. A long-term goal of Occurrent is to come up with a standardized set of cloud event extensions that are agreed upon and used by several different vendors.
 
-Since version {{site.occurrentversion}}, Occurrent also stamps every event with a global, monotonically increasing `position` extension, shared by stream-written and DCB events alike. It gives stream consumers the same total-ordering guarantee that DCB relies on, and stream catch-up reconciles on it rather than on wall-clock time. It is enabled by default for a new store. When a MongoDB store starts up against a collection that already holds events without a `position`, and position was only on by default rather than turned on explicitly, the store turns position off for itself instead of building the position index over the existing collection, and logs how to enable it. Enabling position explicitly with `EventStoreConfig.withStreamPosition()` (or the property `occurrent.event-store.stream.position=true`) keeps it on even over that existing data, in which case backfill the existing events first. A stream-only store can opt out with `EventStoreConfig.withoutStreamPosition()` (or `occurrent.event-store.stream.position=false`), but a store with the DCB capability always has it enabled.
+Since version 0.30.0, Occurrent also stamps every event with a global, monotonically increasing `position` extension, shared by stream-written and DCB events alike. It gives stream consumers the same total-ordering guarantee that DCB relies on, and stream catch-up reconciles on it rather than on wall-clock time. It is enabled by default for a new store. When a MongoDB store starts up against a collection that already holds events without a `position`, and position was only on by default rather than turned on explicitly, the store turns position off for itself instead of building the position index over the existing collection, and logs how to enable it. Enabling position explicitly with `EventStoreConfig.withStreamPosition()` (or the property `occurrent.event-store.stream.position=true`) keeps it on even over that existing data, in which case backfill the existing events first. A stream-only store can opt out with `EventStoreConfig.withoutStreamPosition()` (or `occurrent.event-store.stream.position=false`), but a store with the DCB capability always has it enabled.
 
 In the meantime, it's quite possible that Occurrent will provide a wider set of optional extensions in the future (such as correlation id and/or sequence number). But for now, it's up to you as a user to add these if you need them (see [CloudEvent Metadata](#cloudevent-metadata)), 
 you would typically do this by creating or extending/wrapping an already existing [application service](#application-service).    
@@ -362,13 +362,13 @@ class ApplicationService constructor (val eventStore : EventStore) {
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
-<div class="comment">Note that typically the domain model, WordGuessingGame in this example, would not return CloudEvents but rather a list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvent's. 
+<div class="comment">Note that typically the domain model, WordGuessingGame in this example, would not return CloudEvents but rather a list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvents. 
 This is not shown in this example above for brevity.</div>
 
 You could then call the application service like this regardless of you're starting a new game or not:
 
 {% capture java %}
-// Here we image that we have received the data required to start a new game, e.g. from a REST endpoint. 
+// Here we imagine that we have received the data required to start a new game, e.g. from a REST endpoint. 
 String gameId = ...
 String wordToGuess = ...;
 
@@ -383,7 +383,7 @@ String guess = ...;
 applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess));
 {% endcapture %}
 {% capture kotlin %}
-// Here we image that we have received the data required to start a new game, e.g. from a REST endpoint. 
+// Here we imagine that we have received the data required to start a new game, e.g. from a REST endpoint. 
 val gameId : String = ...
 val wordToGuess : String = ...;
 
@@ -412,7 +412,7 @@ For example in this case you might consider both starting a game and let the pla
 
 A "write condition" can be used to specify conditional writes to the event store. Typically, the purpose of this would be to achieve [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control) (optimistic locking) of an event stream.
 
-For example, image you have an `Account` to which you can deposit and withdraw money. A business rule says that it's not allowed to have a negative balance on an account.
+For example, imagine you have an `Account` to which you can deposit and withdraw money. A business rule says that it's not allowed to have a negative balance on an account.
 Now imagine an account that is shared between two persons and contains 20 EUR. Person "A" wants to withdraw 15 EUR and person "B" wants to withdraw 10 EUR. 
 If they try to do this, an error message should be presented to one of them since the account balance would be negative. But what happens if both persons try to withdraw
 the money at the same time? Let's have a look:
@@ -466,7 +466,7 @@ eventStore.write("account1", events)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-<div class="comment">Note that typically the domain model, Account in this example, would not return CloudEvents but rather a list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvent's. 
+<div class="comment">Note that typically the domain model, Account in this example, would not return CloudEvents but rather a list of a custom data structure, domain events, that would then be <i>converted</i> to CloudEvents. 
 This is not shown in the example above for brevity, look at the <a href="#commands">command</a> section for a more real-life example.</div>
 
 To avoid the problem above we want to make use of conditional writes. Let's see how:
@@ -817,7 +817,7 @@ val eventStream = filteredEventStore?.read(
 ## Subscriptions
 
 A subscription is a way to get notified when new events are written to an event store. Typically, a subscription will be used to create views from events (such as projections, sagas, snapshots etc) or
-create integration events that can be forwarded to another piece of infrastructure such as a message bus. There are two different kinds of API's, the first one is a [blocking API](#blocking-subscriptions) 
+create integration events that can be forwarded to another piece of infrastructure such as a message bus. There are two different kinds of APIs, the first one is a [blocking API](#blocking-subscriptions) 
 represented by the `org.occurrent.subscription.api.blocking.SubscriptionModel` interface (in the `org.occurrent:occurrent-subscription-api-blocking` module), and second one is a [reactive API](#reactive-subscriptions) 
 represented by the `org.occurrent.subscription.api.reactor.FluxSubscriptionModel` interface (in the `org.occurrent:occurrent-subscription-api-reactor` module). 
 
@@ -837,7 +837,7 @@ Independently of the blocking-versus-reactive choice above, a subscription is ei
 
 Occurrent has a higher-level [Projection DSL](#projection-dsl) for maintaining views/projections, described further down. You don't have to use it, though. At its simplest a view is just a [subscription](#subscriptions) in which you create and store 
 the view as you find fit. And even that doesn't have to be difficult! Here's a trivial example of a view that maintains the number of
-ended games. It does so by inceasing the "numberOfEndedGames" field in an (imaginary) database for each "GameEnded" event that is written to the event store:
+ended games. It does so by increasing the "numberOfEndedGames" field in an (imaginary) database for each "GameEnded" event that is written to the event store:
 
 {% capture java %}
 // An imaginary database API
@@ -857,7 +857,7 @@ subscriptionModel.subscribe("my-view", filter(type("GameEnded"))) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Where `filter` is imported `from org.occurrent.subscription.StreamSubscriptionFilter` and `type` is imported from `org.occurrent.condition.Condition`.
+Where `filter` is imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is imported from `org.occurrent.filter.Filter`.
 
 While this is a trivial example it shouldn't be difficult to create a view that is backed by a JPA entity in a relational database based on a subscription.
 
@@ -877,9 +877,9 @@ to represent commands and command handling. Combine this with function compositi
 
 Occurrent doesn't contain a built-in command bus. Instead, you're encouraged to pick any infrastructure component you need to act as the command bus to 
 send commands to another service. Personally, I typically make a call to a REST API or make an RPC invocation instead of using a distributed command bus
-that routes the commands to my aggregate. There are of course exceptions to this, such as the need for [location transparency](https://en.wikipedia.org/wiki/Location_transparency) or if you're using [Decider's](#decider).
+that routes the commands to my aggregate. There are of course exceptions to this, such as the need for [location transparency](https://en.wikipedia.org/wiki/Location_transparency) or if you're using [Deciders](#decider).
 If you need location transparency, a command bus or an actor model can be of help. But I would argue that you may not always need the complexity by prematurely going down this route
-if your business requirements doesn't point you in this direction. [Decider's](#decider) are a nice alternative, that doesn't require any additional infrastructure.    
+if your business requirements doesn't point you in this direction. [Deciders](#decider) are a nice alternative, that doesn't require any additional infrastructure.    
 
 But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and 
 routed to a function in your domain model. This is where an [application service](#application-service) becomes useful. However, let's first explore the 
@@ -973,14 +973,14 @@ public class StartNewGameCommand {
     }
 
     public void setWordToGuess(String wordToGuess) {
-        this.gameId = gameId;
+        this.wordToGuess = wordToGuess;
     }
     
     public String getWordToGuess() {
         return wordToGuess;
     }
     
-    // Equals/hashcode/tostring methods are excluded for breivty
+    // Equals/hashcode/tostring methods are excluded for brevity
 }
 {% endcapture %}
 {% capture kotlin %}
@@ -1012,7 +1012,7 @@ From a typical Java perspective one could argue that this is not too bad. But it
 ### Commands in Occurrent 
 
 So how would one dispatch commands in Occurrent? As we've already mentioned there's nothing stopping you from using a (distributed) command bus or to create explicit commands, 
-and dispatch them the way we did in the example above. For example, if you're using [Decider's](#decider), it could be nice to have commands explicitly defined.
+and dispatch them the way we did in the example above. For example, if you're using [Deciders](#decider), it could be nice to have commands explicitly defined.
 But if you recognize some of the points described above and are looking for a simpler approach, here's another
 way to go about. First let's refactor the domain model to pure functions, without any state or dependencies to Occurrent or any other library/framework. 
 
@@ -1049,7 +1049,7 @@ applicationService.execute(gameId, events -> WordGuessingGame.startNewGame(gameI
 // A function that converts a CloudEvent to a "domain event"
 val convertCloudEventToDomainEvent : (CloudEvent) -> DomainEvent = ..
 // A function that a "domain event" to a CloudEvent
-val convertDomainEventToCloudEvent = (DomainEvent) -> CloudEvent  = ..
+val convertDomainEventToCloudEvent : (DomainEvent) -> CloudEvent = ..
 val eventStore : EventStore = ..
 val applicationService = ApplicationService(eventStore, convertCloudEventToDomainEvent, convertDomainEventToCloudEvent);
 
@@ -1101,7 +1101,7 @@ that you can use to further enhance the example above (if you like). If you stat
 you can refactor the code above into this:
 
 {% include macros/command/composition-example-partial.md %}
-<div class="comment">If you're using Kotlin, important the "partial" extension function from "org.occurrent.application.composition.command.partial".</div>
+<div class="comment">If you're using Kotlin, import the "partial" extension function from "org.occurrent.application.composition.command.partial".</div>
 
 With Kotlin, you can also use `andThen` (described above) to do:
 
@@ -1148,13 +1148,13 @@ Next you can instantiate it like this:
 {% capture java %}
 XStream xStream = new XStream();
 xStream.allowTypeHierarchy(MyDomainEvent.class);
-URI cloudEventSource = URI.create("urn:company:domain") 
+URI cloudEventSource = URI.create("urn:company:domain");
 XStreamCloudEventConverter<MyDomainEvent> cloudEventConverter = new XStreamCloudEventConverter<>(xStream, cloudEventSource);
 {% endcapture %}
 {% capture kotlin %}
 val xStream = XStream().apply { allowTypeHierarchy(MyDomainEvent::class.java) }
 val cloudEventSource = URI.create("urn:company:domain")
-val cloudEventConverter = new XStreamCloudEventConverter<>(xStream, cloudEventSource)
+val cloudEventConverter = XStreamCloudEventConverter<MyDomainEvent>(xStream, cloudEventSource)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -1177,7 +1177,7 @@ import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.json.JsonMapper;
 
 ObjectMapper objectMapper = JsonMapper.builder().build();
-URI cloudEventSource = URI.create("urn:company:domain")
+URI cloudEventSource = URI.create("urn:company:domain");
 JacksonCloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
 {% endcapture %}
 {% capture kotlin %}
@@ -1306,12 +1306,14 @@ Let's have a look at a naive example of how we can create a custom converter tha
 Note that instead of using the code below you might as well use the [Jackson CloudEvent Converter](#jackson-cloudevent-converter), this is just an example showing how you could roll your own.
 
 ```java
+import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import io.cloudevents.CloudEvent;
 import io.cloudevents.core.builder.CloudEventBuilder;
 import org.occurrent.application.converter.CloudEventConverter;
 
-import java.io.IOException;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.net.URI;
 
 import static java.time.ZoneOffset.UTC;
@@ -1339,8 +1341,8 @@ public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
                     .withDataContentType("application/json")
                     .withData(objectMapper.writeValueAsBytes(e))
                     .build();
-        } catch (JsonProcessingException jsonProcessingException) {
-            throw new RuntimeException(jsonProcessingException);
+        } catch (JacksonException jacksonException) {
+            throw new RuntimeException(jacksonException);
         }
     }
 
@@ -1348,20 +1350,20 @@ public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
     public DomainEvent toDomainEvent(CloudEvent cloudEvent) {
         try {
             return (DomainEvent) objectMapper.readValue(cloudEvent.getData().toBytes(), Class.forName(cloudEvent.getType()));
-        } catch (IOException | ClassNotFoundException e) {
+        } catch (ClassNotFoundException e) {
             throw new RuntimeException(e);
         }
     }
     
     @Override
-    public String getCloudEventType(Class<? extends T> type) {
+    public String getCloudEventType(Class<? extends DomainEvent> type) {
         return type.getName();
     }
 }        
 ```
 <div class="comment">While this implementation works for simple cases, make sure that you think before simply copying and pasting this class into your own code base. 
 The reason is that you may not need to serialize all data in the domain event to the data field (some parts of the domain event, such as id and type, is already present in the cloud event), 
-and the "type" field contains the fully-qualified name of the class which makes it more difficult to move without loosing backward compatibility. Also your domain events
+and the "type" field contains the fully-qualified name of the class which makes it more difficult to move without losing backward compatibility. Also your domain events
 might not be serializable to JSON without conversion. For these reasons, it's recommended to create a more custom mapping between a cloud event and domain event.</div>
 
 To see what the attributes mean in the context of event sourcing refer to the [CloudEvents](#cloudevents) documentation. 
@@ -1431,11 +1433,11 @@ public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
     }
     
     @Override
-    public String getCloudEventType(Class<? extends T> type) {
+    public String getCloudEventType(Class<? extends DomainEvent> type) {
         return type.getSimpleName();
     }
     
-    private static Map<String, Object> convertDataInDomainEventToDocument(DomainEvent e) {
+    private static Map<String, Object> convertDataInDomainEventToMap(DomainEvent e) {
         // Convert the domain event into a Map                
         Map<String, Object> data = new HashMap<String, Object>();
         if (e instanceof GameStarted) {
@@ -1444,7 +1446,7 @@ public class MyCloudEventConverter implements CloudEventConverter<DomainEvent> {
         } else if (...) {
             // More events
         }
-        return map;
+        return data;
     }
 
     private static DomainEvent convertToDomainEvent(CloudEvent cloudEvent, Map<String, Object> data) {
@@ -1500,7 +1502,7 @@ val applicationService : ApplicationService<DomainEvent> = GenericApplicationSer
 
 You're now ready to use the generic application service in your application. 
 <div class="comment">
-If you're using <a href="#decider">Decider's</a> then refer to the docs <a href="#using-an-applicationservice-with-deciders">here</a>.  
+If you're using <a href="#decider">Deciders</a> then refer to the docs <a href="#using-an-applicationservice-with-deciders">here</a>.  
 </div>
 
 As an example let's say you have a domain model with a method defined like this:
@@ -1603,7 +1605,7 @@ If you are documenting or writing new synchronous side-effect code, prefer `Exec
 
 A side effect is not the same as a [synchronous subscription](#synchronous-subscriptions). A side effect is a closure you pass at each call site, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does. Use a synchronous subscription when the reaction should be declared once and decoupled from the call, or should commit atomically with the write through a `TransactionExecutor`.
 
-### Examples
+### Examples {#application-service-examples}
 
 {% capture java %}
 applicationService.execute(
@@ -1850,7 +1852,7 @@ When you decorate a dispatcher, to add logging or metrics for example, extend `F
 
 {% include macros/command-dispatch/core/maven.md %}
 
-`ApplicationService` is the write engine underneath. It takes a stream id and a decider, reads the stream, decides what to append, and appends it. A `CommandDispatcher` is what the saga calls instead of the `ApplicationService` directly. It resolves which stream the command targets, then hands the command to the `ApplicationService` (or an equivalent write path) that does the actual read, decide, and append. The saga only knows the command, not the stream id or the decider behind it.
+`ApplicationService` is the write engine underneath. It takes a stream id and a function that calls your domain model, reads the stream, lets the function decide what to append, and appends it. `DeciderApplicationService` wraps it so that the function is a decider. A `CommandDispatcher` is what the saga calls instead of the `ApplicationService` directly. It resolves which stream the command targets, then hands the command to the `ApplicationService` (or an equivalent write path) that does the actual read, decide, and append. The saga only knows the command, not the stream id or the decider behind it.
 
 To resolve the target stream, a `CommandDispatcher` implementation needs a `StreamIdResolver<C>`, another single-method interface, `String streamId(C command)`. Write one by hand when the stream id has to be computed from the command, or derive it automatically with `@TargetStreamId`.
 
@@ -2016,7 +2018,7 @@ You may also want to look into the "todo-list" pattern described in the [automat
 
 ### Synchronous Policy
 
-In some cases, for example if you have a simple website and you want views to be updated when a command is dispatched by a REST API, it can be useful to update a policy in a synchronous fashion. The application service
+In some cases, for example if you have a simple website and you want views to be updated when a command is dispatched by a REST API, it can be useful to update a view in a synchronous fashion. The application service
 provided by Occurrent allows for this through a synchronous `SideEffect` that runs as part of executing the command, please see the [application service documentation](#application-service-side-effects) for an example.    
 
 ## Snapshots
@@ -2081,7 +2083,7 @@ Snapshot persistence is best-effort. The snapshot is saved after the write has c
 
 ### Snapshots without a decider
 
-If you only need the state and no command handling, describe the fold with a `SnapshotView`, then build a `SnapshotViews` facade once over the event store and the converter. For each view, bundle it with its `SnapshotStore` in a `SnapshotViewSource`, created with `SnapshotViewSource.from(view, store)`, and pass that per call. Calling `readState(id, source)` loads the latest snapshot, applies the events written since, and returns the current state. It is a plain read that never writes. To persist a fresh snapshot for a deciders-free view on demand, call `snapshots.refresh(accountId, source)`, which applies the events up to the current head and saves a snapshot. There is no automatic write on the read path.
+If you only need the state and no command handling, describe the fold with a `SnapshotView`, then build a `SnapshotViews` facade once over the event store and the converter. For each view, bundle it with its `SnapshotStore` in a `SnapshotViewSource`, created with `SnapshotViewSource.from(view, store)`, and pass that per call. Calling `readState(id, source)` loads the latest snapshot, applies the events written since, and returns the current state. It is a plain read that never writes. To persist a fresh snapshot for a decider-free view on demand, call `snapshots.refresh(accountId, source)`, which applies the events up to the current head and saves a snapshot. There is no automatic write on the read path.
 
 {% capture java %}
 SnapshotView<AccountState, AccountEvent> view = SnapshotView.<AccountState, AccountEvent>builder(AccountState.EMPTY)
@@ -2131,7 +2133,7 @@ fun accountSnapshot(): SnapshotView<AccountState, AccountEvent> = snapshotView(A
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-<div class="comment">The declarative <code>@Snapshot</code> annotation works on both the blocking and reactor stacks, for stream and DCB. The DSL executors below are the programmatic path when you would rather not use the annotation.</div>
+<div class="comment">The declarative <code>@Snapshot</code> annotation works on both the blocking and reactor stacks, for stream and DCB. The application services and the <code>SnapshotViews</code> facade described in the other sections are the programmatic path when you would rather not use the annotation.</div>
 
 ### DCB snapshots
 
@@ -2243,7 +2245,7 @@ DeadlineConsumerRegistry deadlineConsumerRegistry = new JobRunrDeadlineConsumerR
                                                                                           
 You register so-called "deadline consumers" to the DeadlineConsumerRegistry for a certain "category" (see example [above](#deadlines)). A deadline consumer will be invoked once a deadline is up. 
 Note that you can only have one deadline consumer instance per category. You want to register your deadline consumer everytime your application starts up. If you're using Spring, you can, for example, do this 
-using a `@PostConstructor` method:
+using a `@PostConstruct` method:
 
 ```java
 @PostConstruct
@@ -2251,12 +2253,12 @@ void registerDeadlineConsumersOnApplicationStart() {
     deadlineConsumerRegistry.register("CancelPayment", (id, category, deadline, data) -> {
         CancelPayment cancelPayment = (CancelPayment) data; 
         paymentApi.cancel(cancelPayment.getPaymentId());    
-    }):
+    });
 }
 ```
 
-The example above will register a deadline consumer for the "CancelPayment" category and call an imaginary api (`paymentApi`) to cancel the payment. The deadline consumer will be called by Occurrent when the scheduled deadline is up. Here's an example of you can schedule this deadline using
-the `JobRunrDeadlineConsumerRegistry`, but first lets see what `CancelPayment` looks like:
+The example above will register a deadline consumer for the "CancelPayment" category and call an imaginary api (`paymentApi`) to cancel the payment. The deadline consumer will be called by Occurrent when the scheduled deadline is up. Here's an example of how you can schedule this deadline using
+the `JobRunrDeadlineScheduler`, but first lets see what `CancelPayment` looks like:
 
 ```java
 public class CancelPayment {
@@ -2290,7 +2292,7 @@ deadlineScheduler.schedule(UUID.randomUUID(), "CancelPayment", Deadline.afterWee
           
 This will schedule a deadline after 2 weeks, that'll be picked-up by the deadline consumer registered in the `registerDeadlineConsumersOnApplicationStart` method. Note that in this case, the class (`CancelPayment`) has the same name as the category, but this is not required.  
                                       
-Here's an example of you can setup Occurrent Deadline Scheduling in Spring Boot:
+Here's an example of how you can set up Occurrent Deadline Scheduling in Spring Boot:
 
 ```java
 @Configuration
@@ -2315,7 +2317,7 @@ public class DeadlineSpringConfig {
                 .initialize();
     }
 
-    @PostConstruct
+    @PreDestroy
     void destroyJobRunnerOnShutdown() {
         JobRunr.destroy();
     }
@@ -2341,12 +2343,12 @@ This is an in-memory, non-persistent (meaning that scheduled deadlines will be l
 {% include macros/deadline/inmemory-maven.md %}
 
 Next, you need to create in instance of `org.occurrent.deadline.inmemory.InMemoryDeadlineScheduler` and `org.occurrent.deadline.inmemory.InMemoryDeadlineConsumerRegistry`. In order for these two components to communicate with each other, 
-you also need to provide an instance of a `e java.util.concurrent.BlockingDeque` to the constructor. Here's an example:
+you also need to provide an instance of a `java.util.concurrent.BlockingDeque` to the constructor. Here's an example:
 
 ```java
 BlockingDeque<Object> queue = new LinkedBlockingDeque<>();
 DeadlineConsumerRegistry deadlineConsumerRegistry = new InMemoryDeadlineConsumerRegistry(queue);
-DeadlineConsumerRegistry deadlineScheduler = new InMemoryDeadlineScheduler(queue);
+DeadlineScheduler deadlineScheduler = new InMemoryDeadlineScheduler(queue);
 ```
 
 You can configure things, such as poll interval and retry strategy, for `InMemoryDeadlineConsumerRegistry` by supplying an instance of `org.occurrent.deadline.inmemory.InMemoryDeadlineConsumerRegistry$Config` as the second constructor argument:
@@ -2402,7 +2404,7 @@ Construct each one directly and pass it wherever the corresponding interface is 
 <div class="comment">If you're using Spring Boot, consider a Spring Boot starter, which auto-configures most of the steps below for you. There's a <a href="#spring-boot-starter">blocking starter</a> and a <a href="#reactive-spring-boot-starter">reactive starter</a>. You can then return to this section for the underlying concepts.</div>
 
 Getting started with Occurrent involves these steps:
-<div class="comment">It's recommended to read up on <a href="#cloudevents">CloudEvent's</a> and its <a href="{{cloudevents_spec}}">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
+<div class="comment">It's recommended to read up on <a href="#cloudevents">CloudEvents</a> and its <a href="{{cloudevents_spec}}">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
 
 1. Choose an underlying datastore for an [event store](#choosing-an-eventstore). Luckily there are only two choices at the moment, MongoDB and an in-memory implementation. Hopefully this will be a more difficult decision in the future :)
 1. Once a datastore has been decided, it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
@@ -2411,12 +2413,12 @@ Getting started with Occurrent involves these steps:
 1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [checkpoint storage](#blocking-subscription-checkpoint-storage) library. 
    These libraries provide means to automatically (or selectively) store the checkpoint for a subscriber to a datastore. Note that the datastore that stores this checkpoint
    can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store checkpoints in Redis.
-1. You're now good to go, but you may also want to look into more higher-level components if you don't have the need to role your own. We recommend looking into:
+1. You're now good to go, but you may also want to look into more higher-level components if you don't have the need to roll your own. We recommend looking into:
     * [Application Service](#application-service)
     * [Subscription DSL](#subscription-dsl)
     * [Query DSL](#query-dsl)
     * [Retry Component](#retry)
-    * [Decider's](#decider)
+    * [Deciders](#decider)
 
 # Choosing An EventStore
 
@@ -2432,7 +2434,7 @@ These indexes can also be used in queries against the EventStore (see [EventStor
 
 ### MongoDB Schema
 
-All MongoDB EventStore implementations tries to stay as close as possible to the <a href="https://cloudevents.io/">CloudEvent's</a> specification even in the persitence layer.
+All MongoDB EventStore implementations try to stay as close as possible to the <a href="https://cloudevents.io/">CloudEvents</a> specification even in the persistence layer.
 Occurrent, by default, automatically adds a custom "Occurrent extension" to each cloud event that is written to an `EventStore`.
 The Occurrent CloudEvent Extension consists of these attributes:
 
@@ -2452,7 +2454,7 @@ Here's an example of what you can expect to see in the "events" collection when 
 
 ```javascript
 {
-	"_id : ObjectId("5f4112a348b8da5305e41f57"),
+	"_id" : ObjectId("5f4112a348b8da5305e41f57"),
 	"specversion" : "1.0",
 	"id" : "bdb8481f-9e8e-443b-80a4-5ef787f0f227",
 	"source" : "urn:occurrent:domain:numberguessinggame",
@@ -2647,7 +2649,7 @@ that allow for arbitrary queries on e.g. the data attribute of a cloud event (if
 
 #### What is it?
 An EventStore implementation that uses the "native" Java MongoDB synchronous driver (see [website](https://docs.mongodb.com/drivers/java)) to read and write
-[CloudEvent's](https://cloudevents.io/) to MongoDB.
+[CloudEvents](https://cloudevents.io/) to MongoDB.
 
 #### When to use?
 Use when you don't need Spring support and want to use MongoDB as the underlying datastore.
@@ -2675,7 +2677,7 @@ Now you can start reading and writing events to the EventStore:
 
 {% include macros/eventstore/mongodb/native/read-and-write-events.md %}
 
-#### Examples
+#### Examples {#examples-1}
 
 | Name  | Description  | 
 |:----|:-----|  
@@ -2689,7 +2691,7 @@ An implementation that uses Spring's [MongoTemplate](https://docs.spring.io/spri
 to read and write events to/from MongoDB.     
 
 #### When to use?
-If you're already using Spring and you don't need reactive support then this is a good choice. You can make use of the `@Transactional` annotation to write events and views in the same transaction (but make sure you understand what you're going before attempting this).
+If you're already using Spring and you don't need reactive support then this is a good choice. You can make use of the `@Transactional` annotation to write events and views in the same transaction (but make sure you understand what you're doing before attempting this).
 
 #### Dependencies
 
@@ -2697,9 +2699,9 @@ If you're already using Spring and you don't need reactive support then this is 
 
 #### Getting Started
 
-Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.reactor.ReactorMongoEventStore`.
-It takes two arguments, a [ReactiveMongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/ReactiveMongoTemplate.html) and 
-an `org.occurrent.eventstore.mongodb.spring.reactor.EventStoreConfig`.
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.blocking.SpringMongoEventStore`.
+It takes two arguments, a [MongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/MongoTemplate.html) and 
+an `org.occurrent.eventstore.mongodb.spring.blocking.EventStoreConfig`.
 
 For example:  
 
@@ -2711,7 +2713,7 @@ Now you can start reading and writing events to the EventStore:
 
 {% include macros/eventstore/mongodb/spring/blocking/read-and-write-events.md %}
 
-#### Examples
+#### Examples {#examples-2}
 
 | Name  | Description  | 
 |:----|:-----|  
@@ -2729,7 +2731,7 @@ An implementation that uses Spring's [ReactiveMongoTemplate](https://docs.spring
 to read and write events to/from MongoDB.     
 
 #### When to use?
-If you're already using Spring and want to use the reactive driver ([project reactor](https://projectreactor.io/)) then this is a good choice. It uses the `ReactiveMongoTemplate` to write events to MongoDB. You can make use of the `@Transactional` annotation to write events and views in the same tx (but make sure that you understand what you're going before attempting this).
+If you're already using Spring and want to use the reactive driver ([project reactor](https://projectreactor.io/)) then this is a good choice. It uses the `ReactiveMongoTemplate` to write events to MongoDB. You can make use of the `@Transactional` annotation to write events and views in the same tx (but make sure that you understand what you're doing before attempting this).
 
 #### Dependencies
 
@@ -2751,11 +2753,11 @@ Now you can start reading and writing events to the EventStore:
 
 {% include macros/eventstore/mongodb/spring/reactor/read-and-write-events.md %}
 
-#### Examples
+#### Examples {#examples-3}
 
 | Name  | Description  | 
 |:----|:-----|  
-| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
+| [Custom&nbsp;Aggregation&nbsp;View](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query a MongoDB event store using custom MongoDB aggregations. It uses the blocking `SpringMongoEventStore`. There is no reactive version of this example. |
 
 # In-Memory EventStore 
 
@@ -2786,7 +2788,7 @@ Now you can start reading and writing events to the EventStore:
 # Using Subscriptions
 <div class="comment">Before you start using subscriptions you should read up on what they are <a href="#subscriptions">here</a>.</div>
 
-There a two different kinds of subscriptions, [blocking subscriptions](#blocking-subscriptions) and [reactive subscriptions](#reactive-subscriptions).
+There are two different kinds of subscriptions, [blocking subscriptions](#blocking-subscriptions) and [reactive subscriptions](#reactive-subscriptions).
 For blocking subscription implementations see [here](#blocking-subscription-implementations) and for reactive subscription implementations see [here](#reactive-subscription-implementations). 
 
 
@@ -2862,15 +2864,15 @@ subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")), ::pri
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 This will  print each cloud event written to the event store, and has type equal to "GameEnded", to the console.
-The `filter` method is statically imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is statically imported from `org.occurrent.condition.Condition`.
+The `filter` method is statically imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is statically imported from `org.occurrent.filter.Filter`.
 The `StreamSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations
 may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
 
 {% capture java %}
-subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")), System.out::println);
+subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted"), System.out::println);
 {% endcapture %}
 {% capture kotlin %}
-subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")), ::println)
+subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted"), ::println)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -2890,7 +2892,7 @@ dual-capability store, so you only use these filters when subscribing through a 
 
 ### Blocking Subscription Start Position
 
-A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
+A subscription can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
 `org.occurrent.subscription.StartAt` instance. It provides several ways to specify the start position, either by using `StartAt.now()`, `StartAt.subscriptionModelDefault()` (default if `StartAt` is not defined when 
 calling the `subscribe` function), or `StartAt.checkpoint(<checkpoint>)`, where `<checkpoint>` is a datastore-specific 
 implementation of the `org.occurrent.subscription.Checkpoint` interface which provides the start position as a `String`. You may want to store the 
@@ -3438,7 +3440,7 @@ It's also possible to change how the `CatchupSubscriptionModel` sorts events rea
 var subscriptionModel = ...
 var eventStore = ..
 var cfg = new CatchupSubscriptionModelConfig(100).catchupPhaseSortBy(SortBy.descending(TIME));
-var catchupSubscriptionModel = CatchupSubscriptionModel(subscriptionModel, eventStore, cfg);  
+var catchupSubscriptionModel = new CatchupSubscriptionModel(subscriptionModel, eventStore, cfg);  
 ```
 
 By default, events are sorted by time and then stream version (if two or more events have the same time).
@@ -3451,7 +3453,7 @@ An interrupted replay isn't resumed automatically. `start()` only allows the *ne
 
 ##### Catch-up Subscription Usage
 
-The subscription model will only stream historic events if started with a `StartAt` instance with a so called `TimeBasedCheckpoint`, for example:
+The subscription model will only stream historic events if started with a `StartAt` instance that points to a checkpoint in the history, either a so called `TimeBasedCheckpoint` or a `GlobalCheckpoint`, for example:
 
 {% capture java %}
 subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e));
@@ -3490,19 +3492,19 @@ subscriptionModel.subscribe("subscriptionId", StartAt.beginningOfTime()) { e -> 
 It's also possible to start from a specific `java.time.OffsetDateTime`, for example:
 
 {% capture java %}
-var offsetDateTime = OffsetDateTime.of(2024, 2, 3, 10, 4, 2, 0, ZoneOffset.UTC)
-subscriptionModel.subscribe("subscriptionId", StartAtTime.offsetDateTime(offsetDateTime)) { e -> println("Event: $e") }
+var offsetDateTime = OffsetDateTime.of(2024, 2, 3, 10, 4, 2, 0, ZoneOffset.UTC);
+subscriptionModel.subscribe("subscriptionId", StartAtTime.offsetDateTime(offsetDateTime), e -> System.out.println("Event: " + e));
 {% endcapture %}
 {% capture kotlin %}
 val offsetDateTime = OffsetDateTime.of(2024, 2, 3, 10, 4, 2, 0, ZoneOffset.UTC)
-subscriptionModel.subscribe("subscriptionId", StartAt.offsetDateTime(offsetDateTime)) { e -> println("Event: $e") }
+subscriptionModel.subscribe("subscriptionId", StartAtTime.offsetDateTime(offsetDateTime)) { e -> println("Event: $e") }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 #### Competing Consumer Subscription (Blocking)
 
 A competing consumer subscription model wraps another subscription model to allow several subscribers to subscribe to the same subscription. One of the subscribes will get a lock of the subscription
-and receive events from it, the others will be in standby. If a subscriber looses its lock, another subscriber will take over automatically. To achieve distributed locking, the subscription model uses a `org.occurrent.subscription.api.blocking.CompetingConsumerStrategy` to
+and receive events from it, the others will be in standby. If a subscriber loses its lock, another subscriber will take over automatically. To achieve distributed locking, the subscription model uses a `org.occurrent.subscription.api.blocking.CompetingConsumerStrategy` to
 support different algorithms. You can write custom algorithms by implementing this interface yourself. But to use it, first depend on the `CompetingConsumerSubscriptionModel`:
 
 {% include macros/subscription/blocking/util/competingconsumer/maven.md %}
@@ -3647,7 +3649,7 @@ Read this before rolling the upgrade out on a cluster already running competing 
 
 #### Subscription Life-cycle & Testing (Blocking)
 
-Subscription models may also implement the `SubscriptionLifeCycle` interface (currently all blocking subscription models implement this). These subscription models support cancelling, pausing and resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`). That "all" includes the once-exception cases. A [synchronous subscription](#synchronous-subscription-life-cycle) and a [push subscription](#push-subscription-blocking-life-cycle) can be stopped, paused and shut down exactly like a MongoDB-backed one.
+Subscription models may also implement the `SubscriptionModelLifeCycle` interface (currently all blocking subscription models implement this). These subscription models support cancelling, pausing and resuming individual subscriptions. You can also stop an entire subscription model temporarily (`stop`) and restart it later (`start`). That "all" includes the models you might expect to be exceptions. A [synchronous subscription](#synchronous-subscription-life-cycle) and a [push subscription](#push-subscription-blocking-life-cycle) can be stopped, paused and shut down exactly like a MongoDB-backed one.
 
 Calling `start()` on a model that's already running is allowed. Starting a model is a goal, not a one-time transition, so a second call brings up whatever is still down and leaves the rest exactly as it was, including a subscription you paused yourself with `pauseSubscription(id)`. That's what lets a leader election or a health check call `start()` without checking `isRunning()` first, which is what `occurrent.subscription.mode=manual` is for.
 
@@ -3677,7 +3679,7 @@ On the reactor stack, `waitUntilStarted()` returns a `Mono<Void>` instead of blo
 Note the difference between cancelling and pausing a subscription. Cancelling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
 
-Many of the methods in the `SubscriptionLifeCycle` are good to have when you write integration tests.
+Many of the methods in the `SubscriptionModelLifeCycle` are good to have when you write integration tests.
 It's often useful to e.g. write events to the event store _without_ triggering all subscriptions listening to the events. The life cycle methods allow you to selectively start/stop individual subscriptions so that you can (integration) test them in isolation.
 
 You don't have to drive this by hand in your tests though. The `occurrent-testing-junit-jupiter-blocking` extension stops every subscription model by default and lets each test opt subscriptions back in, as described in [Integration Testing](#integration-testing), including [using the subscription life cycle](#testing-subscription-lifecycle) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default).
@@ -3786,12 +3788,12 @@ certain events:
 subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded"))).doOnNext(System.out::println).subscribe();
 {% endcapture %}
 {% capture kotlin %}
-subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")).doOnNext(::println).subscribe()
+subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded"))).doOnNext(::println).subscribe()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 This will  print each cloud event written to the event store, and has type equal to "GameEnded", to the console.
-The `filter` method is statically imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is statically imported from `org.occurrent.condition.Condition`.
+The `filter` method is statically imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is statically imported from `org.occurrent.filter.Filter`.
 The `StreamSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations
 may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
 
@@ -3815,7 +3817,7 @@ delivery to matching DCB events.
 
 ### Reactive Subscription Start Position
 
-A subscription can can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
+A subscription can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a 
 `org.occurrent.subscription.StartAt` instance. It provides several ways to specify the start position, either by using `StartAt.now()`, `StartAt.subscriptionModelDefault()` (default if `StartAt` is not defined when 
 calling the `subscribe` function), or `StartAt.checkpoint(<checkpoint>)`, where `<checkpoint>` is a datastore-specific 
 implementation of the `org.occurrent.subscription.Checkpoint` interface which provides the start position as a `String`. You may want to store the 
@@ -4097,7 +4099,7 @@ Like its [blocking twin](#push-subscription-blocking-life-cycle), a reactive `Pu
 
 ## Synchronous Subscriptions
 
-The subscriptions described so far are asynchronous. They run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
+The subscriptions described so far are asynchronous, except the [push subscription](#push-subscription-blocking), which runs on the thread that hands it the event. The others run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
 
 Sometimes you want the opposite. A synchronous subscription runs on the writer thread, before `execute` returns, so a projection is updated in the same call that produced the events, and (when a transaction is available) in the same transaction as the write. You declare it once, decoupled from the call site, exactly the way you declare an asynchronous subscription, but the application service invokes it inline on every matching write instead of off a change stream.
 
@@ -4906,7 +4908,11 @@ RetryStrategy retryStrategy = RetryStrategy
                                     .retryIf(UncategorizedSQLException.class::isInstance)
                                     .maxAttempts(5)
                                     .onBeforeRetry(throwable -> log.warn("Caught exception {}, will retry.", throwable.getClass().getSimpleName()))
-                                    .onError((info, throwable) -> if(info.isLastAttempt()) log.error("Ended with exception {}.", throwable.getClass().getSimpleName()));
+                                    .onError((info, throwable) -> {
+                                        if (info.isLastAttempt()) {
+                                            log.error("Ended with exception {}.", throwable.getClass().getSimpleName());
+                                        }
+                                    });
 ```
 
 You can then use a `RetryStrategy` instance to call methods that you want to be retried on exception by using the `execute` method:
@@ -5031,13 +5037,13 @@ will change as well, and it won't continue from the previous checkpoint in the c
 If using Java you can do:
           
 ```java
-SpringMongoSubscriptionModel subscriptionModel = SpringMongoSubscriptionModel(..);
-GenericCloudEventConverter cloudEventConverter = GenericCloudEventConverter<DomainEvent>(..);
+SpringMongoSubscriptionModel subscriptionModel = new SpringMongoSubscriptionModel(..);
+GenericCloudEventConverter<DomainEvent> cloudEventConverter = new GenericCloudEventConverter<DomainEvent>(..);
 
 Subscriptions<DomainEvent> subscriptions = new Subscriptions<DomainEvent>(subscriptionModel, cloudEventConverter); 
         
 subscriptions.subscribe("gameStarted", GameStarted.class, gameStarted -> {
-    log.info("Game was started {}", gameStarted)
+    log.info("Game was started {}", gameStarted);
 });
 ```
 
@@ -5060,22 +5066,22 @@ EventStoreQueries eventStoreQueries = ..
 CloudEventConverter<DomainEvent> cloudEventConverter = ..
 DomainEventQueries<DomainEvent> domainEventQueries = new DomainEventQueries<DomainEvent>(eventStoreQueries, cloudEventConverter);
  
-Stream<DomainEvent> events = domainQueries.query(Filter.subject("someSubject"));
+Stream<DomainEvent> events = domainEventQueries.query(Filter.subject("someSubject"));
 ```
 
 There's also support for skip, limits and sorting and convenience methods for querying for a single event:
 
 ```java                                                      
-Stream<DomainEvent> events = domainQueries.query(GameStarted.class, GameEnded.class); // Find only events of this type
-GameStarted event1 = domainQueries.queryOne(GameStarted.class); // Find the first event of this type
-GamePlayed event2 = domainQueries.queryOne(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")); // Find event with this id
+Stream<DomainEvent> events = domainEventQueries.query(GameStarted.class, GameEnded.class); // Find only events of this type
+GameStarted event1 = domainEventQueries.queryOne(GameStarted.class); // Find the first event of this type
+GamePlayed event2 = domainEventQueries.queryOne(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")); // Find event with this id
 ```
 
 There are also some Kotlin extensions that you can use to query for a `Sequence` of events instead of a `Stream`:
  ```kotlin
- val events : Sequence<DomainEvent> = domainQueries.queryForSequence(GamePlayed::class, GameWon::class, skip = 2) // Find only events of this type and skip the first two events
- val event1 = domainQueries.queryOne<GameStarted>() // Find the first event of this type
- val event2 = domainQueries.queryOne<GamePlayed>(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")) // Find event with this id
+ val events : Sequence<DomainEvent> = domainEventQueries.queryForSequence(GamePlayed::class, GameWon::class, skip = 2) // Find only events of this type and skip the first two events
+ val event1 = domainEventQueries.queryOne<GameStarted>() // Find the first event of this type
+ val event2 = domainEventQueries.queryOne<GamePlayed>(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")) // Find event with this id
  ```
 
 `DomainEventQueries` also wraps `PositionOrderedReader.readInPositionOrder(..)`, the global-position-ordered read a push catch-up replays from. The `Stream` that read returns holds a database cursor on a MongoDB-backed store rather than a decoded list, which is what lets a large history stream instead of being loaded into memory up front, so close it when you are done, in a try-with-resources or Kotlin's `use`.
@@ -5271,7 +5277,7 @@ streamSubscriptions(subscriptionModel, cloudEventConverter) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The runner comes in the same three flavours as the [subscription DSL](#subscription-dsl), so `project` is not tied to stream events. `ProjectionRunner.stream(...)` and the Kotlin `streamSubscriptions { }` above stay scoped to stream events, excluding anything a DCB append wrote. `ProjectionRunner.agnostic(...)` and `subscriptions { }` are capability-neutral: on a store that has both capabilities they feed the projection stream-written and DCB-appended events together, selected by the projection's own event types alone. Use the neutral pair when the read model just wants the events, whichever write model produced them, and for the stream pair when it must stay on stream events.
+The runner comes in the same three flavours as the [subscription DSL](#subscription-dsl), so `project` is not tied to stream events. `ProjectionRunner.stream(...)` and the Kotlin `streamSubscriptions { }` above stay scoped to stream events, excluding anything a DCB append wrote. `ProjectionRunner.agnostic(...)` and `subscriptions { }` are capability-neutral: on a store that has both capabilities they feed the projection stream-written and DCB-appended events together, selected by the projection's own event types alone. Use the neutral pair when the read model just wants the events, whichever write model produced them, and the stream pair when it must stay on stream events.
 
 DCB has its own pair rather than an option on these, because a `DcbProjection` is scoped by tags rather than by event type. `DcbProjectionRunner` and the Kotlin `dcbSubscriptions { }` take a `DcbProjection` and subscribe to its `DcbCriteria`, covered under [DCB projections](#dcb-projections).
 
@@ -5481,7 +5487,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | Attribute | Description |
 |:----------|:-------------|
 | `id` | The subscription id (required). |
-| `startAt` | `Projection.StartPosition.BEGINNING`, `NOW`, or `DEFAULT`. Same start-position idea as [`@Subscription`'s `startAt`](#subscription-start-position), but note the constant is named `BEGINNING` here, not `BEGINNING_OF_TIME`. |
+| `startAt` | `StartPosition.BEGINNING`, `NOW`, or `DEFAULT`, the same `StartPosition` that [`@Subscription`'s `startAt`](#subscription-start-position) takes. |
 | `startAtPosition` | Start after a specific global or DCB position instead, to rewind a durable read model to a known-good point. Mutually exclusive with a non-default `startAt`. |
 | `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](#subscription-start-position) as `@Subscription`. |
 | `startupMode` | `DEFAULT`, `WAIT_UNTIL_STARTED`, or `BACKGROUND`, the same [startup-mode idea](#subscription-startup-mode) as `@Subscription`. |
@@ -5693,7 +5699,7 @@ A step holds a list of branches like the one above, tried in the order you decla
 The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
 
 {% capture kotlin %}
-val gameLobby = saga<GameEvent, CloseGame> {
+val lobby = saga<GameEvent, CloseGame> {
     startsOn<GameCreated>()
     correlateAll { it.gameId }
     step("awaiting-players") {
@@ -5705,7 +5711,7 @@ val gameLobby = saga<GameEvent, CloseGame> {
 }
 {% endcapture %}
 {% capture java %}
-Saga<GameEvent, FlowState<GameEvent>, CloseGame> gameLobby =
+Saga<GameEvent, FlowState<GameEvent>, CloseGame> lobby =
         FlowSaga.<GameEvent, CloseGame>builder()
                 .startsOn(GameCreated.class)
                 .correlateAll(GameEvent::gameId)
@@ -6926,7 +6932,7 @@ you can create a subscription to _all_ events like this:
 
 Note that subscriptions started by the `Subscription` annotation will make use of [competing consumers](#competing-consumer-subscription-blocking) so that if you run multiple instances of the application one of them will receive the event(s).
 
-Since version {{site.occurrentversion}}, `@Subscription` is capability-neutral. On an event store that has both the stream and the DCB capability it delivers both stream-written and DCB-appended events, filtered by event type, with catch-up over the shared global position. Use `@StreamSubscription` when you want stream events only, and [`@DcbSubscription`](#subscribing-to-dcb-events) when you want DCB events only with tag-based filtering. `@StreamSubscription` is configured the same way as `@Subscription` described below, only scoped to stream events.
+Since version 0.30.0, `@Subscription` is capability-neutral. On an event store that has both the stream and the DCB capability it delivers both stream-written and DCB-appended events, filtered by event type, with catch-up over the shared global position. Use `@StreamSubscription` when you want stream events only, and [`@DcbSubscription`](#subscribing-to-dcb-events) when you want DCB events only with tag-based filtering. `@StreamSubscription` is configured the same way as `@Subscription` described below, only scoped to stream events. Its `startAt` takes the nested `StreamSubscription.StartPosition`, where replaying from the start is `BEGINNING_OF_TIME` rather than `BEGINNING`.
 
 All of these are asynchronous. For a handler that runs synchronously on the writer thread, before `execute` returns, and can commit atomically with the write, use [`@SynchronousSubscription`](#synchronous-subscriptions) instead. It is documented under [Synchronous Subscriptions](#synchronous-subscriptions).
 
@@ -6945,7 +6951,7 @@ Here's a description for each StartPosition:
 
 | StartPosition       | Description                                                                                                                                                                                                                                                            |
 |---------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `BEGINNING_OF_TIME` | Start this subscription from the first event in the event store.                                                                                                                                                                                                       |
+| `BEGINNING`         | Start this subscription from the first event in the event store.                                                                                                                                                                                                       |
 | `NOW`               | Start this subscription from current time.                                                                                                                                                                                                                             |
 | `DEFAULT`           | Start this subscription using the default behavior of the subscription model. Typically, this means that it'll start from `NOW`, unless the subscription has already been started before, in which case the subscription will be started from its last known checkpoint. |
                                             
@@ -6956,17 +6962,17 @@ Resume behavior:
 
 | ResumeBehavior     | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 |--------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `DEFAULT`          | Use the default resume behavior of the underlying subscription model. For example, if the `StartPosition` is set to `StartPosition.BEGINNING_OF_TIME`, and `ResumeBehavior` is set to `ResumeBehavior.DEFAULT`, then the subscription will _start_ from the beginning of time the first time it's run. Then, on application restart, it'll continue from the last received event (the checkpoint for the subscription) on restart. |
+| `DEFAULT`          | Use the default resume behavior of the underlying subscription model. For example, if the `StartPosition` is set to `StartPosition.BEGINNING`, and `ResumeBehavior` is set to `ResumeBehavior.DEFAULT`, then the subscription will _start_ from the beginning of time the first time it's run. Then, on application restart, it'll continue from the last received event (the checkpoint for the subscription) on restart. |
 | `SAME_AS_START_AT` | Always start at the same position as specified by the `StartPosition`. I.e., even if there's a checkpoint stored for the subscription, it'll be ignored on application restart and the subscription will resume from the specified `StartPosition`.                                                                                                                                                                                |
 
 
 The combination of start and resume behavior can enable various use cases. For example:
 
-| StartPostion        | ResumeBehavior     | Use Case                                                                                                                                                                                                                                                                                                         |
+| StartPosition       | ResumeBehavior     | Use Case                                                                                                                                                                                                                                                                                                         |
 |---------------------|--------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `BEGINNING_OF_TIME` | `DEFAULT`          | Start a new subscription from "beginning of time", but when the app is restarted, continue from the last processed event (i.e. don't replay all historic events again).                                                                                                                                          |
-| `BEGINNING_OF_TIME` | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to all historic events, effectively making this an in-memory subscription. Note that this subscription will be called on each instance of the application even though competition consumer behavior is configured.                                      |
-| `NOW`               | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to events from "now", ignoring the historic events. This will effectively make this an in-memory subscription. Note that this subscription will be called on each instance of the application event though competition consumer behavior is configured. |
+| `BEGINNING`         | `DEFAULT`          | Start a new subscription from "beginning of time", but when the app is restarted, continue from the last processed event (i.e. don't replay all historic events again).                                                                                                                                          |
+| `BEGINNING`         | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to all historic events, effectively making this an in-memory subscription. Note that this subscription will be called on each instance of the application even though competing consumer behavior is configured.                                      |
+| `NOW`               | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to events from "now", ignoring the historic events. This will effectively make this an in-memory subscription. Note that this subscription will be called on each instance of the application even though competing consumer behavior is configured. |
 | `NOW`               | `DEFAULT`          | The subscription start subscribing to events from "now" when created, but continue (resume) from the last received event on restart.                                                                                                                                                                             |
 | `DEFAULT`           | `DEFAULT`          | Same as above (this is the default behavior if start position and resume behavior is not specified).                                                                                                                                                                                                             |
 
@@ -7025,21 +7031,21 @@ Everything below uses JUnit Jupiter and AssertJ. The API used is the same on JUn
 
 The sagas below are the ones from [the Flow DSL](#saga-flow-dsl), and they are kept compiling as real tests in `dsl/saga-dsl/common/src/test`, so what you read here is what runs.
 
-Start with a plain event. A branch that leaves a step reports where the flow went next:
+Start with a plain event. In the game lobby, a `PlayerJoined` takes a branch that ends the flow, so the saga completes:
 
 {% capture kotlin %}
 val started = start(lobby, GameCreated("game-1"))
 
 val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
 
-assertThat(step.state.currentStep()).isEqualTo("waiting-for-both-players")
+assertThat(step.state.completed()).isTrue()
 {% endcapture %}
 {% capture java %}
 Saga.Step<FlowState<GameEvent>, CloseGame> started = start(lobby, new GameCreated("game-1"));
 
 Saga.Step<FlowState<GameEvent>, CloseGame> step = lobby.step(started.state(), SagaInput.event(new PlayerJoined("game-1")));
 
-assertThat(step.state().currentStep()).isEqualTo("waiting-for-both-players");
+assertThat(step.state().completed()).isTrue();
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
@@ -7149,7 +7155,7 @@ assertAll(
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A single `Rejected` reaches the same `anyOf` from the other side and completes the saga immediately, with no second event needed:
+A single `Rejected` takes the other branch and completes the saga immediately, with no second event needed:
 
 {% capture kotlin %}
 val step = review.step(started.state, SagaInput.event(Rejected("review-1")))
@@ -7176,6 +7182,8 @@ Write the partial case first. A condition that fires too early passes a test tha
 `currentStep()` is how you assert where a flow went, and that covers `next`, `end` and `transitionTo` alike. A back-edge is the one that repays testing, because a loop that quietly leaves its step looks the same from the outside as one that stays. Using the auction from the Flow DSL section, each bid re-enters `bidding`, and the deadline still closes it after any number of bids:
 
 {% capture kotlin %}
+val started = start(auction, AuctionStarted("auction-1", Instant.parse("2026-01-01T12:00:00Z")))
+
 val afterBid = auction.step(started.state, SagaInput.event(BidPlaced("auction-1", 100)))
 assertThat(afterBid.state.currentStep()).isEqualTo("bidding")
 
@@ -7183,6 +7191,8 @@ val closed = auction.step(afterBid.state, SagaInput.timeout("auction-1", stepTim
 assertThat(closed.effects).containsExactly(SagaEffect.issue(CloseAuction("auction-1")))
 {% endcapture %}
 {% capture java %}
+Saga.Step<FlowState<AuctionEvent>, CloseAuction> started = start(auction, new AuctionStarted("auction-1", Instant.parse("2026-01-01T12:00:00Z")));
+
 Saga.Step<FlowState<AuctionEvent>, CloseAuction> afterBid = auction.step(started.state(), SagaInput.event(new BidPlaced("auction-1", 100)));
 assertThat(afterBid.state().currentStep()).isEqualTo("bidding");
 
@@ -7943,7 +7953,7 @@ The `org.occurrent.UpgradeToOccurrent_0_31` recipe rewrites the annotation `Resu
 
 The `org.occurrent.UpgradeToOccurrent_0_30` recipe handles the mechanical renames, the package moves, and the safe part of the `Stream` to `List` write-side migration, plus the module artifact coordinate renames (every artifact now has an `occurrent-` prefix). If you are upgrading an existing MongoDB deployment, note that stream `position` is on by default for new stores, but the events already in your collection have none. The store detects this at startup and turns position off for itself rather than triggering a surprise index build on your existing data. Follow the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) and its [tool](https://github.com/johanhaleby/occurrent/blob/main/eventstore/migration/position-backfill/README.md) to backfill `position` onto those old events and use position-based catch-up against them. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.30.0.md) for the full plugin setup and old-to-new artifact mapping.
 
-# Examples
+# Examples {#examples}
 
 The [`example`](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/example) folder in the repository has runnable, tested applications that put the concepts on this page together. The table below points to the most instructive ones and highlights which Occurrent features each demonstrates. Every link is pinned to the `{{site.occurrentversion}}` release.
 
@@ -7970,7 +7980,7 @@ The [`example`](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.o
 
 # Blogs
 
-[Johan](https://github.com/johanhaleby) has created a couple of blog-posts on Occurrent on his [blog](https://code.haleby.se):
+[Johan](https://github.com/johanhaleby) has written a blog post about Occurrent on his [blog](https://code.haleby.se):
 
 1. [Occurrent - Event Sourcing for the JVM](https://code.haleby.se/2020/11/21/occurrent-event-sourcing-for-the-jvm/)
 
