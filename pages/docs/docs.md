@@ -3289,16 +3289,7 @@ Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of
 | `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event, for example because its live buffer is full while the replay is still running. The exception propagates out of `accept(..)` either way. |
 | `REFUSED` | The `CatchupThenPushSubscriptionModel` in front of the handler refused the event because its replay failed, and it refuses every event from then on. The exception propagates out of `accept(..)`. |
 
-If you acknowledge broker messages yourself, base the acknowledgement on the outcome that `acceptRedeliverable(..)` returns, described below, and not on what the observer is told. `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. The observer is told `DELIVERED` even when the handler threw, and, behind a `CatchupThenPushSubscriptionModel`, when `accept(..)` only buffered the event.
-
-`outcome.disposition()` sorts the six outcomes into the four things a broker bridge can do with a message, so a bridge you write yourself switches on four values rather than six:
-
-* `ACKNOWLEDGE` for `DELIVERED` and `FILTERED`.
-* `HOLD` for `DEFERRED` and `UNAVAILABLE`. Leave the message unacknowledged and offer it again later, without running it through your own retry or parking policy, because nothing about the message is broken.
-* `FAIL` for `NOT_DELIVERABLE`. Your own failure policy decides what happens to the message.
-* `STOP` for `REFUSED`. Offering the message again gets the same answer, so stop consuming rather than redelivering.
-
-A running replay finishes by itself, so redelivering a message held for it eventually delivers it. A stopped model, a paused subscription and a stopped catch-up all wait for someone to start them again, so a bridge that only redelivers a held message keeps getting the same answer until that happens.
+Don't base a broker acknowledgement on what the observer is told. The observer is told `DELIVERED` even when the handler threw, and, behind a `CatchupThenPushSubscriptionModel`, when `accept(..)` only buffered the event. Base it on the outcome that `acceptRedeliverable(..)` returns, described below. [Consuming from a broker](#broker-consuming) says what to do with each outcome.
 
 A broker listener that can redeliver a message should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
 
@@ -3361,13 +3352,17 @@ occurrent.subscription.catchup-then-live.max-buffered-events=200000
 
 Set one and the other keeps its default. A zero or negative value fails startup rather than falling back.
 
-Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Pass `null` and it records nothing, so every restart replays the history. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
+Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass. That record is the catch-up marker. A restart that finds it skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Pass `null` and it records nothing, so every restart replays the history.
 
-The record that the catch-up finished is kept per subscription id. The model's `cancelSubscription(id)` deletes it, so subscribing the same id again replays the history.
+Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. Correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection.
 
-On the blocking stack `cancelSubscription(id)` deletes the record before it cancels anything else. If the delete throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
+Only stream and capability-agnostic subscriptions can catch up this way.
 
-On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the record is deleted. Wait for it when a restart must not skip the history, and call `cancelSubscription(id)` again if it fails.
+The catch-up marker is kept per subscription id. The model's `cancelSubscription(id)` deletes it, so subscribing the same id again replays the history.
+
+On the blocking stack `cancelSubscription(id)` deletes the marker before it cancels anything else. If the delete throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
+
+On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the marker is deleted. Wait for it when a restart must not skip the history, and call `cancelSubscription(id)` again if it fails.
 
 Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`. With a single feed bean the name can be dropped, and the starter finds the bean on its own. Declaring the bean does not replace the default subscription model the starter contributes. The starter skips models without a start position, checkpoint or catch-up when it decides whether the application brought its own, so your event-store subscriptions keep the durable default and the feed runs beside it.
 
@@ -3705,6 +3700,19 @@ A domain bridge stops for good when `acceptCloudEvent(..)` throws [`UnreadableLi
 
 So pick the bridge that matches the consumer you already have. Both bridges read the same message, so a `CloudEventForwarder` publishing through a `CloudEventSink` feeds either one. The [runnable example](#broker-example) below consumes it both ways.
 
+A bridge acts on the `RoutingOutcome` that `acceptRedeliverable(..)` returns for each message. `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. `outcome.disposition()` sorts the six outcomes into four dispositions, so a bridge you write yourself switches on four values rather than six:
+
+| Disposition | Outcomes | What to do with the message |
+|:---|:---|:---|
+| `ACKNOWLEDGE` | `DELIVERED`, `FILTERED` | Acknowledge it. |
+| `HOLD` | `DEFERRED`, `UNAVAILABLE` | Leave it unacknowledged and offer it again later. Don't run it through your own retry or parking policy, because nothing about the message is broken. |
+| `FAIL` | `NOT_DELIVERABLE` | Your own failure policy decides what happens to it. |
+| `STOP` | `REFUSED` | Stop consuming rather than redelivering it, because offering it again gets the same answer. |
+
+[Observing pushed events](#push-subscription-blocking-observer) says when each outcome is returned.
+
+A running replay finishes by itself, so redelivering a message held for it eventually delivers it. A stopped model, a paused subscription and a stopped catch-up all wait for someone to start them again. Until then, a bridge that only redelivers a held message keeps getting the same answer.
+
 Both brokers ship both bridges as plain classes you construct yourself, with no Spring Boot involved. [RabbitMQ](#broker-rabbitmq) and [Kafka](#broker-kafka) below show the wiring, the configuration each one requires, and how each one acknowledges a message.
 
 ##### RabbitMQ {#broker-rabbitmq}
@@ -3723,7 +3731,7 @@ Occurrent never declares an exchange. `orders-exchange` has to exist before anyt
 
 `RabbitMqCloudEventSink` publishes with publisher confirms and `mandatory = true`, waiting up to `acknowledgementTimeout(Duration)` (five seconds by default) for the broker to confirm.
 
-A confirm alone only proves the broker took the message, not that a queue was bound to receive it, so the sink also watches for `basic.return` and treats a returned message as a failed publish even though a confirm follows it.
+A confirm alone only proves the broker took the message, not that a queue was bound to receive it. So the sink also watches for `basic.return`, and treats a returned message as a failed publish even though a confirm follows it.
 
 Every CloudEvent attribute, the Occurrent extensions included, becomes a message header under a `cloudEvents_` prefix, since there's no official CloudEvents binding for AMQP 0-9-1 to reuse. `datacontenttype` is the one exception, written to `BasicProperties.contentType` instead.
 
@@ -3744,7 +3752,7 @@ The bridge calls `acceptRedeliverable(...)` rather than `accept(...)`. It routes
 
 `acceptRedeliverable(...)` returns a refusal as an outcome, `REFUSED` or `NOT_DELIVERABLE`, and throws only when the subscription's filter or handler throws. The bridge decides what to do with a message from the returned `RoutingOutcome` alone.
 
-The bridge acknowledges a message once `acceptRedeliverable(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. For any other outcome, or an exception from `acceptRedeliverable(...)`, the bridge holds the message, stops, or hands it to its failure policy.
+The bridge handles each outcome as the table under [Consuming from a broker](#broker-consuming) says. What it does with an exception from `acceptRedeliverable(...)` is described below.
 
 It holds a `DEFERRED` or `UNAVAILABLE` message unacknowledged, and its poll hands it back to RabbitMQ with `basicNack` and requeue, at most once per poll interval, one second by default. RabbitMQ then delivers it again. It stops consuming for good on `REFUSED`.
 
@@ -3851,7 +3859,7 @@ Its Testcontainers tests cover the catch-up-to-live handover, a failing handler 
 
 {% include macros/broker/rabbitmq/blocking/example.md %}
 
-The Kafka wiring below is built the same way. It has no equivalent Testcontainers-backed example module yet, so treat it as a wiring sketch against the shipped API rather than a tested reference:
+The Kafka wiring below is built the same way. There is no Testcontainers-backed example module for Kafka, so treat it as a wiring sketch against the shipped API rather than a tested reference:
 
 {% include macros/broker/kafka/blocking/example.md %}
 
