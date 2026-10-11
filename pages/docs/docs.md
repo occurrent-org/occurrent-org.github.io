@@ -11,6 +11,7 @@ permalink: /documentation
 
 <div id="spy-nav" class="left-menu" markdown="1"  style="overflow-x: hidden; overflow-y: auto;">
 * [Introduction](#introduction)
+* * [How Occurrent is Layered](#layers)
 * [Getting Started](#getting-started)
 * [Concepts](#concepts)
 * * [Event Sourcing](#event-sourcing)
@@ -147,6 +148,7 @@ permalink: /documentation
 * * * [Selective Events](#selective-events)
 * * * [Event Metadata](#event-metadata)
 * * * [Startup Mode](#subscription-startup-mode)
+* [Layer 3: Your Own Framework](#layer-3)
 * [Infrastructure](#infrastructure)
 * * [Choosing An EventStore](#choosing-an-eventstore)
 * * * [MongoDB](#mongodb)
@@ -235,7 +237,7 @@ intrinsic joy of doing something yourself:
 * Simple: Pick only the libraries you need, no need for an all or nothing solution. If you don't need subscriptions, then don't use them! Use the infrastructure 
   that you already have and hook these into Occurrent.
 * Occurrent is not a database by itself. The goal is to be a thin wrapper around existing commodity databases that you may already be familiar with.  
-* Events are stored in a standard format ([cloud events](https://cloudevents.io/)). You are responsible for serializing/deserializing the cloud events "body" (data) yourself.
+* Events are stored in a standard format ([cloud events](https://cloudevents.io/)). You decide how your domain events map to a CloudEvent, with a [converter](#cloudevent-conversion) or by hand.
   While this may seem like a limitation at first, why not just serialize your POJO directly to arbitrary JSON like you're used to?, it really enables a lot of use cases and peace of mind. For example:
   * It should be possible to hook in various standard components into Occurrent that understands cloud events. For example a component could visualize a distributed tracing graph from the cloud events
     if using the [distributed tracing cloud event extension](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/extensions/distributed-tracing.md).
@@ -245,30 +247,59 @@ intrinsic joy of doing something yourself:
 * Pragmatic: Need consistent projections? You can decide to write projections and events transactionally using tools you already know (such as Spring `@Transactional`)! 
 * Interoperable/Portable: Cloud events is a [CNCF](https://www.cncf.io/) specification for describing event data in a common way. CloudEvents seeks to dramatically simplify event declaration and delivery across services, platforms, and beyond!
 * Use the Occurrent components as lego bricks to compose your own pipelines. Components are designed to be small so that you should be able to re-write them tailored to your own needs if required. 
-  Missing a component? You should be able to write one yourself and hook into the rest of the eco-system. Write your own problem/domain specific layer on-top of Occurrent.
+  Missing a component? You should be able to write one yourself and hook into the rest of the eco-system. Write your own problem/domain specific layer on-top of Occurrent, see [How Occurrent is Layered](#layers).
+
+## How Occurrent is Layered {#layers}
+
+Occurrent is built in layers. Each layer is built from the one below it, and you can use any of them directly. You don't have to pick one layer for the whole application. A projection can read CloudEvents straight from a subscription while the rest of the application works with domain events.
+
+| Layer | Your code works with | Main parts |
+|:------|:---------------------|:-----------|
+| [0: CloudEvents](#layer-0) | `CloudEvent` | [EventStore](#eventstore), [subscriptions](#subscriptions), [event store queries](#eventstore-queries) |
+| [1: Domain events](#layer-1) | Your own domain event types | [CloudEventConverter](#cloudevent-conversion), [ApplicationService](#application-service), [DomainEventQueries](#query-dsl), [Subscriptions](#subscription-dsl), [views and projections](#views), [snapshots](#snapshots), [sagas](#sagas) |
+| [2: Spring Boot](#layer-2) | Annotations and configuration properties | The [Spring Boot starter](#spring-boot-starter), and annotations such as [`@Subscription`](#spring-boot-annotations), [`@Projection`](#the-projection-annotation) and [`@Saga`](#the-saga-annotation) |
+| [3: Your own framework](#layer-3) (experimental) | Whatever your framework exposes | Built from layer 1 parts |
+
+**Layer 0** is where everything is a CloudEvent. The event store reads and writes CloudEvents, and subscriptions deliver them. Nothing at this layer knows about your domain events. Use it directly when you want full control over how events are represented, or when you write infrastructure such as a forwarder or an audit log that should work for any event.
+
+**Layer 1** adds a `CloudEventConverter`, which maps your domain events to CloudEvents and back. The `ApplicationService` uses it to load a stream as domain events, call your domain function, and write the new events back. The other parts at this layer, such as `DomainEventQueries`, `Subscriptions`, projections and sagas, also work with domain events and use the converter underneath. Most applications should start here.
+
+**Layer 2** is Spring Boot support. The starter wires up the event store, a subscription model and a converter for you, and annotations such as `@Subscription`, `@Projection` and `@Saga` register handlers without any wiring code. It is more convenient, but more happens behind your back. The annotations are built on the layer 1 API, so you can drop down a layer when you need more control. Features that have an annotation describe it at the end of their own section.
+
+**Layer 3** is a framework built from layer 1 parts, shaped after your own business. Occurrent doesn't ship a finished one. See [Building Your Own Framework](#layer-3).
+
+Some things are not part of a layer:
+
+* **Your domain model.** Commands, events, state and [deciders](#decider) have no dependency on Occurrent at all. See [Your Domain Model](#domain-model).
+* **The storage and the programming model.** Each layer comes for several stores (MongoDB through the native driver or Spring Data, in-memory) and in a blocking and a reactive (Project Reactor) flavor. A Spring Data MongoDB event store is still layer 0. It uses Spring as a library, which is not the same as the Spring Boot support in layer 2.
+* **[Dynamic Consistency Boundary](#dynamic-consistency-boundary) (DCB).** It is a capability of the event store that the other layers build on. The `DcbEventStore` is layer 0, the [DCB application service and deciders](#dcb-with-domain-events) are layer 1, and `@DcbSubscription` is layer 2.
+* **[Infrastructure](#infrastructure)** that everything uses, such as [retry](#retry) and [deadlines](#deadlines).
+
+Where to start:
+
+* With Spring Boot, start with the [Spring Boot starter](#spring-boot-starter) and read about the layer 1 parts as you use them.
+* Without Spring Boot, start with a [CloudEventConverter](#cloudevent-conversion) and the [ApplicationService](#application-service). [Getting Started](#getting-started) walks through it.
+* Use [layer 0](#layer-0) directly when you need control over the CloudEvents themselves, or when you write your own component on top of the event store.
 
 # Getting Started
 
 <div class="notification">Occurrent {{site.occurrentversion}} requires <b>Java 21</b> or later (earlier versions required Java 17).</div>
 
-<div class="comment">If you're using Spring Boot, consider a Spring Boot starter, which auto-configures most of the steps below for you. There's a <a href="#spring-boot-starter">blocking starter</a> and a <a href="#reactive-spring-boot-starter">reactive starter</a>. You can then return to this section for the underlying concepts.</div>
+Most applications start at [layer 1](#layers), where your code works with your own domain events. In code, it looks like this:
 
-Getting started with Occurrent involves these steps:
-<div class="comment">It's recommended to read up on <a href="#cloudevents">CloudEvents</a> and its <a href="{{cloudevents_spec}}">specification</a> so that you're familiar with the structure and schema of a CloudEvent.</div>
+{% include macros/gettingStarted.md %}
 
-1. Choose an underlying datastore for an [event store](#choosing-an-eventstore). Luckily there are only two choices at the moment, MongoDB and an in-memory implementation. Hopefully this will be a more difficult decision in the future :)
-1. Once a datastore has been decided, it's time to [choose an EventStore implementation](#choosing-an-eventstore) for this datastore since there may be more than one.
-1. If you need [subscriptions](#using-subscriptions) (i.e. the ability to subscribe to changes from an EventStore) then you need to pick a library that implements this for the datastore that you've chosen. 
-   Again, there may be several implementations to choose from.
-1. If a subscriber needs to be able to continue from where it left off on application restart, it's worth looking into a so called [checkpoint storage](#blocking-subscription-checkpoint-storage) library. 
-   These libraries provide means to automatically (or selectively) store the checkpoint for a subscriber to a datastore. Note that the datastore that stores this checkpoint
-   can be a different datastore than the one used as EventStore. For example, you can use MongoDB as EventStore but store checkpoints in Redis.
-1. You're now good to go, but you may also want to look into more higher-level components if you don't have the need to roll your own. We recommend looking into:
-    * [Application Service](#application-service)
-    * [Subscription DSL](#subscription-dsl)
-    * [Query DSL](#query-dsl)
-    * [Retry Component](#retry)
-    * [Deciders](#decider)
+These are the steps to get there:
+
+1. **Pick an event store.** Use [MongoDB](#mongodb) in production and the [in-memory event store](#in-memory-eventstore) for tests and experiments. See [Choosing an EventStore](#choosing-an-eventstore).
+1. **Pick a [CloudEventConverter](#cloudevent-conversion).** It maps your domain events to CloudEvents and back. The [Jackson converter](#jackson3-cloudevent-converter) is a good default. Configure how it names event types before you go to production, since the type ends up in every stored event.
+1. **Create an [ApplicationService](#application-service)** and call your domain functions through it, as in the example above.
+1. **React to events.** Pick a [subscription model](#subscriptions) for your store, and a [checkpoint storage](#blocking-subscription-checkpoint-storage) if a subscriber should continue where it left off after a restart. Then use [Subscriptions](#subscription-dsl), [projections](#projection-dsl) or [sagas](#sagas) to work with domain events.
+1. **Query events** with [DomainEventQueries](#query-dsl) when you need to.
+
+With Spring Boot and MongoDB, the [Spring Boot starter](#spring-boot-starter) sets all of this up for you, and gives you `ApplicationService`, `Subscriptions` and `DomainEventQueries` beans to inject. There's also a [reactive starter](#reactive-spring-boot-starter).
+
+You can always drop down to [layer 0](#layer-0) and use the event store and subscriptions with CloudEvents directly. It's worth reading about [CloudEvents](#cloudevents) and their [specification]({{cloudevents_spec}}) either way, because that is how your events are stored.
 
 # Concepts
 
@@ -304,6 +335,8 @@ In some cases, for example if you have a simple website and you want views to be
 provided by Occurrent allows for this through a synchronous `SideEffect` that runs as part of executing the command, please see the [application service documentation](#application-service-side-effects) for an example.    
 
 # Your Domain Model {#domain-model}
+
+Occurrent needs nothing from your domain model. Commands, events and state are your own types, and a domain function is a plain function from the events so far to the new events. This chapter shows how to shape that model so it plugs into the [application service](#application-service), either with plain functions or with a [decider](#decider).
 
 ## Commands
 
@@ -762,6 +795,8 @@ If you only need to widen the event type yourself, there is `adaptEvents`, the e
 
 
 # Layer 0: CloudEvents {#layer-0}
+
+Everything in this chapter works with `CloudEvent`. Nothing here knows about your domain events. Most applications use these parts through [layer 1](#layer-1), which converts between CloudEvents and domain events for you, but it's worth knowing what happens underneath, since this is how your events are stored and delivered.
 
 ## CloudEvents
 
@@ -1526,61 +1561,6 @@ The fixture also declares whether your storage gives back a checkpoint of the sa
 {% include macros/tck/subscription/blocking/maven.md %}
 
 Implementing your own event store or subscription model against Occurrent's conformance suites is covered in [Testing Your Own EventStore](#testing-your-own-eventstore) and [Testing Your Own Subscription Model](#testing-your-own-subscription-model).
-The same artifact holds the suites for a subscription model, so if you write your own you can have Occurrent check it against the same contract its five models are held to. `SubscriptionModelConformance` covers delivery and filtering, the whole life cycle, and cancelling. `IntrospectableSubscriptionsConformance` covers `subscriptionIds()`, for a model that can list its subscriptions. `InProcessDeliveryConformance` is for a model that calls the handler on the publishing thread, the way the synchronous and push models do.
-
-You supply a `SubscriptionModelFixture`. Because a subscription model has no single way of being fed an event (a MongoDB model watches a change stream, an in-process one is handed the event directly), the fixture is what publishes:
-
-```java
-class MySubscriptionModelTest extends SubscriptionModelConformance {
-
-    @Override
-    protected SubscriptionModelFixture createFixture() {
-        return new MySubscriptionModelFixture();
-    }
-}
-```
-
-The fixture also declares five things the API cannot be asked:
-
-- whether a paused subscription's events are held for it or dropped
-- whether a throwing handler is retried or the exception reaches whoever published the event
-- whether the model accepts more than one subscription at a time
-- which of the four ways of saying where a subscription starts it accepts
-- whether a subscription with a brand-new id first receives the whole history
-
-Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
-The fixture also declares five things the API cannot be asked. Whether a paused subscription's events are held for it or dropped, whether a throwing handler is retried or the exception reaches whoever published the event, whether the model accepts more than one subscription at a time, which of the four ways of saying where a subscription starts it accepts, and whether a subscription id it has not seen before is replayed the whole history first. Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
-
-You also say how long the suites are allowed to wait for something to arrive. `deliveryTimeout()` defaults to ten seconds, which is what every model shipping with Occurrent runs on, so a model that has to reach a broker before it can deliver widens it rather than having no way to pass:
-
-```java
-class MySubscriptionModelFixture implements SubscriptionModelFixture {
-
-    @Override
-    public Duration deliveryTimeout() {
-        return Duration.ofSeconds(30);
-    }
-
-    // the rest of the fixture
-}
-```
-
-Nothing caps that number, but raising it has a consequence. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
-
-```java
-@Timeout(400)
-class MySubscriptionModelTest extends SubscriptionModelConformance {
-    // ...
-}
-```
-
-One thing to know if you pause a subscription and resume it later. Both MongoDB models carry on from the position they had read to, so an event written while the subscription was paused still arrives once it resumes. The price is that the same event can arrive twice, because a model that resumes from the last position it stored, rather than from just after it, hands that event over a second time. A handler has to cope with that. `stop()` on the model pauses every subscription it holds, so a `stop()` followed by a `start()` is the same situation.
-
-The TCK carries the same version number as the rest of Occurrent, and a minor release may add suites and tighten what the existing ones assert. Upgrading can therefore turn a green build red. That is the suite doing what it is for, and there are two things to do about it, fix the implementation or stay on the Occurrent version you were on. Holding the TCK back on its own is not a third option, because each artifact is compiled against the runtime API of its own version.
-
-Your fixture keeps compiling either way. A new fixture member always arrives with a `default`, and where a default value would be a lie it arrives as a `default` that throws and names itself, so a minor upgrade never breaks compilation. Removing a member or a whole suite waits for a major release.
-
-There is no way to turn off one group of tests while you fix something. Declining a contract means not extending its suite, which anyone reading your test sources can see, and nothing inside the suites can skip.
 
 #### Blocking Subscription Implementations
 
@@ -2429,80 +2409,6 @@ If you want to roll your own implementation (feel free to contribute to the proj
 {% include macros/subscription/reactor/api/maven.md %}
 
 Checking your own reactive subscription model against Occurrent's conformance suites, including the blocking bridge the suites run through, is covered in [Testing Your Own Subscription Model](#testing-your-own-subscription-model).
-Occurrent's own reactive subscription models, and any you write yourself, are checked against a bridge module built on top of the blocking suites rather than a second copy of them. `BlockingSubscriptionOverReactive`, in `occurrent-tck-subscription-reactor`, wraps a reactor `SubscriptionModel` (plus `IntrospectableSubscriptions`, and optionally `CheckpointAwareSubscriptionModel`) as a blocking one. Every blocking conformance suite (`SubscriptionModelConformance`, `IntrospectableSubscriptionsConformance`, `CheckpointAwareSubscriptionModelConformance`) then runs against a reactor model unchanged. It is the same test-only bridge approach as the [event-store TCK](#the-reactive-bridge), for the same reasons, and belongs outside a test just as little.
-
-A bridge that blocks on a result cannot see what happens before that block, so `ReactiveSubscriptionModelConformance` covers what is left. It asserts that the model actually subscribes to the `Mono<Void>` an action returns rather than assembling and dropping it. A handler written the idiomatic way, `ce -> repository.save(ce)`, silently does nothing under a model that gets this wrong. It asserts that an action whose `Mono` errors fails through the model's own error path instead of reaching an unrelated thread or terminating the whole model. And it asserts that `Subscription#waitUntilStarted()` answers more than once, and still after an earlier, abandoned wait was disposed of.
-Occurrent's own reactive subscription models, and any you write yourself, are checked against a leaf built on top of the blocking suites rather than a second copy of them. `BlockingSubscriptionOverReactive`, in `occurrent-tck-subscription-reactor`, wraps a reactor `SubscriptionModel` (plus `IntrospectableSubscriptions`, and optionally `CheckpointAwareSubscriptionModel`) as a blocking one. Every blocking conformance suite (`SubscriptionModelConformance`, `IntrospectableSubscriptionsConformance`, `CheckpointAwareSubscriptionModelConformance`) then runs against a reactor model unchanged, instead of being described a second time in terms of `Mono` and `Flux`. This bridge is test-only. Every wait blocks the calling thread, exactly what a reactive model exists to avoid, so it has no place outside a test.
-
-A bridge that blocks on a result cannot see what happens before that block, so `ReactiveSubscriptionModelConformance` covers what is left. It asserts that the model actually subscribes to the `Mono<Void>` an action returns rather than assembling and dropping it. A handler written the idiomatic way, `ce -> repository.save(ce)`, silently does nothing under a model that gets this wrong. It asserts that an action whose `Mono` errors fails through the model's own error path instead of detonating somewhere unrelated or killing the model outright. And it asserts that `Subscription#waitUntilStarted()` answers more than once, and still after an earlier, abandoned wait was disposed of.
-
-To wire an out-of-tree reactor model into both suites, supply a blocking fixture that wraps it in the bridge, and a reactive-only fixture that hands it over directly:
-
-```java
-class MySubscriptionModelFixture implements SubscriptionModelFixture {
-
-    private final MySubscriptionModel model = new MySubscriptionModel();
-
-    @Override
-    public SubscriptionModel subscriptionModel() {
-        return BlockingSubscriptionOverReactive.of(model);
-    }
-
-    @Override
-    public void publish(List<CloudEvent> events) {
-        // however the model is fed, e.g. a change stream write or an in-process dispatch
-    }
-
-    @Override
-    public boolean deliversEventsPublishedWhilePaused() {
-        return false;
-    }
-
-    @Override
-    public boolean retriesAFailingHandler() {
-        return false;
-    }
-}
-
-class MySubscriptionModelConformanceTest extends SubscriptionModelConformance {
-
-    @Override
-    protected SubscriptionModelFixture createFixture() {
-        return new MySubscriptionModelFixture();
-    }
-}
-
-class MyReactiveSubscriptionModelFixture implements ReactiveSubscriptionModelFixture {
-
-    private final MySubscriptionModel model = new MySubscriptionModel();
-
-    @Override
-    public SubscriptionModel subscriptionModel() {
-        return model;
-    }
-
-    @Override
-    public void publish(List<CloudEvent> events) {
-        // the same feed as above, handed to the model directly rather than through the blocking bridge
-    }
-}
-
-class MyReactiveSubscriptionModelConformanceTest extends ReactiveSubscriptionModelConformance {
-
-    @Override
-    protected ReactiveSubscriptionModelFixture createFixture() {
-        return new MyReactiveSubscriptionModelFixture();
-    }
-}
-```
-
-`BlockingSubscriptionOverReactive.of(...)` needs a model that implements both the reactor `SubscriptionModel` and `IntrospectableSubscriptions`. Every reactive model shipping with Occurrent is both, and an out-of-tree one is likely to be too. Use `BlockingSubscriptionOverReactive.ofCheckpointAware(...)` instead when the model also implements `CheckpointAwareSubscriptionModel`, to additionally run `CheckpointAwareSubscriptionModelConformance` against it.
-
-A single dependency covers both suites, since `occurrent-tck-subscription-reactor` depends on `occurrent-tck-subscription-blocking` itself:
-
-{% include macros/tck/subscription/reactor/maven.md %}
-
-`ReactiveSubscriptionModelFixture.deliveryTimeout()` plays the same role as the blocking fixture's, the budget one delivery wait gets, but its default is twenty seconds rather than ten, because the suites run the reactive model through the blocking bridge and the extra hop deserves slack. Override it on your fixture when your infrastructure needs more.
 
 The reactor `IntrospectableSubscriptions`, in `occurrent-subscription-api-reactor`, is not only a bridge precondition. It gives the reactive stack the same `subscriptionIds()` the [blocking stack has](#blocking-subscriptions), every id a model holds, running or paused, and `ReactorMongoSubscriptionModel`, `ReactorDurableSubscriptionModel`, `CatchupThenPushSubscriptionModel` and the reactive push and synchronous models all implement it, so a test or an admin endpoint can name the ids that exist rather than repeating the one it was given.
 
@@ -2939,6 +2845,8 @@ Three things about these options are easy to get wrong, so they are worth statin
 
 # Layer 1: Domain Events {#layer-1}
 
+This chapter adds your domain events. A [CloudEventConverter](#cloudevent-conversion) maps them to CloudEvents and back, and every part in this chapter uses it, so your code reads and writes domain events while the event store keeps CloudEvents. Most applications should start here.
+
 ## CloudEvent Conversion
 
 To convert between domain events and cloud events you can use the cloud event converter API that's shipped with Occurrent. This is optional, but components such as the [application service](#application-service) and [subscription dsl](#subscription-dsl) uses a cloud event converter to function.
@@ -3355,49 +3263,11 @@ applicationService.execute(gameId) { events ->
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-When you need more control over the execution, for example filtered stream reads or synchronous side effects, use `ExecuteOptions`.
-This is now the preferred API for these concerns.
-
-{% capture java %}
-applicationService.execute(
-        gameId,
-        ExecuteOptions.<DomainEvent>options()
-                .filter(ExecuteFilter.type(GameWasStarted.class))
-                .sideEffect(newEvents -> newEvents.forEach(this::publish)),
-        events -> WordGuessingGame.guessWord(events, guess)
-);
-{% endcapture %}
-{% capture kotlin %}
-applicationService.execute(
-    gameId,
-    filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
-        { event: GameWasStarted -> publish(event) }
-    )
-) { events ->
-    WordGuessingGame.guessWord(events, guess)
-}
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-For EventStore capability details and supported implementations, see [Stream Filtering](#eventstore-stream-filtering).
+For more control over a call, for example to read only some of the events in the stream or to run a side effect after the write, pass `ExecuteOptions`. The next sections describe both.
 
 ### Stream Filtering and Execute Options {#application-service-stream-filtering-and-execute-options}
 
-At the `ApplicationService` level, stream filtering is exposed through `ExecuteOptions`.
-This is the preferred way to say both:
-
-* which events should be read before command execution
-* which synchronous side effects should run after a successful write
-
-As of `0.20.0` the `ApplicationService` supports filtered reads and side effects by using the `ExecuteOptions` object.
-
-`org.occurrent.application.service.blocking.ExecuteOptions` is the preferred way to configure blocking `ApplicationService` execution when you need:
-
-* filtered stream reads before command execution
-* synchronous post-write side effects
-* both at the same time
-
-An example:
+`org.occurrent.application.service.blocking.ExecuteOptions` configures a single `execute` call. It says which events to read before your domain function runs, which [synchronous side effects](#application-service-side-effects) to run after a successful write, or both:
 
 {% capture java %}
 WriteResult result = applicationService.execute(
@@ -3419,101 +3289,17 @@ val result = applicationService.execute(
 
 The typed filter resolves the event class to its cloud event type using the application service's configured type mapper, so it keeps working even if you map event types to custom names. You can still pass a raw `StreamReadFilter` to `filter(...)` when you want to filter on an explicit type string or on other attributes.
 
-You can also run synchronous side effects after a successful write through the same options object, covered in [Synchronous Side Effects](#synchronous-side-effects).
+<a id="when-not-to-use-filtering"></a>
+Filtering is a read optimization, not a correctness feature. Don't filter away events that are needed to enforce invariants, rebuild state correctly, or make valid domain decisions. If the command depends on the whole stream, read the whole stream.
 
-For EventStore support details, filtering semantics, and direct EventStore examples, see [Stream Filtering](#eventstore-stream-filtering).
+For which event stores support filtered reads, the filtering semantics, and examples that use the `EventStore` directly, see [Stream Filtering](#eventstore-stream-filtering).
 
-### Synchronous Side Effects
+### Synchronous Side Effects {#application-service-side-effects}
 
-Use `ExecuteOptions.sideEffect(...)` for synchronous side effects going forward.
-This is now the preferred API for new code.
+<a id="synchronous-side-effects"></a><a id="application-service-examples"></a>
+The `GenericApplicationService` can run side effects after the events returned from your domain function have been written to the event store. This is useful when you need to update a view _synchronously_ after a successful write. To run side effects asynchronously, use a [subscription](#subscriptions) instead.
 
-The lower-level `SideEffect.executeSideEffect(...)` helper (formerly `PolicySideEffect.executePolicy(...)`) still exists, but it is no longer the recommended primary approach.
-If you are documenting or writing new synchronous side-effect code, prefer `ExecuteOptions.sideEffect(...)`.
-
-A side effect is not the same as a [synchronous subscription](#synchronous-subscriptions). A side effect is a closure you pass at each call site, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does. Use a synchronous subscription when the reaction should be declared once and decoupled from the call, or should commit atomically with the write through a `TransactionExecutor`.
-
-### Examples {#application-service-examples}
-
-{% capture java %}
-applicationService.execute(
-        gameId,
-        ExecuteOptions.<DomainEvent>options()
-                .sideEffect(newEvents -> newEvents
-                        .filter(event -> event instanceof GameWasStarted)
-                        .findFirst()
-                        .map(GameWasStarted.class::cast)
-                        .ifPresent(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)),
-        events -> WordGuessingGame.guessWord(events, guess)
-);
-{% endcapture %}
-{% capture kotlin %}
-applicationService.execute(
-    gameId,
-    sideEffect { event: GameWasStarted ->
-        registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
-    }
-) { events ->
-    WordGuessingGame.guessWord(events, guess)
-}
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-### Kotlin Helper Functions
-
-For Kotlin, the domain function is a `(List<DomainEvent>) -> List<DomainEvent>` lambda passed straight to `execute`. You can start from either `options()` or the top-level helper functions below:
-
-```kotlin
-applicationService.execute(
-    gameId,
-    sideEffect(
-        { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
-    )
-) { events ->
-    WordGuessingGame.guessWord(events, guess)
-}
-```
-
-```kotlin
-applicationService.execute(
-    gameId,
-    options().filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
-        { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
-    )
-) { events ->
-    WordGuessingGame.guessWord(events, guess)
-}
-```
-
-Both Kotlin forms above invoke the callback once per matching event. When you want the whole batch of matching events in a single call instead, use `sideEffectOnList`, which hands you a `List` of them (it filters to the event type the same way):
-
-```kotlin
-applicationService.execute(
-    gameId,
-    options().sideEffectOnList { startedGames: List<GameWasStarted> ->
-        registerOngoingGame.registerAll(startedGames)
-    }
-) { events ->
-    WordGuessingGame.guessWord(events, guess)
-}
-```
-
-It is `sideEffectOnList` rather than `sideEffect` because `ExecuteOptions` already has a Java `sideEffect(Consumer<List<E>>)` method, and a Kotlin extension of the same name would be shadowed by it. In Java, call that `sideEffect(...)` method directly with the whole list.
-
-### When Not to Use Filtering
-
-Filtering is a read optimization, not a correctness feature.
-Do not filter away events that are needed to enforce invariants, rebuild state correctly, or make valid domain decisions.
-If the command depends on the whole stream, read the whole stream.
-
-### Application Service Side-Effects
-
-The `GenericApplicationService` supports executing side-effects after the events returned from the domain model have been written to the event store.
-This is useful if you need to update a view _synchronously_ after a successful write. To perform side-effects asynchronously, use a [subscription](#subscriptions) instead.
-
-For synchronous side effects, use `ExecuteOptions.sideEffect(...)` going forward. This is now the preferred API.
-
-As an example, consider that you want to synchronously register a game as ongoing when it is started. It may be defined like this:
+As an example, say you want to register a game as ongoing when it's started. The code that does it may look like this:
 
 {% capture java %}
 public class RegisterOngoingGame {
@@ -3539,7 +3325,7 @@ class RegisterOngoingGame(private val someDatabaseApi : DatabaseApi) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Now that we have the code that registers ongoing games, we can call it from the application service like this:
+Pass it as a side effect in `ExecuteOptions`:
 
 {% capture java %}
 RegisterOngoingGame registerOngoingGame = ..
@@ -3567,10 +3353,11 @@ applicationService.execute(
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Voila! Now `registerGameAsOngoingWhenGameWasStarted` will be called after the events returned from `WordGuessingGame.guessWord(..)` are written to the event store.
+`registerGameAsOngoingWhenGameWasStarted` is now called after the events returned from `WordGuessingGame.guessWord(..)` are written to the event store. You can combine `filter(...)` and `sideEffect(...)` on the same options object.
 
-The lower-level `SideEffect.executeSideEffect(...)` helper (formerly `PolicySideEffect.executePolicy(...)`) still exists, but it is no longer the preferred primary approach for new code.
-If you already use it, you can keep doing so, but new examples and new synchronous side-effect code should prefer `ExecuteOptions.sideEffect(...)`.
+A side effect is not the same as a [synchronous subscription](#synchronous-subscriptions). A side effect is a closure you pass at each call site, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does. Use a synchronous subscription when the reaction should be declared once and decoupled from the call, or should commit atomically with the write through a `TransactionExecutor`.
+
+The older `SideEffect.executeSideEffect(...)` helper (formerly `PolicySideEffect.executePolicy(...)`) still works, but `ExecuteOptions.sideEffect(...)` replaces it in new code.
 
 ### Application Service Transactional Side-Effects
 
@@ -3618,21 +3405,8 @@ are written atomically in the same transaction!
 
 ### Application Service Kotlin Extensions
 
-If you're using [Kotlin](https://kotlinlang.org/), the domain function you pass to `execute` is a `(List<E>) -> List<E>` lambda that binds directly to the Java `execute(..., Function<List<E>, List<E>>)` member.
-
-Occurrent provides Kotlin extensions for the surrounding options in the application service module:
-
-{% include macros/applicationservice/blocking-maven.md %}
-
-Use these:
-
-* `options()` when you want to start an `ExecuteOptions` chain explicitly
-* `filter(...)` when you want to start directly with a `StreamReadFilter` or `ExecuteFilter`
-* `sideEffect(...)` when you want to configure synchronous side effects
-* `ExecuteFilters.type(...)` / `ExecuteFilters.includeTypes(...)` / `ExecuteFilters.excludeTypes(...)` when you want typed filters based on domain event classes
-* `sideEffectOnList(...)` when the side effect itself wants a filtered collection view
-
-For example:
+<a id="kotlin-helper-functions"></a>
+If you're using [Kotlin](https://kotlinlang.org/), the domain function you pass to `execute` is a `(List<E>) -> List<E>` lambda that binds directly to the Java `execute(..., Function<List<E>, List<E>>)` member:
 
 ```kotlin
 applicationService.execute(gameId) { events ->
@@ -3640,16 +3414,17 @@ applicationService.execute(gameId) { events ->
 }
 ```
 
-```kotlin
-applicationService.execute(
-    gameId,
-    sideEffect { event: GameWasStarted ->
-        registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
-    }
-) { events ->
-    WordGuessingGame.guessWord(events, guess)
-}
-```
+The application service module also has Kotlin extensions for building `ExecuteOptions`:
+
+{% include macros/applicationservice/blocking-maven.md %}
+
+* `options()` starts an `ExecuteOptions` chain explicitly.
+* `filter(...)` starts directly with a `StreamReadFilter` or `ExecuteFilter`.
+* `sideEffect(...)` configures a synchronous side effect that is called once per matching event.
+* `sideEffectOnList(...)` configures a side effect that gets all matching events in one `List`.
+* `ExecuteFilters.type(...)`, `ExecuteFilters.includeTypes(...)` and `ExecuteFilters.excludeTypes(...)` build typed filters from domain event classes.
+
+For example:
 
 ```kotlin
 applicationService.execute(
@@ -3662,7 +3437,18 @@ applicationService.execute(
 }
 ```
 
-For synchronous side effects, prefer `sideEffect(...)` or `options().sideEffect(...)` rather than the older policy-style helpers.
+```kotlin
+applicationService.execute(
+    gameId,
+    options().sideEffectOnList { startedGames: List<GameWasStarted> ->
+        registerOngoingGame.registerAll(startedGames)
+    }
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+It's called `sideEffectOnList` rather than `sideEffect` because `ExecuteOptions` already has a Java `sideEffect(Consumer<List<E>>)` method, and a Kotlin extension with the same name would be shadowed by it. In Java, call that `sideEffect(...)` method directly with the whole list.
 
 ### Synchronous Subscriptions
 
@@ -3937,6 +3723,8 @@ This is the single-stream match to [deriving DCB tags from annotations](#derivin
 The Spring Boot starter registers a default `StreamIdResolver` bean backed by `AnnotationStreamIdResolver`, scanning your commands for `@TargetStreamId`. Define your own `StreamIdResolver` bean when a command's stream id needs computing rather than reading off one field, and the starter uses that bean instead.
 
 ## DCB with Domain Events {#dcb-with-domain-events}
+
+The [Dynamic Consistency Boundary](#dynamic-consistency-boundary) section in layer 0 covers tags, criteria and the `DcbEventStore`, which all work with CloudEvents. This section covers the parts that work with your domain events: an application service, deciders and subscriptions for a DCB boundary.
 
 ### The DCB Application Service
 
@@ -4919,10 +4707,9 @@ Once a closed period's events are genuinely no longer needed, archive them with 
 
 ## Sagas
 
-<div class="comment">As of version 0.31.0, Occurrent has its own <a href="#saga-dsl">Saga DSL</a> for writing event-driven process managers in code, with timers, correlation, and Spring wiring. Use it before the external libraries below.</div>
+A "saga" represents and coordinates a long-lived business process (where "long-lived" is kind of arbitrary). This is an advanced subject, so try other means first. A [policy](#policy) is often enough, and [DCB](#dynamic-consistency-boundary) covers the case where two rules must hold in one append. When you do need a saga, use Occurrent's [Saga DSL](#saga-dsl) below. It lets you write a process manager in plain code, with timers and correlation, and it has [Spring Boot support](#the-saga-annotation).
 
-A "saga" can be used to represent and coordinate a long-lived business transaction/process (where "long-lived" is kind of arbitrary). This is an advanced subject
-and you should try to avoid sagas if there are other means available to solve the problem (for example use [policies](#policy) if they are sufficient, or [DCB](#dynamic-consistency-boundary) when two rules must hold in one append). If the built-in DSL doesn't fit your needs, Occurrent is a library, so you can also hook in an existing solution, for example:   
+If the DSL doesn't fit your needs, Occurrent is a library, so you can also hook in an existing solution, for example:
 
 * [Temporal](https://temporal.io/) - Open source microservices orchestration platform for running mission critical code at any scale.
 * [zio-saga](https://github.com/VladKopanev/zio-saga) - If you're using [Scala](https://scala-lang.org/) and [zio](https://zio.dev/)  (there's also a [cats implementation](https://github.com/VladKopanev/cats-saga)).
@@ -4933,8 +4720,7 @@ and you should try to avoid sagas if there are other means available to solve th
 * Use the [routing-slip pattern](https://www.enterpriseintegrationpatterns.com/patterns/messaging/RoutingTable.html) from the [Enterprise Integration Patterns](https://www.enterpriseintegrationpatterns.com/) book.
 * Represent sagas as todo lists. This is described in the [event modeling](https://eventmodeling.org/) documentation in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation).  
 
-The way to integrate Occurrent with any of these libraries/frameworks/patterns is to create a [subscription](#subscriptions) that forwards the events written to the event store to the 
-preferred library/framework/[view](#views). 
+To integrate one of these with Occurrent, create a [subscription](#subscriptions) that forwards the events written to the event store to it.
 
 ### Saga DSL
 
@@ -6157,6 +5943,8 @@ Enumerating instances is cheap. Listing flow-saga instances never deserializes t
 
 # Layer 2: Spring Boot {#layer-2}
 
+This chapter covers the Spring Boot starters and the annotations they read. They wire up the [layer 1](#layer-1) parts for you. Features that have an annotation of their own describe it at the end of their own section, for example [`@Projection`](#the-projection-annotation), [`@Saga`](#the-saga-annotation) and [`@Snapshot`](#snapshots-with-spring-boot).
+
 ## Spring Boot Starter
 
 <div class="notification">Occurrent {{site.occurrentversion}} requires <b>Java 21</b> or later.</div>
@@ -6375,7 +6163,46 @@ Here's a summary of the different startup modes:
 | `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.CheckpointStorage`, it'll never miss an event during startup.                                                                                      |
 | `BACKGROUND`         | The subscription will NOT wait until it's started up fully before Spring continues starting the rest of the application; instead, it will be started in the background. Typically, this is useful if you instruct the subscription to start at an earlier date (such as the beginning of time), and you have a lot of events to read before the subscription has caught up. In this case, you may wish to start the Spring application before the subscription has fully started (i.e., before all historic events have been replayed) because waiting for all events to replay takes too long. The subscription will then replay all historic events in the background before switching to continuous mode. |
 
+# Layer 3: Building Your Own Framework {#layer-3}
+
+<div class="comment">This layer is experimental. Occurrent doesn't ship a framework you should depend on yet.</div>
+
+The parts in [layer 1](#layer-1) are small on purpose, so that you can combine them into a framework of your own, shaped after the way your business works. A framework like that decides things for your team once (how a command finds its stream, how a reaction turns an event into a new command, how a query reads events) and leaves only the domain code to write.
+
+Here's a small example. It sends each command to a pure domain function through the [ApplicationService](#application-service), and lets a reaction to an event send a new command through a [subscription](#subscription-dsl):
+
+```kotlin
+class BoundedContext<C : Any, E : Any>(
+    private val applicationService: ApplicationService<E>,
+    private val subscriptions: Subscriptions<E>,
+    private val streamIdOf: (C) -> String,
+    private val decide: (List<E>, C) -> List<E>,
+) {
+    fun dispatch(command: C) {
+        applicationService.execute(streamIdOf(command)) { history -> decide(history, command) }
+    }
+
+    fun <E1 : E> react(reactionId: String, eventType: Class<E1>, reaction: (E1) -> C?) {
+        subscriptions.subscribe(reactionId, eventType) { event -> reaction(event)?.let(::dispatch) }
+    }
+}
+```
+
+Your team then writes only the domain code:
+
+```kotlin
+val game = BoundedContext(applicationService, subscriptions, GameCommand::gameId, ::decide)
+game.react("start-next-round", RoundEnded::class.java) { event -> StartRound(event.gameId) }
+game.dispatch(StartGame(gameId))
+```
+
+A real framework has more to decide, for example what happens when a reaction fails, which [subscription model](#subscriptions) makes reactions survive a restart, and how commands are [retried](#retry). Those are the choices that should follow your business, which is why Occurrent leaves them to you.
+
+The `occurrent-hederlig` module ([source](https://github.com/johanhaleby/occurrent/tree/occurrent-{{site.occurrentversion}}/library/hederlig)) is an early experiment with this idea. It defines a module as a set of features, each with commands, subscriptions and queries, and runs it on the `ApplicationService`, `Subscriptions` and `DomainEventQueries`. It is unfinished and not ready for use.
+
 # Infrastructure {#infrastructure}
+
+The parts in this chapter don't belong to a [layer](#layers). They are the event stores you can pick from, Spring modules you can use without the starter, and utilities such as retry and deadlines that every layer uses.
 
 ## Choosing An EventStore
 
@@ -7686,6 +7513,8 @@ One cost stays whatever the tests do. Every subscription still starts once while
 A subscription id that no longer exists throws `IllegalArgumentException` from `resumeSubscription`, so renaming one breaks the tests that named it instead of quietly leaving them asserting nothing.
 
 # Extending Occurrent {#extending-occurrent}
+
+This chapter is for you if you write your own event store or subscription model. Occurrent ships the same conformance test suites that its own implementations run against, so you can check that yours keeps the same contract.
 
 ## Testing Your Own EventStore {#testing-your-own-eventstore}
 
