@@ -4127,10 +4127,14 @@ Mono<Void> onMessage(byte[] body) {
 
 `acceptRedeliverable(CloudEvent)` runs the registered handler when the event matches its filter and returns a `Mono<RoutingOutcome>`. Acknowledge the message only when that `Mono` completes with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`, the two outcomes `mayAcknowledge()` is true for.
 
-The outcomes are the six of the [blocking model](#push-subscription-blocking-observer), and [Consuming from a broker](#broker-consuming) says what to do with each. On this stack, the `Mono` completes with:
+[Consuming from a broker](#broker-consuming) says what a listener does with each outcome. When an outcome comes back differs from the [blocking model](#push-subscription-blocking-observer), so on this stack the `Mono` completes with:
 
-* `DELIVERED` once the handler has applied the event, or once a `CatchupThenPushSubscriptionModel` in front finds it had already applied it.
-* `NOT_DELIVERABLE` for a refusal decided before the handler would run that none of the other outcomes covers, for example a full live buffer in a `CatchupThenPushSubscriptionModel` in front.
+* `DELIVERED` once the handler has applied the event, or once a `CatchupThenPushSubscriptionModel` in front finds it had already applied it. An event offered while an earlier delivery of the same event is still running waits for that delivery to finish.
+* `FILTERED` when the subscription's filter declined the event.
+* `DEFERRED` when a `CatchupThenPushSubscriptionModel` in front hasn't gone live, for example because its replay is still running.
+* `UNAVAILABLE` when nothing is registered, the model is stopped or the subscription is paused. Stopping a `CatchupThenPushSubscriptionModel` in front stops this model too, whether or not its replay had finished.
+* `REFUSED` once the subscription has failed, because a catch-up in front failed or an event its handler wrote failed.
+* `NOT_DELIVERABLE` for any other refusal decided before the handler would run, for example a full live buffer in a `CatchupThenPushSubscriptionModel` in front.
 
 A handler or filter error propagates through the `Mono`, so the caller decides whether to retry the message or route it to the failed-message queue, where the broker has one. Handle `NOT_DELIVERABLE` the same way.
 
