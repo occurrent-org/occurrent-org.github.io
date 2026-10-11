@@ -4200,7 +4200,7 @@ The `occurrent-testing-junit-jupiter-reactor` extension covers the reactive stac
 
 ##### Subscribing While the Model Is Stopped {#durable-subscription-reactive-stopped}
 
-A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`, so it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
+A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`. So it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
 
 Whether that position is written to the `CheckpointStorage` right away depends on the wrapped model:
 
