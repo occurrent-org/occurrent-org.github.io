@@ -4957,7 +4957,7 @@ retryStrategy.execute(info -> {
 
 ## Stopping a Retry When Shutting Down
 
-A retry that's waiting between attempts keeps going until its attempts run out. That's a problem when the component doing the retrying is shutting down. As of version {{site.occurrentversion}} you can pass `execute` a second argument, a predicate that tells it whether to keep retrying:
+A retry that's waiting between attempts keeps going until its attempts run out. That's a problem when the component doing the retrying is shutting down. You can pass `execute` a second argument, a predicate that tells it whether to keep retrying:
 
 ```java
 private volatile boolean running = true;
