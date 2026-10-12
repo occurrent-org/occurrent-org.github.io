@@ -60,6 +60,44 @@ window.onload = setMenuHeight;
 window.onresize = setMenuHeight;
 
 if (document.location.pathname.includes("/documentation")) {
+    // "Layer" labels, on the sections that start a layer and on sections whose layer differs from the chapter they sit in
+    let layerTags = {
+        "cloudevents" : 0,
+        "eventstore" : 0,
+        "subscriptions" : 0,
+        "dynamic-consistency-boundary" : 0,
+        "using-an-applicationservice-with-deciders" : 1,
+        "feeding-domain-events-instead-of-cloudevents" : 1,
+        "cloudevent-conversion" : 1,
+        "application-service" : 1,
+        "command-dispatch" : 1,
+        "dcb-with-domain-events" : 1,
+        "query-dsl" : 1,
+        "subscription-dsl" : 1,
+        "deriving-the-event-filter" : 1,
+        "views" : 1,
+        "snapshots" : 1,
+        "sagas" : 1,
+        "with-spring-boot" : 2,
+        "with-spring-boot-1" : 2,
+        "materialized-view-spring" : 2,
+        "the-projection-annotation" : 2,
+        "snapshots-with-spring-boot" : 2,
+        "the-saga-annotation" : 2,
+        "broker-spring-boot" : 2,
+        "spring-boot-starter" : 2,
+        "spring-boot-annotations" : 2
+    };
+    Object.keys(layerTags).forEach(key => {
+        const element = document.getElementById(key);
+        if (element === null) {
+            return;
+        }
+        element.insertAdjacentHTML("beforeend",
+                `<a class="layer-tag" href="#layers" title="Which layer this section belongs to">Layer ${layerTags[key]}</a>`
+        )
+    });
+
     // "Added in" labels
     let addedTags = {
         "catch-up-subscription-blocking" : "0.1.1",
