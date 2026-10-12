@@ -2063,6 +2063,73 @@ The two constructors that take no observer use `PushObserver.noop()`. With it, `
 
 `accept(Iterable<CloudEvent>)` stops the batch at the first event where routing throws, whether its handler threw, its filter threw, or a `CatchupThenPushSubscriptionModel` in front refused it. The events after it are neither routed nor observed. An `Error` other than `AssertionError` from the observer stops the batch the same way.
 
+###### Observing pushed events {#push-subscription-blocking-observer}
+
+`accept(..)` returns normally for an event that no subscription takes, and it logs nothing about it. So each of these looks exactly like a saga or projection that got the event and ignored it:
+
+* a misconfigured queue binding
+* a missing declared event type
+* a typo in a type mapping
+
+Pass a `PushObserver` to the constructor to tell them apart:
+
+```java
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing(),
+        (cloudEvent, outcome) -> {
+            if (outcome != RoutingOutcome.DELIVERED) {
+                log.warn("Event {} of type {} was not delivered: {}", cloudEvent.getId(), cloudEvent.getType(), outcome);
+            }
+        });
+```
+
+`accept(..)` doesn't throw for an event that no subscription takes, because the in-memory event store calls it too, as the listener you pass to an `InMemoryEventStore`. By then the event is already stored, so throwing would only make the write call fail, without undoing the write. [ADR 104](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0104-an-undeliverable-push-event-is-refused-not-acknowledged.md) has the reasoning, and the amendment to [ADR 133](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0133-a-broker-is-a-transport-for-the-push-feed-and-never-a-subscription-model.md) says why the in-memory event store is the only write path this covers.
+
+Pass your own `DataFieldReader` instead of `DataFieldReader.refusing()` if the subscription's filter also needs to match on fields inside the event's `data`.
+
+The observer is called once for each event, after the subscription's handler has run, or straight away when no handler runs. It's called whether the handler succeeded or threw.
+
+`outcome` is a `RoutingOutcome` with six values. It tells "the filter declined this event" apart from "nothing was there to receive it".
+
+Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of the handler. That's the wrapper that replays the event store before it delivers live events, and it's described further down in this section.
+
+| Outcome | What happened |
+|:---|:---|
+| `DELIVERED` | The subscription's filter accepted the event and the handler ran. Behind a `CatchupThenPushSubscriptionModel`, it can also mean the event was buffered for the replay to deliver, or had already been delivered. When the handler throws, the outcome is still `DELIVERED`, and the handler's exception propagates out of `accept(..)` once the observer has been told. |
+| `FILTERED` | The subscription's filter looked at the event and declined it. Offering it to the same subscription again gets the same answer. |
+| `UNAVAILABLE` | No filter was asked, because nothing is registered, the model is stopped, or the subscription is paused. Nothing is thrown. |
+| `DEFERRED` | The filter accepted the event, but the `CatchupThenPushSubscriptionModel` in front of the handler didn't deliver it. That happens, for example, when its catch-up was stopped, or when a broker listener called `acceptRedeliverable(..)`, described below, before the replay finished. Nothing is thrown, and offering the event again later is safe. |
+| `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event, for example because its live buffer is full while the replay is still running. The exception propagates out of `accept(..)` either way. |
+| `REFUSED` | The `CatchupThenPushSubscriptionModel` in front of the handler refused the event because its replay failed, and it refuses every event from then on. The exception propagates out of `accept(..)`. |
+
+Don't base a broker acknowledgement on what the observer is told. The observer is told `DELIVERED` even when the handler threw, and, behind a `CatchupThenPushSubscriptionModel`, when `accept(..)` only buffered the event. Base it on the outcome that `acceptRedeliverable(..)` returns, described below. [Consuming from a broker](#broker-consuming) says what to do with each outcome.
+
+A broker listener that can redeliver a message should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
+
+Plain `accept(..)` buffers that event and reports `DELIVERED` before the handler has applied it. That's right for the in-memory event store, because its listener never offers the same event a second time. When the buffer is full it throws instead, and while the catch-up is stopped it drops the event and reports `DEFERRED`.
+
+The reported outcome always matches what happened to the event, even when a `stop()`, a pause or a resume happens at the same moment. That's because the report and the routing use the same filter check.
+
+The table below shows what the observer is told, and what `accept(..)` throws, when the filter, the handler or the observer itself throws.
+
+| Thrower | What it throws | Outcome the observer is told | What `accept(..)` throws |
+|:---|:---|:---|:---|
+| Filter | `RuntimeException` or `AssertionError` | `NOT_DELIVERABLE` | The filter's exception, once the observer has been told |
+| Filter | A checked exception, which Kotlin code can throw without declaring it, or an `Error` other than `AssertionError` | None, the observer isn't called | The filter's exception |
+| Handler | `RuntimeException` or `AssertionError` | `DELIVERED` | The handler's exception, once the observer has been told |
+| Handler | A checked exception, which Kotlin code can throw without declaring it, or an `Error` other than `AssertionError` | None, the observer isn't called | The handler's exception |
+| Observer | Any `Exception`, checked ones included, or an `AssertionError` | Whichever outcome it was being told | Only the model's own failure, if it has one. The observer's exception is caught and logged. |
+| Observer | An `Error` other than `AssertionError` | Whichever outcome it was being told | The model's own failure for that event, from the filter, the handler or a catch-up refusal, with your `Error` attached to it with `addSuppressed(..)`. With no such failure, your `Error` itself. |
+
+A filter can throw a `RuntimeException` or an `AssertionError` when the `DataFieldReader` you gave the model fails to read a field.
+
+The model catches an `Exception` or `AssertionError` from the observer. So an observer that throws one can't make the broker redeliver an event that was delivered, and doesn't stop the rest of a batch.
+
+If your observer throws an `InterruptedException`, the model sets the interrupt flag on the calling thread again.
+
+The two constructors that take no observer use `PushObserver.noop()`. With it, `accept(..)` routes each event without working out a `RoutingOutcome` at all.
+
+`accept(Iterable<CloudEvent>)` stops the batch at the first event where routing throws, whether its handler threw, its filter threw, or a `CatchupThenPushSubscriptionModel` in front refused it. The events after it are neither routed nor observed. An `Error` other than `AssertionError` from the observer stops the batch the same way.
+
 No broker dependency is added by this module, you pick and wire up RabbitMQ, Kafka, or anything else yourself. The `CloudEventConverter.toDomainEvent(...)` call inside the projection runner needs the extension attributes your handlers rely on, so make sure the pushed `CloudEvent` carries at least `streamid` and `streamversion`, and `position` too if something downstream (such as a catch-up model) reads it.
 
 Feeding the push model straight from an event store's writes is supported only for the in-memory event store. Its listener calls `accept(Iterable<CloudEvent>)`, and there a crash before the handler has run loses the event from the store too. The push model keeps no record of which events a subscription has handled. So with a durable event store, such as MongoDB, the subscription never sees an event if the application crashes after the write has committed but before the handler has run. Use a [durable subscription](#durable-subscriptions-blocking) there, or forward the events to a broker and call `acceptRedeliverable(CloudEvent)` from its listener, as described below.
@@ -2169,6 +2236,17 @@ The record that the catch-up finished is kept per subscription id. The model's `
 On the blocking stack `cancelSubscription(id)` deletes the record before it cancels anything else. If the delete throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
 
 On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the record is deleted. Wait for it when a restart must not skip the history, and call `cancelSubscription(id)` again if it fails.
+Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass. That record is the catch-up marker. A restart that finds it skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Pass `null` and it records nothing, so every restart replays the history.
+
+Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. Correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection.
+
+Only stream and capability-agnostic subscriptions can catch up this way.
+
+The catch-up marker is kept per subscription id. The model's `cancelSubscription(id)` deletes it, so subscribing the same id again replays the history.
+
+On the blocking stack `cancelSubscription(id)` deletes the marker before it cancels anything else. If the delete throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
+
+On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the marker is deleted. Wait for it when a restart must not skip the history, and call `cancelSubscription(id)` again if it fails.
 
 Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`. With a single feed bean the name can be dropped, and the starter finds the bean on its own. Declaring the bean does not replace the default subscription model the starter contributes. The starter skips models without a start position, checkpoint or catch-up when it decides whether the application brought its own, so your event-store subscriptions keep the durable default and the feed runs beside it.
 
@@ -2351,6 +2429,22 @@ On the blocking stack, a catch-up that fails on an interrupted thread isn't reco
 
 A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
+###### What the feed refuses {#feeding-refusals}
+
+A `DomainEventFeed` or `CatchupProjectionFeed` refuses three things rather than let a projection silently do the wrong thing:
+
+* `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, on both the blocking and reactor feeds. The durable checkpoint key it derives from `id` must be unique across every registered projection.
+* A projection keyed by metadata that is fed through the metadata-less `accept(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `accept(metadata, event)` instead.
+* `DomainEventFeed.accept(..)` throws an `IllegalStateException` when no projection is registered on the feed. On the reactor stack the returned `Mono` fails with one. `catchUpAll()` refuses on a feed with no projection for the same reason.
+
+Refusing an event with no projection registered matters because you acknowledge the broker message once `accept` returns. Acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
+
+This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
+
+`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](#push-subscription-blocking-observer). When you drive it from a broker, call `acceptRedeliverable(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, and the broker delivers the message again as long as you don't acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
+
+###### Feeding a `CloudEvent` to the feed {#feeding-cloudevents}
+
 A listener that receives a `CloudEvent` instead of a domain event, a broker consumer for example, hands it to `DomainEventFeed.acceptCloudEvent(..)`. It returns a [`RoutingOutcome`](#push-subscription-blocking-observer) that tells the listener whether to acknowledge the message:
 
 ```java
@@ -2362,6 +2456,13 @@ The feed matches the event against the filter the projection was registered with
 A matching event is decoded with the feed's `CloudEventConverter` and comes back `DELIVERED` once the projection has applied it. Acknowledge it.
 
 A matching event that arrives before the projection is live comes back `DEFERRED`. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. Don't acknowledge it. Redeliver it until it comes back `DELIVERED`, which is safe any number of times.
+The feed matches the event against the filter the projection was registered with, the same filter its catch-up reads the event store with. A matching event is decoded with the feed's `CloudEventConverter`. An event that doesn't match is never decoded, so a converter that only knows this projection's event types never sees another type.
+
+| Outcome | When | What to do with the message |
+|:---|:---|:---|
+| `FILTERED` | The event doesn't match the filter. | Acknowledge it, since redelivering it gets the same answer. |
+| `DELIVERED` | The event matches, and the projection has applied it. | Acknowledge it. |
+| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. Redeliver it until it comes back `DELIVERED`, which is safe any number of times. |
 
 With no projection registered, `acceptCloudEvent(..)` throws `IllegalStateException`, the same as `accept(..)`.
 
@@ -3635,6 +3736,17 @@ Six things differ.
 A handler that feeds another `PushSubscriptionModel` from inside its own subscription has to act on the outcome the `Mono` from `acceptRedeliverable(..)` completes with, because nothing redelivers an event that the other model refuses. For example, fail with an error on anything but `DELIVERED` or `FILTERED`, so the outer handler fails instead of completing as if the event had been handled. Calling `accept(..)` there is no safer, since its `Mono` also completes normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
 
 As on the blocking side, [one model feeds one consumer](#push-subscription-blocking), and a second projection registering on it fails at startup.
+
+The reactive model also takes an optional `PushObserver`, for the same reason as the [blocking model](#push-subscription-blocking-observer). The constructor arguments, the six outcomes, and what happens when the filter or the observer itself throws are the same on both stacks.
+
+Six things differ.
+
+* The reactive `acceptRedeliverable(CloudEvent)` returns a `Mono<RoutingOutcome>` rather than the `RoutingOutcome` itself, so a broker listener acknowledges the message only when that `Mono` completes with `DELIVERED` or `FILTERED`.
+* Behind a `CatchupThenPushSubscriptionModel` whose replay is still running, the `Mono` that `accept(..)` returns completes only once the event has been applied, where the blocking `accept(..)` reports `DELIVERED` and returns as soon as it has buffered the event. A full buffer or a failed replay fails that `Mono`, and a stopped catch-up completes it with the event dropped, as on the blocking side.
+* A handler that fails with a checked exception is reported `DELIVERED`, like any other exception. Only an `Error` other than `AssertionError` from the handler skips the observer.
+* The observer doesn't always run on the thread that called `accept(..)`. `UNAVAILABLE`, `FILTERED` and a filter that threw are reported on the thread that subscribed to the returned `Mono`. The other outcomes are reported once your handler, or the `CatchupThenPushSubscriptionModel` in front of it, has finished with the event, on whichever thread that happened.
+* An `InterruptedException` from the observer sets the interrupt flag on the thread the observer ran on. A pooled Reactor worker clears that flag before its next task, so the caller may never see it.
+* The `Mono` that `accept(CloudEvent)` returns does nothing until something subscribes to it. Subscribing to the same `Mono` twice observes the event twice, and delivers it twice if the subscription still accepts it.
 
 The same limits apply as on the blocking side. A push subscription only ever sees the live tail, and a broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first (see [EventStore Queries](#eventstore-queries) or the [catch-up subscription](#catch-up-subscription-blocking) pattern), then attach the push feed to keep it current.
 
@@ -5548,6 +5660,8 @@ DcbProjection<Boolean, AccountEvent, String> isUsernameClaimed(String username) 
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 Feed it with a DCB subscription the same way you feed a stream projection: `dcbSubscriptions(dcbSubscriptionModel, cloudEventConverter) { project("...", isUsernameClaimed(username), repository) }`.
+
+A `DcbProjection` rejects a wrapped `Projection` that has its own explicit `filter()`, because that filter would otherwise be silently ignored. A `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter.
 
 #### Reading on demand
 
@@ -8533,6 +8647,19 @@ A domain bridge stops for good when `acceptCloudEvent(..)` throws [`UnreadableLi
 
 So pick the bridge that matches the consumer you already have. Both bridges read the same message, so a `CloudEventForwarder` publishing through a `CloudEventSink` feeds either one. The [runnable example](#broker-example) below consumes it both ways.
 
+A bridge acts on the `RoutingOutcome` that `acceptRedeliverable(..)` returns for each message. `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. `outcome.disposition()` sorts the six outcomes into four dispositions, so a bridge you write yourself switches on four values rather than six:
+
+| Disposition | Outcomes | What to do with the message |
+|:---|:---|:---|
+| `ACKNOWLEDGE` | `DELIVERED`, `FILTERED` | Acknowledge it. |
+| `HOLD` | `DEFERRED`, `UNAVAILABLE` | Leave it unacknowledged and offer it again later. Don't run it through your own retry or parking policy, because nothing about the message is broken. |
+| `FAIL` | `NOT_DELIVERABLE` | Your own failure policy decides what happens to it. |
+| `STOP` | `REFUSED` | Stop consuming rather than redelivering it, because offering it again gets the same answer. |
+
+[Observing pushed events](#push-subscription-blocking-observer) says when each outcome is returned.
+
+A running replay finishes by itself, so redelivering a message held for it eventually delivers it. A stopped model, a paused subscription and a stopped catch-up all wait for someone to start them again. Until then, a bridge that only redelivers a held message keeps getting the same answer.
+
 Both brokers ship both bridges as plain classes you construct yourself, with no Spring Boot involved. [RabbitMQ](#broker-rabbitmq) and [Kafka](#broker-kafka) below show the wiring, the configuration each one requires, and how each one acknowledges a message.
 
 ### RabbitMQ {#broker-rabbitmq}
@@ -8552,6 +8679,7 @@ Occurrent never declares an exchange. `orders-exchange` has to exist before anyt
 `RabbitMqCloudEventSink` publishes with publisher confirms and `mandatory = true`, waiting up to `acknowledgementTimeout(Duration)` (five seconds by default) for the broker to confirm.
 
 A confirm alone only proves the broker took the message, not that a queue was bound to receive it, so the sink also watches for `basic.return` and treats a returned message as a failed publish even though a confirm follows it.
+A confirm alone only proves the broker took the message, not that a queue was bound to receive it. So the sink also watches for `basic.return`, and treats a returned message as a failed publish even though a confirm follows it.
 
 Every CloudEvent attribute, the Occurrent extensions included, becomes a message header under a `cloudEvents_` prefix, since there's no official CloudEvents binding for AMQP 0-9-1 to reuse. `datacontenttype` is the one exception, written to `BasicProperties.contentType` instead.
 
@@ -8573,6 +8701,7 @@ The bridge calls `acceptRedeliverable(...)` rather than `accept(...)`. It routes
 `acceptRedeliverable(...)` returns a refusal as an outcome, `REFUSED` or `NOT_DELIVERABLE`, and throws only when the subscription's filter or handler throws. The bridge decides what to do with a message from the returned `RoutingOutcome` alone.
 
 The bridge acknowledges a message once `acceptRedeliverable(...)` returns normally with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`. For any other outcome, or an exception from `acceptRedeliverable(...)`, the bridge holds the message, stops, or hands it to its failure policy.
+The bridge handles each outcome as the table under [Consuming from a broker](#broker-consuming) says. What it does with an exception from `acceptRedeliverable(...)` is described below.
 
 It holds a `DEFERRED` or `UNAVAILABLE` message unacknowledged, and its poll hands it back to RabbitMQ with `basicNack` and requeue, at most once per poll interval, one second by default. RabbitMQ then delivers it again. It stops consuming for good on `REFUSED`.
 
@@ -8680,6 +8809,7 @@ Its Testcontainers tests cover the catch-up-to-live handover, a failing handler 
 {% include macros/broker/rabbitmq/blocking/example.md %}
 
 The Kafka wiring below is built the same way. It has no equivalent Testcontainers-backed example module yet, so treat it as a wiring sketch against the shipped API rather than a tested reference:
+The Kafka wiring below is built the same way. There is no Testcontainers-backed example module for Kafka, so treat it as a wiring sketch against the shipped API rather than a tested reference:
 
 {% include macros/broker/kafka/blocking/example.md %}
 
