@@ -1816,6 +1816,7 @@ or the [Occurrent Retry Module](#retry-configuration-blocking). By default, all 
 When the action still throws after the `RetryStrategy` gives up, the model opens the change stream again at the position before that event and delivers the event again, so the event isn't skipped.
 
 The same `RetryStrategy` decides how many times the model opens the change stream again, counting every reopen since the subscription was started or resumed, including those after a lost connection. When it gives up, the model logs an error and the subscription receives nothing more until you pause and resume it. With `RetryStrategy.none()` that happens the first time the action throws.
+The same `RetryStrategy` decides how many times the model opens the change stream again. It counts every reopen since the subscription was started or resumed, including those after a lost connection. When it gives up, the model logs an error, and the subscription receives nothing more until you pause and resume it. With `RetryStrategy.none()` that happens the first time the action throws.
 
 If you want to disable the Occurrent retry module, pass `RetryStrategy.none()` to the `SpringMongoSubscriptionModel` constructor and then handle retries anyway you find fit. For example, let's say you want to use `spring-retry`, and you have a simple Spring bean that writes each cloud event to a repository:
 
@@ -1871,6 +1872,7 @@ If there's not enough history available in the MongoDB oplog to resume a subscri
 time automatically.
 
 A subscription runs into this whenever it opens its change stream at a position the oplog no longer has. That happens when an application restarts with a subscription configured to start from such a position, and when a subscription is resumed, or its change stream restarts, after being paused or disconnected for longer than the oplog keeps history. A subscription that hasn't handled an event yet gets the same handling.
+A subscription runs into this whenever it opens its change stream at a position the oplog no longer has. That happens when an application restarts with a subscription configured to start from such a position. It also happens when a subscription is resumed, or its change stream restarts, after being paused or disconnected for longer than the oplog keeps history. A subscription that hasn't handled an event yet gets the same handling.
 
 It's disabled by default since it might not 
 be 100% safe (meaning that you can miss some events when the subscription is restarted). It's not 100% safe if you run subscriptions in a different process than the event store _and_ you have lot's of 
@@ -1902,6 +1904,7 @@ var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, config);
 A subscription registered on a model created this way comes back paused, the same as if you'd called `stop()` right after construction. No change stream opens until you call `start()` or `resumeSubscription(id)` yourself.
 
 `subscribe(..)` asks MongoDB for its current operation time on the model's executor, without waiting for the answer, and a subscription from `StartAt.now()`, or with no `StartAt`, starts at that time. So it receives the events written from shortly after `subscribe(..)` returns, including those written before `start()`.
+`subscribe(..)` asks MongoDB for its current operation time on the model's executor, without waiting for the answer. A subscription from `StartAt.now()`, or with no `StartAt`, starts at that time. So it receives the events written from shortly after `subscribe(..)` returns, including those written before `start()`.
 
 Use `autoStartup(false)` to bring subscriptions up under your own control, behind a leader election or a health check for example, or in a test that wants to choose which subscriptions actually run before the context finishes starting.
 
@@ -2322,6 +2325,9 @@ creates an instance of `EveryN` that stores the checkpoint for every third event
 When the filter of a subscription matches no events for a long time, its stored checkpoint stays at the last event it handled, and the MongoDB oplog can drop that position while the subscription is still up to date. A resume after a pause, a lease handover between competing consumers, or a restart would then start from a position the oplog no longer has.
 
 To prevent that, when a read of the change stream returns no event for a subscription, `DurableSubscriptionModel` saves how far the wrapped model has read as the subscription's checkpoint. It saves at most once a minute, and the minute starts over whenever a checkpoint is saved for an event, so a subscription that stores a checkpoint for an event at least once a minute gets no extra write.
+When the filter of a subscription matches no events for a long time, its stored checkpoint stays at the last event it handled. The MongoDB oplog can drop that position while the subscription is still up to date. A resume after a pause, a lease handover between competing consumers, or a restart would then start from a position the oplog no longer has.
+
+To prevent that, `DurableSubscriptionModel` saves a quiet position when a read of the change stream returns no event for a subscription. That is how far the wrapped model, the `CheckpointAwareSubscriptionModel` it combines with the storage, has read, saved as the subscription's checkpoint. It saves at most once a minute. The minute starts over whenever a checkpoint is saved for an event, so a subscription that stores a checkpoint for an event at least once a minute gets no extra write.
 
 Only a wrapped model that implements `QuietPositionReportingSubscriptions` reports that position. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` do.
 
@@ -2415,6 +2421,13 @@ The model keeps the replay that `stop()` cut short, and until it runs again the 
 `start(true)` or `resumeSubscription(id)` runs the replay again, from the last position it stored, or from where it started when it stored none. It stores positions only when you configured checkpoint persistence during replay (see above). The events it delivered after that position are delivered again.
 
 After `start(false)` the subscription usually stays paused. A `start(false)` that comes right after `stop()`, before the model has finished keeping the cut-short replay for later, runs that replay, so its events can reach your action although nothing resumed the subscription. [#1225](https://github.com/johanhaleby/occurrent/issues/1225) tracks that.
+The model keeps the replay that `stop()` cut short. Until it runs again, the subscription counts as paused, so `isPaused(id)` returns `true` and `isRunning(id)` returns `false`. The same goes for a subscription made while the model is stopped.
+
+`start(true)` or `resumeSubscription(id)` runs the replay again, from the last position it stored, or from where it started when it stored none. It stores positions only when you configured checkpoint persistence during replay (see above). The events it delivered after that position are delivered again.
+
+After `start(false)` the subscription usually stays paused. A `start(false)` right after `stop()`, before the model has finished keeping the cut-short replay for later, runs that replay. Its events can then reach your action although nothing resumed the subscription.
+
+<div class="notification">Issue <a href="https://github.com/johanhaleby/occurrent/issues/1225">#1225</a> tracks this.</div>
 
 When the model is stopped and `start(..)` throws because the wrapped model failed to start, the model stays stopped and the subscription stays paused, as after `stop()`. That's not the case when the wrapped model runs anyway, or when another `start(..)` or `resumeSubscription(..)` call came while the wrapped model was starting.
 
@@ -2435,6 +2448,36 @@ On the reactor stack the checkpoint from the replay stays stored after the catch
 A `position:N` checkpoint stored by 0.33.0 has no live start. It resumes as in 0.33.0, with a live start read after the restart, and logs a warning that names the subscription.
 
 Since 0.34.0 a blocking catch-up whose replay fails logs the failure at `ERROR`, as well as throwing it from `waitUntilStarted()`. Before, a caller that never called `waitUntilStarted()` learned nothing about it, and the Spring Boot starter doesn't wait for a subscription that replays history unless its `startupMode` says so. A catch-up that was cancelled, stopped, shut down or replaced by a newer subscribe for the same id isn't logged. On the reactor stack the subscription fails with the error.
+This applies to a position catch-up that stores its position while it replays. The blocking MongoDB Spring Boot starter stores it every 1000 events. The position catch-ups are:
+
+* `StreamCatchupSubscriptionModel` and `DcbCatchupSubscriptionModel`
+* on the reactor stack, `ReactorStreamCatchupSubscriptionModel` and `ReactorDcbCatchupSubscriptionModel`
+
+Before its replay, the catch-up reads the live start, the change-stream position that live delivery picks up from. The checkpoint it stores during the replay holds that live start next to the position. The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) shows what the stored checkpoint looks like in MongoDB and in a storage that keeps strings.
+
+A MongoDB event store reserves an event's position before the transaction that writes it commits. So the event at position 1 can commit after the event at position 2.
+
+A catch-up restarted after it stored `position:2` replays from position 3 up to the head of the event store as the earlier run read it. It then goes live from the stored live start, so the event at position 1 reaches the subscription even when it committed late.
+
+A resume can deliver some events a second time, because live delivery starts from the stored live start. If your action isn't safe to run twice on the same event, use the CloudEvent id to recognize an event you've already handled.
+
+MongoDB keeps a limited oplog, so a stored live start can be gone. The catch-up calls `canResumeFrom(checkpoint)` on the wrapped model, the subscription model it delivers live events through. It calls it when it resumes, and again once its replay is done, before it goes live.
+
+When `canResumeFrom` returns `false`, the catch-up logs a warning and reads a new live start. It then replays again from the position its replay first started from, which delivers that part of the history a second time. When the live start is gone after 4 replays in a row, the catch-up fails with an `IllegalStateException` that names the subscription, and nothing reaches live delivery.
+
+Make the oplog big enough to cover the longest rebuild, and the longest time a catch-up can be stopped in the middle of a replay.
+
+The check after the replay and the opening of the live change stream are two separate calls. If the oplog drops the live start between them, the catch-up still hands it over to live delivery.
+
+The Spring Boot starter sets `restartSubscriptionsOnChangeStreamHistoryLost(true)` by default, through `occurrent.subscription.mongodb.restart-on-change-stream-history-lost`. With that set, the MongoDB model then goes live from the present and skips the events in between.
+
+<div class="notification">Issue <a href="https://github.com/johanhaleby/occurrent/issues/1232">#1232</a> tracks fixing this.</div>
+
+On the reactor stack the checkpoint from the replay stays stored after the catch-up goes live, until `ReactorDurableSubscriptionModel` stores the position of a live event or saves a quiet position. A restart before that replays up to the same head again and goes live from the stored live start.
+
+A `position:N` checkpoint stored by 0.33.0 has no live start. It resumes with a live start read after the restart, so an event that committed late, like the one at position 1 above, isn't delivered. It also logs a warning that names the subscription.
+
+A blocking catch-up whose replay fails logs the failure at `ERROR`, as well as throwing it from `waitUntilStarted()`. So a caller that never calls `waitUntilStarted()` still learns about it. The Spring Boot starter doesn't wait for a subscription that replays history unless its `startupMode` says so. A catch-up that was cancelled, stopped, shut down or replaced by a newer subscribe for the same id isn't logged. On the reactor stack the subscription fails with the error.
 
 ###### Catch-up Subscription Usage
 
@@ -2549,6 +2592,7 @@ Two things the fixture supplies that nothing on the interface can. First, a `new
 The suite takes no position on *how* a strategy coordinates. Nothing in it knows a lease exists, waits one out, or asserts when one expires, and Occurrent's own two MongoDB-backed strategies assert that timing separately, in deterministic tests against the MongoDB support class with a clock the test moves itself. What the suite asserts instead is the property a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
 
 It also asserts the contract both ways Occurrent relies on it. `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock, and also asks `hasLock(subscriptionId, subscriberId)` before it hands each event to the handler. `SagaRunner` registers a consumer, never adds a listener at all, and asks `hasLock` on every poll instead. A strategy that reports changes only through a listener, or only answers correctly when asked directly, fails half of what the suite checks.
+To check your own `CompetingConsumerStrategy` against Occurrent's conformance suite, see [Competing Consumer Strategy Conformance](#competing-consumer-strategy-conformance).
 
 A released competing consumer no longer reports it still holds the lock. `hasLock` used to answer yes for up to half the lease time after `releaseCompetingConsumer`, which reached `SagaRunner`'s poll directly. `unregisterCompetingConsumer` and `releaseCompetingConsumer` do two different things. Unregistering keeps a consumer out until you register it again, which is what a user-paused subscription needs. Releasing keeps it registered so it may take the lock back on its own, which is what a system-paused one needs.
 
@@ -2567,6 +2611,29 @@ A wrapped subscription model of your own shouldn't hold a lock while it hands an
 With the MongoDB strategies, unregistering and releasing a consumer make at most 5 attempts per MongoDB call, fewer when the configured `RetryStrategy` allows fewer. A lease they don't remove expires on its own after the lease time. A `RetryStrategy` you implement yourself, rather than build with `RetryStrategy.retry()`, runs its own retry loop and isn't capped.
 
 Registering a consumer isn't capped, and with the default `RetryStrategy` it tries until MongoDB answers. The strategy uses 16 locks, shared by all its consumers, for registering, unregistering and releasing, so an unregister or a release can wait for a registration that uses the same lock. This means pausing a subscription or stopping the model while MongoDB can't be reached can wait for as long as such a registration keeps trying.
+Before `CompetingConsumerSubscriptionModel` hands an event of a competing subscription to the handler, it calls the strategy's `hasLock(subscriptionId, subscriberId)`. While that returns `false`, the event is held back. A `hasLock` that throws counts as `false`.
+
+A held-back event is never dropped. It goes to the handler once `hasLock` returns `true`, or without the lease in the cases the javadoc of `CompetingConsumerSubscriptionModel` lists, such as when the model pauses the subscription after losing its lease. So the same event can reach the handler on two nodes.
+
+With both MongoDB strategies, `hasLock` returns `false` once three quarters of the lease time have passed since the strategy sent the request that last set the lease. With the default lease time of 20 seconds, that is 15 seconds, even when every refresh since has failed.
+
+The strategy measures that time on the node's own clock, while MongoDB expires the lease on the server's clock. After a failover to a primary whose clock is more than a quarter of the lease time ahead, `hasLock` can return `true` after another node has taken the lease.
+
+A `CompetingConsumerStrategy` of your own has its `hasLock` called on every event, so it should answer from what it keeps in memory rather than by asking a database, and answer `false` once the lock could have expired.
+
+If you write the wrapped subscription model yourself, don't hold a lock while it hands an event to the handler. An event that waits for the lease keeps that lock. Every call that needs the lock, `isRunning(id)` among them, then waits until this node holds the lease again or the model lets the event through.
+
+These models hold no such lock:
+
+* `InMemorySubscriptionModel`
+* `NativeMongoSubscriptionModel`
+* `SpringMongoSubscriptionModel`
+* `DurableSubscriptionModel`
+* the blocking `CatchupSubscriptionModel`
+
+With the MongoDB strategies, unregistering and releasing a consumer make at most 5 attempts per MongoDB call, fewer when the configured `RetryStrategy` allows fewer. A lease they don't remove expires on its own after the lease time. A `RetryStrategy` you implement yourself, rather than build with `RetryStrategy.retry()`, runs its own retry loop and isn't capped.
+
+Pausing a subscription or stopping the model while MongoDB can't be reached can wait for as long as a registration keeps trying. Registering a consumer isn't capped, and with the default `RetryStrategy` it tries until MongoDB answers. The strategy uses 16 locks, shared by all its consumers, for registering, unregistering and releasing, so an unregister or a release can wait for a registration that uses the same lock.
 
 ###### Life-cycle {#competing-consumer-subscription-blocking-life-cycle}
 
@@ -2583,6 +2650,28 @@ When the `CompetingConsumerStrategy` or the wrapped model throws for a competing
 To find out whether this node delivers a subscription's events, call `isRunning(id)`, which returns what the wrapped model answers. The `CompetingConsumerSubscriptionModel` has the wrapped model run a competing subscription while this node holds its lease. A `start()` called on the wrapped model alone runs it there without the lease, and `isRunning(id)` then returns `true` while its events wait for `hasLock`.
 
 Pause a competing subscription with `pauseSubscription(..)` on the `CompetingConsumerSubscriptionModel`, which gives up this node's lease so another node can take the subscription over. A pause made directly on the wrapped model lasts only until the competing consumer model's next `start(..)`, a grant of the subscription's lease or a `resumeSubscription(..)` of it, each of which runs the subscription again while this node holds its lease.
+Calling `start()` only on the wrapped model runs the subscriptions that opted out of competing consumption. No competing subscription competes for its lease, so every event the wrapped model hands a competing subscription waits. A warning is logged the first time that happens for each such subscription.
+
+Calling `start()` on both models, in either order, registers each competing subscription for its lease. Its events reach the handler once this node holds the lease.
+
+When the `CompetingConsumerStrategy` or the wrapped model throws for a competing subscription, `start(..)` and `resumeSubscription(..)` log the failure as a warning and return. A separate thread then tries the subscription again until it is registered for its lease, with a wait between tries that grows after each failure. Every fifth try that fails is logged as a warning. Once registered, the subscription runs only while this node holds the lease.
+
+`stop()`, `pauseSubscription(..)` and `cancelSubscription(..)` throw such a failure, and `resumeSubscription(..)` throws it when it's an `Error`. `start(..)` throws when the wrapped model, or a subscription that opted out of competing consumption, fails to start, after it has tried to start every subscription.
+
+`isRunning()` says whether the competing consumer model is started. It says nothing about whether this node delivers anything. It returns:
+
+* `true` on a started node that holds no lease.
+* `false` after `stop()`, until the next `start(..)`.
+* `false` after a `start(..)` that threw, until a later one returns without throwing.
+* `false` for good once `shutdown()` has begun.
+
+To find out whether this node delivers a subscription's events, call `isRunning(id)`, which returns the wrapped model's `isRunning(id)`. The `CompetingConsumerSubscriptionModel` has the wrapped model run a competing subscription while this node holds its lease. A `start()` called on the wrapped model alone runs it there without the lease, and `isRunning(id)` then returns `true` while its events wait for `hasLock`.
+
+Pause a competing subscription with `pauseSubscription(..)` on the `CompetingConsumerSubscriptionModel`, which gives up this node's lease so another node can take the subscription over. A pause made directly on the wrapped model lasts only until one of these runs the subscription again while this node holds its lease:
+
+* the competing consumer model's next `start(..)`
+* a grant of the subscription's lease
+* a `resumeSubscription(..)` of the subscription
 
 `shutdown()` shuts the `CompetingConsumerStrategy` down, then the wrapped model, and then makes one attempt to give up each lease, waiting at most 5 seconds for all of them. The MongoDB strategies stop refreshing their leases once they are shut down, so a lease that isn't given up expires after the lease time.
 
@@ -2712,6 +2801,26 @@ On the reactor stack, `waitUntilStarted()` returns a `Mono<Void>` instead of blo
 On `ReactorDurableSubscriptionModel` the `Mono` fails with `CancellationException` when the subscription is cancelled before the durable model hands it to the model it wraps. Once that model has the subscription, the `Mono` completes or fails the same way as that model's own `waitUntilStarted()`.
 
 When the durable model drives the subscription itself, because the model it wraps isn't a reactor `SubscriptionModel`, a cancel before the subscription started fails the `Mono` with `CancellationException`. So does a pause or a `stop()` before it started, unless the subscription was made while the model was stopped.
+A handle returns `false` for a subscription you still have to start yourself:
+
+* a registration withheld under `occurrent.subscription.mode=manual`
+* one registered while a `PushSubscriptionModel`, a `SynchronousSubscriptionModel`, a `NativeMongoSubscriptionModel` or a `SpringMongoSubscriptionModel` is stopped
+* a catch-up replay that `stop()` interrupted
+
+Apart from the two MongoDB models, a start that failed and won't be retried throws instead of returning.
+
+`waitUntilStarted()` without a timeout keeps waiting for a subscription you still have to start yourself, so don't call it on the thread that is going to call `start()`.
+
+`NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` also return `false` once the model is shut down, and when the change stream hasn't opened before the timeout. The stream may not open, for example, while MongoDB can't be reached or because the `RetryStrategy` gave up before it opened.
+
+On the reactor stack, `waitUntilStarted()` returns a `Mono<Void>` instead of blocking. It completes once the subscription has started and errors if the start failed, so a subscription that hasn't started yet is a `Mono` that hasn't completed.
+
+On `ReactorDurableSubscriptionModel`, the `Mono` fails with `CancellationException` when the subscription is cancelled before the durable model hands it to the model it wraps. Once that wrapped model has the subscription, the `Mono` completes or fails the same way as the wrapped model's own `waitUntilStarted()`.
+
+The durable model drives the subscription itself when the wrapped model isn't a reactor `SubscriptionModel`. Then these fail the `Mono` with `CancellationException` when they come before the subscription started:
+
+* a cancel
+* a pause or a `stop()`, unless the subscription was made while the model was stopped
 
 Note the difference between cancelling and pausing a subscription. Cancelling a subscription will _remove_ it and it's not possible to resume it again later. Pausing a subscription will temporarily 
 pause the subscription, but it can later be resumed using the `resumeSubscription` method.
@@ -2927,6 +3036,31 @@ It's a way to read, write and delete the `Checkpoint` for a given subscription. 
 The defaults evaluate no condition. `delete(subscriptionId, condition)` deletes for `any()` and signals `UnsupportedOperationException` for any other condition, and `evaluatesDeleteConditions()` answers `false`. Both reactive storages Occurrent ships evaluate the conditions.
 
 `ReactorDurableSubscriptionModel` deletes a cancelled subscription's checkpoint with `notOlderThan` and the version it read just before. A subscribe of the same id that comes while that delete runs writes the checkpoint back at a higher version, so the delete is refused, or what it removed is stored again. With a storage that answers `false` from `evaluatesDeleteConditions()` or from `evaluatesWriteConditionsFor(subscriptionId)`, the delete is unconditional, and the checkpoint is written back once the delete attempt in progress has ended.
+It's a way to read, write and delete the `Checkpoint` for a given subscription:
+
+| Method | What it does |
+|:---|:---|
+| `save(subscriptionId, checkpoint, condition)` | Writes the checkpoint when `condition` holds for the stored version. A condition that isn't met signals `Mono.error` with `CheckpointWriteConditionNotFulfilledException`. |
+| `save(subscriptionId, checkpoint)` | An unconditional write, `any()`, that keeps whatever version is already stored, untouched. |
+| `writeVersion(subscriptionId)` | Reads back the version a condition is judged against. Empty if none is stored, including for a storage that can't evaluate conditions at all. |
+| `evaluatesWriteConditions()` | Whether the storage evaluates `notOlderThan` and `ifAbsent` for real rather than refusing them. Defaults to `false`. Both reactive storages Occurrent ships return `true`. |
+| `evaluatesWriteConditionsFor(subscriptionId)` | The per-id version of `evaluatesWriteConditions()`, and defaults to it. For a storage whose answer depends on the subscription id. |
+| `delete(subscriptionId, condition)` | Deletes the checkpoint only when `condition` holds for the stored version, judged the same way `save` judges it. |
+| `evaluatesDeleteConditions()` | Whether the storage evaluates `notOlderThan` and `ifAbsent` on a delete rather than refusing them. |
+
+A storage that can only ever evaluate `any()` refuses any other condition with `UnsupportedOperationException` instead. Check the storage's own documentation for which conditions it evaluates before depending on one.
+
+The default implementations evaluate no condition. The default `delete(subscriptionId, condition)` deletes for `any()` and signals `UnsupportedOperationException` for any other condition. The default `evaluatesDeleteConditions()` returns `false`. Both reactive storages Occurrent ships evaluate the conditions.
+
+`ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position. When it returns `false`, that write is unconditional, and the model logs a `WARN` rather than refusing to start.
+
+A `save` for that first position that completes without emitting a checkpoint is refused with `IllegalStateException`, naming the storage and the position it tried to record. Nothing then shows whether the write reached storage.
+
+The blocking Spring Boot starter runs its own fencing check against `evaluatesWriteConditionsFor` at startup. That check belongs to the blocking stack only and has no reactor equivalent.
+
+`ReactorDurableSubscriptionModel` deletes a cancelled subscription's checkpoint with `notOlderThan` and the version it read just before. A subscribe of the same id that comes while that delete runs writes the checkpoint back at a higher version. So the delete is refused, or what it removed is stored again.
+
+With a storage that returns `false` from `evaluatesDeleteConditions()` or from `evaluatesWriteConditionsFor(subscriptionId)`, the delete is unconditional. The checkpoint is then written back once the delete attempt in progress has ended.
 
 Occurrent ships two pre-defined reactive implementations:
 
@@ -2992,6 +3126,7 @@ used by the `EventStore` implementation. Secondly, we have the `TimeRepresentati
 [here](#mongodb-time-representation). It's also very important that this is configured the same way as the `EventStore`.
 
 When the change stream of a subscription fails, for example because the connection to MongoDB is lost, `ReactorMongoSubscriptionModel` opens it again from the position the subscription had reached, and keeps trying with the wait set by `ReactorMongoSubscriptionModelConfig.backoff(minBackoff, maxBackoff)`. When the oplog no longer has that position, it only opens the change stream again if `restartSubscriptionsOnChangeStreamHistoryLost(true)` is set, and then it opens it from the present.
+When the change stream of a subscription fails, for example because the connection to MongoDB is lost, `ReactorMongoSubscriptionModel` opens it again from the position the subscription had reached. It keeps trying, with the wait set by `ReactorMongoSubscriptionModelConfig.backoff(minBackoff, maxBackoff)`. When the oplog no longer has that position, it opens the change stream again only if `restartSubscriptionsOnChangeStreamHistoryLost(true)` is set, and then from the present.
 
 A subscription that starts from the present needs MongoDB's current operation time. When MongoDB's reply doesn't have one, the model logs an error and stops trying to open that subscription's change stream.
 
@@ -3038,6 +3173,13 @@ When the wrapped model is `ReactorMongoSubscriptionModel`, the position of a sub
 `ReactorMongoSubscriptionModel` reads that position from a private field of the MongoDB driver. When that doesn't work with the driver in use, it logs a warning when it's created, and a subscription keeps the position of the last event it handled.
 
 The minute starts over whenever a checkpoint is saved for an event. With a predicate that skips events, such as `EveryN`, a subscription that stops receiving events right after a skipped one has no position saved until the predicate stores one. A subscription from a `StartAt` of your own gets none saved until the predicate has stored the position of an event.
+The `CheckpointAwareSubscriptionModel` that `ReactorDurableSubscriptionModel` wraps is called the wrapped model below. When the wrapped model is `ReactorMongoSubscriptionModel`, the position of a subscription that receives no events is saved too. That also works with a `ReactorCatchupSubscriptionModel` or `ReactorStreamCatchupSubscriptionModel` between the two, once the replay has handed the subscription over.
+
+`ReactorMongoSubscriptionModel` reports the position it has read up to when a read returns no event for the subscription. The durable model saves that position as the checkpoint, at most once a minute by default.
+
+`ReactorMongoSubscriptionModel` reads that position from a private field of the MongoDB driver. When that doesn't work with the driver in use, it logs a warning when it's created, and a subscription keeps the position of the last event it handled.
+
+The minute starts over, and a persist predicate can delay the save, the same way as for the [blocking `DurableSubscriptionModel`](#durable-subscriptions-blocking).
 
 Change the interval with `ReactorDurableSubscriptionModelConfig.saveQuietPositionEvery(Duration)`, and keep it well below how long the oplog keeps history. `neverSaveQuietPosition()` turns the save off. A subscription that then receives no events for longer than the oplog keeps history gets the wrapped model's handling of lost history when it next starts from its stored checkpoint.
 
@@ -3052,7 +3194,7 @@ that stores the checkpoint, and combine them to a `ReactorDurableSubscriptionMod
 
 ###### Life-cycle {#durable-subscription-reactive-life-cycle}
 
-`ReactorDurableSubscriptionModel` can be stopped, started, paused per subscription and shut down like any other reactor `SubscriptionModel`. A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`, so it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
+`ReactorDurableSubscriptionModel` can be stopped, started, paused per subscription and shut down like any other reactor `SubscriptionModel`.
 
 A shut-down model stays shut down. Subscribing to it with a subscription id throws `SubscriptionModelShutdownException`, which is an `IllegalStateException`, before any history is replayed:
 
@@ -3086,6 +3228,57 @@ The durable model tries that `globalCheckpointAsOfNow()` read again after each f
 A dynamic start position can answer the subscription model default too, and is then read for and refused the same way. When the wrapped model manages named subscriptions of its own, the durable model calls the function inside `subscribe(..)`, so what the function throws comes out of that call, unless the subscribe takes over the delete of an earlier cancel after that delete has read the checkpoint, see below. When the function answers the model default, the subscription is handed over once the read answers, and a refusal fails `waitUntilStarted()` of the subscription `subscribe(..)` returned.
 
 When the durable model drives the cold primitive itself, it calls the function only once the subscription starts. A registration made while the model runs starts at once, so a refusal comes out on the handle `subscribe(..)` returned. For one made while the model is stopped, that handle waits, and the refusal comes out when `start(..)` or `resumeSubscription(..)` starts the subscription.
+The model that `ReactorDurableSubscriptionModel` wraps is called the wrapped model below. It's either a named reactor `SubscriptionModel` or a model that offers only the cold primitive. The cold primitive is the plain `subscribe(filter, startAt)` that returns a `Flux` and does nothing until something subscribes to it, which is what Reactor calls cold.
+
+The `occurrent-testing-junit-jupiter-reactor` extension covers the reactive stack the same way. See [Integration Testing](#integration-testing) and [stopping every subscription, then opting in](#testing-subscription-deny-by-default) for how it stops a reactive subscription by default and lets a test opt it back in.
+
+###### Subscribing While the Model Is Stopped {#durable-subscription-reactive-stopped}
+
+A subscription registered while the model is stopped doesn't miss what's written while it waits. Its start position is resolved and captured at registration rather than left to be re-read once something finally calls `start()`. So it begins from where the feed was when it was registered, not from wherever the feed has reached by the time it actually starts.
+
+Whether that position is written to the `CheckpointStorage` right away depends on the wrapped model:
+
+* When the wrapped model is a named reactor `SubscriptionModel`, as in every shipped composition, the position is stored once the wrapped model has taken the subscription, without waiting for it to start. So a subscription that's registered and never started still has a checkpoint stored. If it's ever started later, it resumes from there rather than from the beginning. [Delegating to a Named Wrapped Model](#durable-subscription-reactive-delegation) describes this case.
+* When the wrapped model offers only the cold primitive, nothing is stored until the subscription actually starts, so one that never starts has nothing stored.
+
+Either way, a registration that asks for `StartAt.subscriptionModelDefault()` loses no event written while it waits to be started. The blocking stack's manual-start wrapper gives the same guarantee.
+
+Where a `StartAt.now()` subscription begins depends on the wrapped model too. A wrapped model that manages named subscriptions gets the subscription with `StartAt.now()` at the `subscribe(..)` call, and works out the present itself, as described in [Reactive Subscription Start Position](#reactive-subscription-start-position).
+
+When the durable model drives the cold primitive itself, it begins from the position the wrapped model's `globalCheckpointAsOfNow()` returns for the `subscribe(..)` call. So a subscription registered on a stopped model, or paused before it started, gets what was written after the call once it starts.
+
+The durable model tries that `globalCheckpointAsOfNow()` read again after each failure, with a delay that roughly doubles each time. The subscription doesn't start before the read returns. When it returns nothing, the subscription opens its feed at `StartAt.now()` each time it starts.
+
+###### When No Start Position Can Be Read {#durable-subscription-reactive-no-start-position}
+
+That position has to be readable for any of this to hold. A read that fails at registration, and one that answers nothing, both refuse the subscription rather than being taken again once it starts, since a read taken then answers with wherever the feed has reached by then and starting from that is the loss this guarantee is about. An answer of nothing used to fall back to `StartAt.now()`, which looked harmless for a subscription that starts at the moment it registers and isn't, because a wrapped model applies a start position when it opens its feed rather than when it receives one. So it's refused whether this model is running or stopped, which is also how the blocking `ManualStartSubscriptionModel` answers a `null` position from this release on.
+
+Where the refusal comes out depends on the wrapped model. When it manages named subscriptions of its own, `subscribe(..)` returns without waiting for storage. The refusal then makes `waitUntilStarted()` on the returned subscription fail, and an `ERROR` is logged. See [Delegating to a Named Wrapped Model](#durable-subscription-reactive-delegation).
+
+When the durable model drives the cold primitive itself, it can't throw there. The refusal is logged at `ERROR` and reported on:
+
+* `waitUntilStarted()`
+* the handle `resumeSubscription(..)` hands you
+* the handle you got back when you registered, once that registration asked for `StartAt.subscriptionModelDefault()` and storage has confirmed it holds nothing
+
+A storage that can't be read keeps that last handle waiting instead, rather than reporting a refusal the start may not make.
+
+Starting a refused subscription is what drops it from the model, so getting it back means registering it again rather than resuming, and one you never started keeps its id until `cancelSubscription(..)` releases it. `start(true)` starts the other subscriptions all the same.
+
+Two registrations are never refused by that read:
+
+* One naming its own `StartAt`, `StartAt.now()` included, records no start position, since you've said where to begin.
+* One that already has a checkpoint stored begins from that checkpoint, and starts even when the read couldn't answer.
+
+So a position source that can never answer stops a brand new subscription rather than every subscription the application has.
+
+A dynamic start position can return `StartAt.subscriptionModelDefault()` too, and is then read for and refused the same way. When the wrapped model manages named subscriptions of its own, the durable model calls the function inside `subscribe(..)`, so what the function throws comes out of that call. The exception is a subscribe that takes over the delete of an earlier cancel after that delete has read the checkpoint, as described in [Cancelling a Subscription](#durable-subscription-reactive-cancel).
+
+When the function returns `StartAt.subscriptionModelDefault()`, the subscription is handed over once the read returns. A refusal then fails `waitUntilStarted()` of the subscription `subscribe(..)` returned.
+
+When the durable model drives the cold primitive itself, it calls the function only once the subscription starts. A registration made while the model runs starts at once, so a refusal comes out on the handle `subscribe(..)` returned. For one made while the model is stopped, that handle waits, and the refusal comes out when `start(..)` or `resumeSubscription(..)` starts the subscription.
+
+###### When Two Nodes Register the Same Subscription {#durable-subscription-reactive-two-nodes}
 
 Recording that first position is a conditional write, so only the first one to reach storage is kept. When two nodes register the same brand new subscription at the same moment, the node that can't show the stored position is the one it read has its registration refused with `StartPositionAlreadyPinnedException`, rather than starting from a position it never read. The events between the two positions then reach neither until that interval is replayed, which is only safe while the subscription isn't running anywhere. A position that was already stored when the model read for it is taken without a word, so a node joining a subscription another has been running is unaffected.
 
@@ -3122,6 +3315,50 @@ A subscribe with a start position of its own, such as `StartAt.now()` or a check
 Every subscribe asks the wrapped model whether it holds the id, with `subscriptionIds()` when it implements the reactor `IntrospectableSubscriptions`, and with `isRunning(..)` and `isPaused(..)` when it doesn't. A wrapped model of your own answers `false` from those two for an id it doesn't hold, or throws `UnknownSubscriptionException`. Any other exception it throws when asked comes out of `subscribe(..)`, and the wrapped model doesn't get the subscribe.
 
 A wrapped model of your own that doesn't implement `IntrospectableSubscriptions` can answer `false` from both `isRunning(..)` and `isPaused(..)` for a subscription it moves between running and paused, and the check at the call then misses that subscription. The call can also subscribe to the wrapped model's `globalCheckpointAsOfNow()` on the calling thread, so that method shouldn't block when its `Mono` is subscribed to.
+###### Cancelling a Subscription {#durable-subscription-reactive-cancel}
+
+On the reactor stack, `cancelSubscription(..)` returns a `Mono<Void>`. That holds on `CancellableSubscriptions`, which every reactor `SubscriptionModel` extends, and on `DcbSubscriptionModel`. The reactor `DcbSubscriptions.cancel(..)` returns one too.
+
+The cancel takes effect when you call the method, whether or not anything subscribes to the `Mono`. The `Mono` completes once the state stored for the id, such as a checkpoint or a catch-up marker, is deleted, in the model you called and in every model it wraps.
+
+On `ReactorDurableSubscriptionModel`, a subscribe of the id can take the delete over, as described below. The `Mono` then completes once that subscribe has started, ended or written a checkpoint. When that subscribe fails, the `Mono` completes once the delete that goes ahead in its place has ended.
+
+`ReactorDurableSubscriptionModel` tries a failed delete of the checkpoint again until it succeeds, a subscribe of the id takes it over, or the model is shut down. The wait before a try starts at 100 milliseconds and about doubles after each failure, never past 5 seconds. The `Mono` doesn't complete before the tries end.
+
+Wait for the `Mono` before you subscribe the id again, since a subscribe of the id after it completes starts as a new subscription. A subscribe of the id that comes earlier in the same process takes the delete over. One from `StartAt.subscriptionModelDefault()` then resumes from the cancelled subscription's checkpoint.
+
+Over a wrapped model that manages named subscriptions, a subscribe of the id throws `DuplicateSubscriptionIdException` while the cancel the durable model sent that model is under way.
+
+A subscribe with a dynamic start position that takes over a delete that has already read the cancelled subscription's checkpoint returns without calling the function. The durable model calls it on a thread of its own once storage holds that checkpoint again. What it throws then fails `waitUntilStarted()` of the subscription `subscribe(..)` returned.
+
+When the `Mono` fails, or the process ended before it completed, call `cancelSubscription(..)` again for the id. That also works in a new process that never subscribed the id.
+
+###### Delegating to a Named Wrapped Model {#durable-subscription-reactive-delegation}
+
+When the model that `ReactorDurableSubscriptionModel` wraps, the wrapped model, is itself a named reactor `SubscriptionModel`, the durable model hands the subscription straight to it. It doesn't drive the cold `Flux` primitive itself then. Everything the wrapped model already does for a named subscription applies from there:
+
+* An unsupported `SubscriptionFilter` is refused before the change stream starts.
+* A failing action is retried with the wrapped model's own configured backoff instead of ending the subscription.
+
+`ReactorDurableSubscriptionModel` has no separate retry configuration for this path. Only the wrapped model's applies.
+
+A subscribe from `StartAt.subscriptionModelDefault()`, or from a dynamic start position that returns it, doesn't wait for storage. The durable model reads the stored checkpoint, or where the feed was at the call when none is stored. It hands the subscription to the wrapped model once that read returns, on a thread of its own. A `WARN` is logged every 10 seconds while the read hasn't returned.
+
+When the wrapped model is `ReactorMongoSubscriptionModel`, you can therefore call such a subscribe on a thread that must not wait for storage, such as a Netty event loop thread of the MongoDB driver. The call can still wait while another call holds a lock it needs. It takes an internal lock of the durable model, and asks `ReactorMongoSubscriptionModel` which ids it holds, which that model looks up under a lock of its own. A dynamic start position's function runs on the calling thread, so the call also waits for whatever the function waits for.
+
+A failure after such a subscribe has returned makes `waitUntilStarted()` on the subscription it returned fail, and an `ERROR` is logged. That covers:
+
+* a refusal of the wrapped model, such as an unsupported filter or an id it already holds once the subscription reaches it
+* a read that fails or returns nothing
+* a start position that can't be recorded
+
+The durable model records the start position only once the wrapped model has taken the subscription. So nothing is stored for the id when the wrapped model refuses a subscribe.
+
+A subscribe with a start position of its own, such as `StartAt.now()` or a checkpoint, is handed to the wrapped model at the call, so a refusal of the wrapped model comes out of `subscribe(..)`. Any subscribe throws `DuplicateSubscriptionIdException` at the call when the wrapped model reports the id, or while another subscribe of the id waits to be handed over.
+
+Every subscribe checks whether the wrapped model holds the id. It calls `subscriptionIds()` when the wrapped model implements the reactor `IntrospectableSubscriptions`, and `isRunning(..)` and `isPaused(..)` when it doesn't. A wrapped model of your own returns `false` from those two for an id it doesn't hold, or throws `UnknownSubscriptionException`. Any other exception it throws then comes out of `subscribe(..)`, and the wrapped model doesn't get the subscribe.
+
+A wrapped model of your own that doesn't implement `IntrospectableSubscriptions` can return `false` from both `isRunning(..)` and `isPaused(..)` for a subscription it moves between running and paused. The check at the call then misses that subscription. The call can also subscribe to the wrapped model's `globalCheckpointAsOfNow()` on the calling thread, so that method shouldn't block when its `Mono` is subscribed to.
 
 This is the composition the reactive Spring Boot starter wires for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
 
@@ -3140,6 +3377,17 @@ The `handoverCacheSize` you can pass to a reactor catch-up model, 100000 events 
 `stop()` on a reactor catch-up model cuts a running replay short. The subscription then counts as paused until `start(true)` or `resumeSubscription(id)` runs the replay again, and so does a subscription made while the model is stopped. After `start(false)` both stay paused.
 
 While such a subscription waits, `isPaused(id)` returns `true`, `isRunning(id)` returns `false`, and `pauseSubscription(id)` throws `SubscriptionNotRunningException`. The replay runs again from where it started, so the events it delivered before the stop are delivered again.
+The `handoverCacheSize` you can pass to a reactor catch-up model, 100000 events by default, only fills with the events of the replay's final read. That read picks up what was written while the replay ran, so the cache needs room for those rather than for the whole history. A cache that's too small gives more duplicate deliveries, never a lost event.
+
+`stop()` on a reactor catch-up model cuts a running replay short. The subscription then counts as paused until `start(true)` or `resumeSubscription(id)` runs the replay again, and so does a subscription made while the model is stopped. After `start(false)` both stay paused.
+
+While such a subscription waits:
+
+* `isPaused(id)` returns `true`
+* `isRunning(id)` returns `false`
+* `pauseSubscription(id)` throws `SubscriptionNotRunningException`
+
+The replay runs again from where it started, so the events it delivered before the stop are delivered again.
 
 A `resumeSubscription(id)` of a paused subscription on a stopped model calls `start(false)` first, so the model's other paused subscriptions stay paused.
 
@@ -3291,6 +3539,12 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 | `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`. An `InMemoryEventStore` listener calls `accept(events)`, and a broker listener calls the push model's `acceptRedeliverable(cloudEvent)` instead, which `Pushable` doesn't declare | implemented directly by the push models, declare or cast |
 
 `CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the mixins reached with `findIn(model)` are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
+| `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, cloud events with a checkpoint you can store yourself, and `canResumeFrom(checkpoint)`, see below | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
+| `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`, the target a broker listener feeds events into | implemented directly by the push models, declare or cast |
+
+`canResumeFrom(checkpoint)` returns `false` when the model no longer has the history back to that checkpoint, for example a MongoDB change-stream position older than the oldest entry in the oplog. It returns a `boolean` on blocking and a `Mono<Boolean>` on reactor, and returns `true` unless the model overrides it. A position catch-up calls it when it resumes from a stored checkpoint that holds a live start, before the resumed replay, and again once its replay is done, before it goes live.
+
+`CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the mixins reached with `findIn(model)` are. Nothing wraps a model and re-exposes checkpoint-awareness on demand. You get it because the concrete model you constructed implements it directly, so keep hold of that static type or cast to it. Those models are `NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents.
 
 #### Typed views
 
@@ -3325,6 +3579,11 @@ val canIntrospect = subscriptionModel.hasCapability<IntrospectableSubscriptions>
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
 `capability(type)` runs the same search as `IntrospectableSubscriptions.findIn(model)` above, generalized over whichever `Class` you pass it instead of hard-coded to one facet. On the blocking stack it unwraps a `SubscriptionModelWrapper` chain until something implements `type`, and on the reactor stack, which has no wrapper to unwrap, it checks the model itself directly. Of the reactor models Occurrent ships, only `ReactorCatchupSubscriptionModel` and `ReactorStreamCatchupSubscriptionModel` answer differently, and only for `QuietPositionReportingSubscriptions`, which they answer with the capability of the model they wrap. `hasCapability(type)` answers the same question as a `boolean`, for a caller that only needs to know whether the capability is there. Use `findIn` when the facet is fixed at the call site, `IntrospectableSubscriptions.findIn(model)` names both the search and its target in one call. Use `capability`/`hasCapability` when the `Class` you're checking is itself a value, chosen by a caller further up the stack rather than written into the code doing the check.
+Use `capability`/`hasCapability` when the `Class` you're checking is itself a value, chosen by a caller further up the stack rather than written into the code doing the check. Use `findIn` when the facet is fixed at the call site, since `IntrospectableSubscriptions.findIn(model)` names both the search and its target in one call.
+
+`capability(type)` runs the same search as `IntrospectableSubscriptions.findIn(model)` above, for whichever `Class` you pass it instead of one fixed facet. On the blocking stack it unwraps a `SubscriptionModelWrapper` chain until something implements `type`. On the reactor stack, which has no wrapper to unwrap, it checks the model itself.
+
+Of the reactor models Occurrent ships, only `ReactorCatchupSubscriptionModel` and `ReactorStreamCatchupSubscriptionModel` behave differently, and only for `QuietPositionReportingSubscriptions`. For that type they return the capability of the model they wrap. `hasCapability(type)` gives the same answer as a `boolean`, for a caller that only needs to know whether the capability is there.
 
 The Kotlin extensions come from the same [Subscription DSL](#subscription-dsl) module as `streamSubscriptions`/`subscriptions`, on both stacks, as `capability<T>()` and `hasCapability<T>()`, inferring `T` from the type argument instead of taking a `Class`.
 
@@ -9418,7 +9677,9 @@ The fixture also declares five things the API cannot be asked:
 
 Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
 
-A model that doesn't replay the history to a new subscription can also declare `howFarBackANewSubscriptionMayStart()`, how long before `subscribe(..)` an event can have been published and still reach a new subscription that starts at the present. It defaults to zero. A model that starts a little earlier, rather than risk skipping an event written right after `subscribe(..)` returns, declares how much earlier, and the suite waits that long, plus half a second, between publishing and subscribing wherever it asserts that an earlier event doesn't arrive.
+A model that doesn't replay the history to a new subscription can also declare `howFarBackANewSubscriptionMayStart()`. That is how long before `subscribe(..)` an event can have been published and still reach a new subscription that starts at the present. It defaults to zero.
+
+A model that starts a little earlier, rather than risk skipping an event written right after `subscribe(..)` returns, declares how much earlier. Wherever the suite asserts that an earlier event doesn't arrive, it then waits that long, plus half a second, between publishing and subscribing.
 
 You also say how long the suites are allowed to wait for something to arrive. `deliveryTimeout()` defaults to ten seconds, which is what every model shipping with Occurrent runs on, so a model that has to reach a broker before it can deliver widens it rather than having no way to pass:
 
@@ -9447,7 +9708,7 @@ One thing to know if you pause a subscription and resume it later. Both MongoDB 
 
 If a `CompetingConsumerSubscriptionModel` wraps your model, implement `SubscriptionModel.subscribePaused(..)`. The competing consumer model uses it to make a competing subscription in your model without starting it, and resumes it there once this node holds the lease.
 
-The default `subscribePaused(..)` throws `UnsupportedOperationException`, and the competing consumer model then calls `subscribe(..)` once this node wins the lease, so a subscription made while the competing consumer model is stopped can deliver before its `start()`. `SubscriptionModelConformance` accepts both, a model that holds such a subscription paused until it's resumed and one that refuses it with `UnsupportedOperationException`.
+The default `subscribePaused(..)` throws `UnsupportedOperationException`. The competing consumer model then calls `subscribe(..)` once this node wins the lease, so a subscription made while the competing consumer model is stopped can deliver before its `start()`. `SubscriptionModelConformance` accepts both a model that holds such a subscription paused until it's resumed and one that refuses it with `UnsupportedOperationException`.
 
 The TCK carries the same version number as the rest of Occurrent, and a minor release may add suites and tighten what the existing ones assert. Upgrading can therefore turn a green build red. That is the suite doing what it is for, and there are two things to do about it, fix the implementation or stay on the Occurrent version you were on. Holding the TCK back on its own is not a third option, because each artifact is compiled against the runtime API of its own version.
 
@@ -9469,11 +9730,21 @@ class MyCompetingConsumerStrategyTest extends CompetingConsumerStrategyConforman
 }
 ```
 
-Two things the fixture supplies that nothing on the interface can. First, a `newCompetingConsumerStrategy()` factory that hands back a rival strategy contending over the *same* storage as the one under test. The suite needs a rival to register against, and in places a third instance that outlives a rival it deliberately shuts down. Constructing several strategies over one shared storage is therefore an explicit constraint on your implementation, since nothing on `CompetingConsumerStrategy` lets one instance reach another. Second, `timeToConverge()`, the longest the suite waits for the strategy's own coordination to settle who holds a lock when nothing told it directly. This is a bound rather than a delay. The suite stops waiting the moment the condition holds, so a generous value costs a passing run nothing and is only paid in full by a run that was going to fail anyway.
+The fixture supplies two things that nothing on the interface can:
 
-The suite takes no position on *how* a strategy coordinates. It asserts one property, which a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
+* A `newCompetingConsumerStrategy()` factory that hands back a rival strategy contending over the *same* storage as the one under test. The suite needs a rival to register against, and in places a third instance that outlives a rival it deliberately shuts down. Your implementation must therefore allow several strategies over one shared storage, since nothing on `CompetingConsumerStrategy` lets one instance reach another.
+* `timeToConverge()`, the longest the suite waits for the strategy's own coordination to settle who holds a lock when nothing told it directly. This is a bound rather than a delay. The suite stops waiting the moment the condition holds, so a generous value costs a passing run nothing. Only a run that was going to fail anyway waits the full time.
 
-It also asserts the contract both ways it can be consumed. A strategy that reports lock changes only through its listener, or that only answers correctly when `hasLock(subscriptionId, subscriberId)` is asked directly, fails half of what the suite checks, since `CompetingConsumerSubscriptionModel` relies on both and `SagaRunner` only asks `hasLock`.
+The suite takes no position on *how* a strategy coordinates. Nothing in it knows a lease exists, waits one out, or asserts when one expires. Occurrent's own two MongoDB-backed strategies assert that timing separately, in deterministic tests against the MongoDB support class with a clock the test moves itself.
+
+The suite asserts one property instead, which a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
+
+It also asserts the contract both ways Occurrent uses it:
+
+* `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock. It also calls `hasLock(subscriptionId, subscriberId)` before it hands each event to the handler.
+* `SagaRunner` registers a consumer, never adds a listener, and calls `hasLock` on every poll instead.
+
+A strategy that reports lock changes only through its listener, or that only answers correctly when `hasLock` is called directly, fails half of what the suite checks.
 
 ### The Reactive Bridge {#subscription-reactive-bridge}
 
