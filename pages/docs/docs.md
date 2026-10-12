@@ -99,6 +99,7 @@ permalink: /documentation
 * * * [Declare the Concrete Event Types](#derived-filter-concrete)
 * * * [Set an Explicit Filter](#derived-filter-explicit)
 * * * [Empty Still Means Empty on a Query](#derived-filter-empty)
+* * * [An Empty List of Types Selects Nothing on a Query](#derived-filter-empty)
 * * [Views](#views)
 * * * [The View DSL](#view-dsl)
 * * * * [Storing a view](#materialized-view)
@@ -4602,6 +4603,7 @@ GamePlayed event2 = domainEventQueries.queryOne(Filter.id("d7542cef-ac20-4e74-91
 `query(GameStarted.class, GameEnded.class)` and the `Collection` overloads derive a filter from the types you list, as described in [Deriving the Event Filter](#deriving-the-event-filter). If a query names a type listed as refused in that section, the query throws.
 
 Given a `null` or empty collection, these overloads return no events. [Empty Still Means Empty on a Query](#derived-filter-empty) says how that differs from a projection.
+Given a `null` or empty collection, these overloads return no events. [An empty list of types selects nothing on a query](#derived-filter-empty) says how that differs from a projection.
 
 There are also some Kotlin extensions that you can use to query for a `Sequence` of events instead of a `Stream`:
  ```kotlin
@@ -4779,6 +4781,7 @@ A refusal is thrown when the filter is derived, and each place derives it at a d
 | `DcbCriteriaBuilder.type(..)` or `types(..)` | that call |
 
 `ExecuteFilter.excludeTypes(..)` widens instead of refusing, because excluding a supertype has to exclude everything under it. It excludes the declared type and every concrete type it can find below it by following `permits` clauses, and a type it cannot reach stays in the read.
+`ExecuteFilter.excludeTypes(..)` excludes more instead of refusing, because excluding a supertype has to exclude everything under it. It excludes the declared type and every concrete type it can find below it by following `permits` clauses. A type it can't reach that way stays in the read.
 
 `excludeTypes(..)` refuses an array or a primitive type. It also refuses an interface or a non-sealed abstract class with nothing concrete found below it, since no event is stored under that type's own name with the mappers Occurrent ships.
 
@@ -4814,6 +4817,7 @@ data class PaymentReserved(val orderId: String) : Payment()
 For a concrete class that is neither final nor sealed, marking it `final` is the smaller fix when nothing extends it. In Kotlin that means dropping `open`, since a Kotlin class is final unless it says otherwise.
 
 ### Or declare the concrete event types {#derived-filter-concrete}
+### Declare the concrete event types {#derived-filter-concrete}
 
 Use this when the hierarchy is not yours to seal, or is deliberately open. List the concrete types where you would have named the supertype:
 
@@ -4825,6 +4829,7 @@ Use this when the hierarchy is not yours to seal, or is deliberately open. List 
 * `types(OrderPlaced.class, PaymentReserved.class)` on a `DcbCriteriaBuilder`.
 
 ### Or set an explicit filter {#derived-filter-explicit}
+### Set an explicit filter {#derived-filter-explicit}
 
 An explicit filter is used instead of deriving one, so nothing is expanded for that declaration and nothing is refused. Where you set it depends on where you declared the types:
 
@@ -4841,6 +4846,13 @@ If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one Cloud
 Declaring the concrete types does something different under such a mapper. Every one of them maps to that same string, so the filter you get back matches the whole hierarchy rather than only the types you listed.
 
 ### Empty still means empty on a query {#derived-filter-empty}
+If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, use an explicit filter. Under such a mapper:
+
+* A declaration the table above refuses is still refused, because the check reads the class hierarchy and never asks the mapper.
+* When the hierarchy is open, an explicit filter is the only fix, because a concrete class that is neither final nor sealed can't be declared either.
+* Declaring the concrete types gives you a filter that matches the whole hierarchy rather than only the types you listed, because every one of them maps to that same string.
+
+### An empty list of types selects nothing on a query {#derived-filter-empty}
 
 `DomainEventQueries.query(Collection)` and its sibling overloads return no events for a `null` or empty collection.
 
@@ -6280,13 +6292,13 @@ Two things happen at run time rather than at build time, and both are deliberate
 
 A saga's event types are also its subscription filter. Occurrent takes the types you registered through `startsOn`, `evolve`, `react`, a step's `on(...)` and an `event(...)` condition, asks the `CloudEventTypeMapper` for the CloudEvent type of each one, and subscribes on those.
 
-The types are expanded and checked as described in [Deriving the Event Filter](#deriving-the-event-filter). A saga declaring a sealed `OrderEvent` receives the concrete events stored under it (before 0.33.0 the filter asked only for `OrderEvent`'s own CloudEvent type, so with the mappers Occurrent ships the saga received nothing).
+The types are expanded and checked as described in [Deriving the Event Filter](#deriving-the-event-filter). A saga declaring a sealed `OrderEvent` receives the concrete events stored under it.
 
 If a saga declares a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), `build()` throws `IllegalArgumentException` naming the type.
 
 To fix a refused declaration, [seal the hierarchy](#derived-filter-seal) or [declare the concrete types](#derived-filter-concrete). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
-If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, set that string with `replacementFilter(Filter.type("order-event"))`, as [Setting an Explicit Filter](#saga-explicit-filter) shows. It is the only remedy when the hierarchy is open, because a concrete class that is neither final nor sealed can't be declared either.
+A `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string needs a `replacementFilter(..)` instead, as [Setting an Explicit Filter](#saga-explicit-filter) shows.
 
 #### Setting an Explicit Filter {#saga-explicit-filter}
 
@@ -6314,7 +6326,7 @@ saga<OrderEvent, OrderCommand> {
 
 Because a selector is still derived, the hierarchy check from [Declared Event Types](#saga-event-types) still runs under a narrowing.
 
-`replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. Use it when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, for the reasons under [Set an Explicit Filter](#derived-filter-explicit):
+`replacementFilter(Filter)` replaces the derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy below the declared types looks like. It's the fix for a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, as [Set an explicit filter](#derived-filter-explicit) explains:
 
 {% capture java %}
 Saga.<OrderEvent, OrderState, OrderCommand>builder()
