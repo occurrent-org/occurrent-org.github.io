@@ -2094,12 +2094,14 @@ ProjectionRunner.agnostic(model, cloudEventConverter)
 Two settings control the handover, and both have defaults.
 
 The first, `dedupCacheSize`, sets how many recently delivered events the handover remembers by id and source. That's how an event that both the replay and the live feed deliver reaches your handler only once. The handover keeps two of these caches, one for events the replay delivered and one for events delivered live, and `dedupCacheSize` is the size of each.
+The first, `dedupCacheSize`, is how many recently delivered events the handover remembers by id and source. That way an event that both the replay and the live feed deliver reaches your handler only once. The handover keeps two of these caches, one for the events the replay delivered and one for the events delivered live, and `dedupCacheSize` applies to each of them.
 
 Together the two caches hold up to twice the number you set, so 20000 events at the default of 10000.
 
 If the replay and the live feed overlap by more than `dedupCacheSize` events, an event can reach your handler twice, so make sure that applying an event a second time doesn't change your read model.
 
 The second, `maxBufferedEvents`, caps the live events buffered during the replay, at 100000 by default. It is a fail-loud ceiling rather than a throttle. Only `accept(..)` fills it, since `acceptRedeliverable(..)` refuses an event during the replay instead of buffering it. When the buffer is full, the in-memory event store's write call throws although the store has kept the event. The push model's `accept(events)` stops at that event, so it routes none of the write's later events either, and the subscription can miss all of them. Pass `CatchupThenLiveOptions` to change either:
+The second, `maxBufferedEvents`, is how many live events can be buffered while the replay runs, 100000 by default. When the buffer is full, the model throws an exception instead of dropping events. Pass `CatchupThenLiveOptions` to change either:
 
 ```java
 CatchupThenPushSubscriptionModel model = new CatchupThenPushSubscriptionModel(
