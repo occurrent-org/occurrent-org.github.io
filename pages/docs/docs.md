@@ -3013,6 +3013,7 @@ at the "current time", but rather from the "global checkpoint". This checkpoint 
 _before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.               
 
 Since 0.34.0 the interface also has `globalCheckpointAsOfNow()`. It records the moment you call it, and works out the position for that moment once the `Mono` is subscribed to. A subscription started from the position it emits receives every event written after the call, even if you subscribe to the `Mono` long after it.
+The interface also has `globalCheckpointAsOfNow()`. It records the moment you call it, and works out the position for that moment once the `Mono` is subscribed to. A subscription started from the position it emits receives every event written after the call, even if you subscribe to the `Mono` long after it.
 
 `globalCheckpoint()` on `ReactorMongoSubscriptionModel` works out the position when its `Mono` is subscribed to instead, so an event written between the call and the subscription can be skipped. The position from `globalCheckpointAsOfNow()` can be earlier than the call, so the subscription can also receive events written before it.
 
@@ -3223,6 +3224,31 @@ To restart at the present instead, skipping the events written in between, creat
 When the cluster time the model read is at most 15 seconds older than the server's clock, every event written through the same `MongoClient` after the call is delivered, whatever the server's clock shows. So is every event another client writes to a replica set, unless another member becomes primary in between. On a sharded cluster, and after another member becomes primary, MongoDB can give another client's write a cluster time earlier than the one the model read. That write is delivered only when its cluster time is no earlier than the start of the second the server's clock showed at the call.
 
 The model starts from the server's clock alone when it can't read the driver's cluster time, when the driver hasn't seen one yet, or when the one it has seen is more than 15 seconds older than the server's clock. The driver keeps its cluster time internal, so the model reads it by reflection and logs a warning the first time it can't. The driver only learns a newer cluster time when the client sends a command, so a client that has sent none for more than 15 seconds falls in the last case.
+A subscription started with `StartAt.now()`, or without a `StartAt`, starts from the moment `subscribe(..)` is called. For the plain `Flux` from `subscribe(filter, startAt)`, it's the moment you subscribe to the `Flux`. An event written right after `subscribe(..)` returns is delivered.
+
+The model also reads the newest cluster time the MongoDB driver has seen on that client. When the change stream opens, it sends `hello` and subtracts the time since the call from the server clock in the reply. That gives the start of the second the clock showed at the call. It opens the change stream just after the cluster time it read, or at the start of that second if that is earlier.
+
+So a new subscription can also receive events written up to 16 seconds before the call, plus the time the reply to `hello` took to reach the client. For events written through the same `MongoClient`, it reaches back at most a second, plus that time. A handler that expects only events written after `subscribe(..)` has to cope with those.
+
+The model records the moment even while it's stopped. A subscription you make then receives the events written between `subscribe(..)` and `start()`.
+
+If a subscription's change stream first opens longer after `subscribe(..)` than the oplog keeps history, the history back to the call is gone. That happens when the model was stopped or the subscription paused until then. `restartSubscriptionsOnChangeStreamHistoryLost` decides what happens next.
+
+With the model's default, `false`, the subscription stops, the model logs an error, and `isRunning(id)` returns `false`. `waitUntilStarted()` has already reported it started by then. It reports that when the model asks MongoDB to open the change stream, before MongoDB answers that the history is gone.
+
+To restart at the present instead, skipping the events written in between, create the model with `ReactorMongoSubscriptionModelConfig.withConfig().restartSubscriptionsOnChangeStreamHistoryLost(true)`. The reactive Spring Boot starter turns it on unless `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` is `false`.
+
+When the cluster time the model read is at most 15 seconds older than the server's clock, every event written through the same `MongoClient` after the call is delivered, whatever the server's clock shows. So is every event another client writes to a replica set, unless another member becomes primary in between.
+
+On a sharded cluster, and after another member becomes primary, MongoDB can give another client's write a cluster time earlier than the one the model read. That write is delivered only when its cluster time is no earlier than the start of the second the server's clock showed at the call.
+
+The model starts from the server's clock alone when:
+
+* it can't read the driver's cluster time
+* the driver hasn't seen one yet
+* the one the driver has seen is more than 15 seconds older than the server's clock
+
+The driver keeps its cluster time internal, so the model reads it by reflection and logs a warning the first time it can't. The driver only learns a newer cluster time when the client sends a command, so a client that has sent none for more than 15 seconds falls in the last case.
 
 The start can then be later than the call, and the subscription skips the events written in between, in three cases:
 
@@ -3680,6 +3706,8 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 | `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `findIn(..)` walks through | declare or cast |
 | `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, on the reactor stack also `globalCheckpointAsOfNow()`, cloud events with a checkpoint you can store yourself, and `canResumeFrom(checkpoint)`, which answers false when the model no longer has the history back to that checkpoint, for example a MongoDB change-stream position older than the oldest entry in the oplog. It returns a `boolean` on blocking and a `Mono<Boolean>` on reactor, and answers true unless the model overrides it. A position catch-up calls it when it resumes from a stored checkpoint that holds a live start, before the resumed replay, and again once its replay is done, before it goes live | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
 | `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`. An `InMemoryEventStore` listener calls `accept(events)`, and a broker listener calls the push model's `acceptRedeliverable(cloudEvent)` instead, which `Pushable` doesn't declare | implemented directly by the push models, declare or cast |
+| `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, on the reactor stack also `globalCheckpointAsOfNow()`, and cloud events carrying a checkpoint you can store yourself | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
+| `Pushable` | yes | yes | `accept(cloudEvent)` / `accept(events)`, the target a broker listener feeds events into | implemented directly by the push models, declare or cast |
 
 `CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the mixins reached with `findIn(model)` are. Nothing wraps a model and re-exposes checkpoint-awareness on demand, you get it because the concrete model you constructed (`NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents) implements it directly, so keep hold of that static type or cast to it.
 | `CheckpointAwareSubscriptionModel` | yes | yes | `globalCheckpoint()`, cloud events with a checkpoint you can store yourself, and `canResumeFrom(checkpoint)`, see below | declare the variable as this type, or cast, no `findIn(..)` probe, see below |
