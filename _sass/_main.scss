@@ -245,8 +245,29 @@ pre { // scrollbar in code examples
   }
 }
 
+.layer-tag {
+  display: inline-block;
+  vertical-align: middle;
+  margin: auto 0 auto 12px;
+  padding: 1px 8px;
+  border: 1px solid #2b6cb0;
+  border-radius: 10px;
+  color: #2b6cb0;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  line-height: 16px;
+  white-space: nowrap;
+  text-decoration: none;
+
+  &:hover {
+    background: rgba(43, 108, 176, 0.08);
+    text-decoration: none;
+  }
+}
+
 @media (max-width: 480px) {
-  .added-in {
+  .added-in, .layer-tag {
     display: none;
   }
 }
