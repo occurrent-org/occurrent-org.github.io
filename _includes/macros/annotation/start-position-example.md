@@ -2,7 +2,7 @@
 @Component
 public class Example {
     
-    @Subscription(id = "printAllDomainEvents", startAt = StartPosition.BEGINNING_OF_TIME)
+    @Subscription(id = "printAllDomainEvents", startAt = StartPosition.BEGINNING)
     void printAllDomainEvents(DomainEvent e) {
         System.out.println("Received domain event %s".formatted(e));    
     }
@@ -13,7 +13,7 @@ public class Example {
 @Component
 class Example {
 
-    @Subscription(id = "printAllDomainEvents", startAt = StartPosition.BEGINNING_OF_TIME)
+    @Subscription(id = "printAllDomainEvents", startAt = StartPosition.BEGINNING)
     fun printAllDomainEvents(e: DomainEvent) {
         println("Received domain event $e")
     }
