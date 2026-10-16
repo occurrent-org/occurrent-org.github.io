@@ -10,12 +10,12 @@ DurableSubscriptionModel forwarderSubscription =
 CloudEventForwarder forwarder = new CloudEventForwarder(forwarderSubscription, sink);
 forwarder.forward("order-status-forwarder");
 
-// Consume side: the bridge feeds a PushSubscriptionModel, wrapped in catch-up.
+// Consume side: the source feeds a PushSubscriptionModel, wrapped in catch-up.
 PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing());
 CatchupThenPushSubscriptionModel model =
         new CatchupThenPushSubscriptionModel(eventStore, pushModel, catchupMarker);
 
-RabbitMqCloudEventBridge bridge = RabbitMqCloudEventBridge.builder(rabbitConnection, pushModel, "order-status-queue")
+RabbitMqCloudEventSource source = RabbitMqCloudEventSource.builder(rabbitConnection, pushModel, "order-status-queue")
         .resolver(resolver)
         .readinessSource(model::isReadyForLiveDelivery)
         .build();
