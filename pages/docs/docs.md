@@ -1818,7 +1818,7 @@ Call `acceptRedeliverable(CloudEvent)` instead. It returns the event's `RoutingO
 * `REFUSED` for every event once a catch-up in front has failed.
 * `NOT_DELIVERABLE`, with a `CatchupThenPushSubscriptionModel` in front, for an event whose `getId()` is `null`, since that model tells events apart by id. Handle it the same way as a handler that throws.
 
-The [RabbitMQ and Kafka bridges](#broker-consuming) do all of this for you.
+The [RabbitMQ and Kafka sources](#broker-consuming) do all of this for you.
 
 A handler that feeds another `PushSubscriptionModel` from inside its own subscription has to act on what `acceptRedeliverable(..)` returns, because nothing redelivers an event that the other model refuses. For example, throw on anything but `DELIVERED` or `FILTERED`, so the outer handler fails instead of returning as if the event had been handled. Calling `accept(..)` there is no safer, since it also returns normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
 
