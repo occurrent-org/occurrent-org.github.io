@@ -1833,6 +1833,16 @@ Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of
 | `REFUSED` | The `CatchupThenPushSubscriptionModel` in front of the handler refused the event because its replay failed, and it refuses every event from then on. The exception propagates out of `accept(..)`. |
 
 Don't base a broker acknowledgement on what the observer is told. The observer is told `DELIVERED` even when the handler threw, and, behind a `CatchupThenPushSubscriptionModel`, when `accept(..)` only buffered the event. Base it on the outcome that `acceptRedeliverable(..)` returns, described below. [Consuming from a broker](#broker-consuming) says what to do with each outcome.
+If you acknowledge broker messages yourself, base the acknowledgement on the outcome that `acceptRedeliverable(..)` returns, described below, and not on what the observer is told. `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. The observer is told `DELIVERED` even when the handler threw, and, behind a `CatchupThenPushSubscriptionModel`, when `accept(..)` only buffered the event.
+
+`outcome.disposition()` sorts the six outcomes into the four things a broker source can do with a message, so a source you write yourself switches on four values rather than six:
+
+* `ACKNOWLEDGE` for `DELIVERED` and `FILTERED`.
+* `HOLD` for `DEFERRED` and `UNAVAILABLE`. Leave the message unacknowledged and offer it again later, without running it through your own retry or parking policy, because nothing about the message is broken.
+* `FAIL` for `NOT_DELIVERABLE`. Your own failure policy decides what happens to the message.
+* `STOP` for `REFUSED`. Offering the message again gets the same answer, so stop consuming rather than redelivering.
+
+A running replay finishes by itself, so redelivering a message held for it eventually delivers it. A stopped model, a paused subscription and a stopped catch-up all wait for someone to start them again, so a source that only redelivers a held message keeps getting the same answer until that happens.
 
 A broker listener that can redeliver a message should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
 
