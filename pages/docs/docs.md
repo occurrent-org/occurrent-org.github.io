@@ -1706,6 +1706,15 @@ Note that you can provide a [filter](#blocking-subscription-filters), [start pos
 
 ###### Restart Subscription when Oplog Lost
 
+From 0.34.0, a subscription whose filter matches no events for a long time no longer needs automatic restart. When a read of the change stream returns no event for it, `SpringMongoSubscriptionModel` moves its position forward anyway, so a resume after a pause opens at a position the oplog still has. A [`DurableSubscriptionModel`](#durable-subscriptions-blocking) wrapping the model also saves that position as the checkpoint once a minute, so a restart or a lease moving to another node resumes from it too.
+
+You still need automatic restart when:
+
+* the subscription was paused, the application was down, or no node held the subscription's lease, for longer than the oplog keeps history
+* no `DurableSubscriptionModel` wraps the model, and the subscription restarts from a position you stored yourself
+* the save is off (`neverSaveQuietPosition()`), or its interval (`saveQuietPositionEvery(Duration)`) is longer than the oplog keeps history
+* the persist predicate declined the last event before the subscription went quiet, as `EveryN` with `n` above 1 can, or the subscription started from a `StartAt` of your own and the predicate hasn't stored a position yet
+
 If there's not enough history available in the MongoDB oplog to resume a subscription created from a `SpringMongoSubscriptionModel`, you can configure it to restart the subscription from the current 
 time automatically.
 
