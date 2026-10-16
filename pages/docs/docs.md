@@ -9839,6 +9839,7 @@ The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migra
 * An equality assertion on a whole `WriteResult` or `DcbAppendResult` fails, because every write that persists an event gets a new append id. Compare only the components you care about.
 * A reactor `@Projection`, `@Saga` or `@Snapshot` factory method that returns `null` fails startup with `IllegalStateException`, as on the blocking stack.
 * An HTTP endpoint whose caller retries can call `acceptRedeliverable(CloudEvent)`, the same as a RabbitMQ or Kafka listener.
+
 ### Repairing events damaged before 0.34.0 {#update-event-repair}
 
 On 0.33.0 and earlier, `updateEvent` on a MongoDB event store could damage the values the store owns, an event's `position`, its DCB tags, its `streamId` and its `streamVersion`:
