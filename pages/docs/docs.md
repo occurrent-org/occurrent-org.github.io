@@ -9807,7 +9807,7 @@ Most of the mechanical changes between Occurrent versions (type renames, package
 
 The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
 
-Six changes can stop your code from compiling. Each item below names the code it affects:
+These changes can stop your code from compiling. Each item below names the code it affects:
 
 * the removal of `join`, `expect<T>` and `Expectation`, for any code that uses them
 * a fourth component on `WriteResult` and `DcbAppendResult`, for a record pattern that deconstructs either
