@@ -6961,11 +6961,11 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 When a `SagaConcurrencyException` exhausts its compare-and-set retries on a live event, the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
 
-Whether the event is offered again, and which other events wait behind it, depends on what feeds the subscription. On a push feed your listener decides both. On a broker bridge the bridge's `DeliveryFailurePolicy` setting decides whether the event is offered again.
+Whether the event is offered again, and which other events wait behind it, depends on what feeds the subscription. On a push feed your listener decides both. On a broker source, the source's `DeliveryFailurePolicy` setting decides whether the event is offered again.
 
-When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka bridge delays at most the later records in that record's partition, and it delays nothing once it has parked the record under `PARK`. The RabbitMQ bridge delays no other message once it has requeued the failed one under `REDELIVER` or parked it under `PARK`.
+When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka source delays at most the later records in that record's partition, and it delays nothing once it has parked the record under `PARK`. The RabbitMQ source delays no other message once it has requeued the failed one under `REDELIVER` or parked it under `PARK`.
 
-Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either bridge.
+Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either source.
 
 An instance that keeps failing can be quarantined, so the saga's other instances keep getting their events. Quarantine is off by default. [Quarantined Instances](#saga-quarantined-instances) says what happens to a quarantined instance, what has to be true before one is quarantined, how to turn quarantine on for both `SagaRunnerConfig` and `@Saga`, and why it's off by default.
 
@@ -7300,7 +7300,7 @@ An instance past its budget is quarantined only when a few other conditions are 
 
 Quarantine only works on a subscription model that keeps every event it delivers. A model says it does by implementing `HistoryRetainingSubscriptions` and returning `true` from `retainsEveryEvent()`.
 
-Quarantining an instance returns normally, which acknowledges the event to whatever fed it. Behind a broker bridge, the bridge then acknowledges the record to the broker, and nothing can hand that event to the saga a second time.
+Quarantining an instance returns normally, which acknowledges the event to whatever fed it. Behind a broker source, the source then acknowledges the record to the broker, and nothing can hand that event to the saga a second time.
 
 `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` return `true`, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. The runner looks through those three wrappers to the model inside, so a wrapper around any other model doesn't qualify.
 
