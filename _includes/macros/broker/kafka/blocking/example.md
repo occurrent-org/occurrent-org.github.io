@@ -10,7 +10,7 @@ DurableSubscriptionModel forwarderSubscription =
 CloudEventForwarder forwarder = new CloudEventForwarder(forwarderSubscription, sink);
 forwarder.forward("order-status-forwarder");
 
-// Consume side: the bridge feeds a PushSubscriptionModel, wrapped in catch-up.
+// Consume side: the source feeds a PushSubscriptionModel, wrapped in catch-up.
 consumerConfig.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
 consumerConfig.put(ConsumerConfig.GROUP_ID_CONFIG, "order-status");
 
@@ -18,7 +18,7 @@ PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refu
 CatchupThenPushSubscriptionModel model =
         new CatchupThenPushSubscriptionModel(eventStore, pushModel, catchupMarker);
 
-KafkaCloudEventBridge bridge = KafkaCloudEventBridge.builder(consumerConfig, pushModel)
+KafkaCloudEventSource source = KafkaCloudEventSource.builder(consumerConfig, pushModel)
         .resolver(resolver)
         .build();
 
