@@ -1840,6 +1840,8 @@ void onMessage(byte[] body) {
 
 `acceptOrDefer(CloudEvent)` runs the registered handler synchronously, on the calling thread, when the event matches its filter. If the handler or the filter throws, the exception propagates back to your listener. Handle it the same way as `NOT_DELIVERABLE`. [Consuming from a broker](#broker-consuming) says what to do with each outcome.
 
+`redeliverLater()` has to hand the message back to the broker, since not acknowledging it doesn't get it delivered again. On RabbitMQ that's `basicNack` or `basicReject` with requeue, and on Kafka it's seeking back to the record without committing its offset.
+
 ###### Feeding it from a broker {#push-subscription-blocking-broker}
 
 ###### Observing pushed events {#push-subscription-blocking-observer}
@@ -3397,7 +3399,7 @@ Mono<Void> onMessage(byte[] body) {
 }
 ```
 
-`acceptOrDefer(CloudEvent)` runs the registered handler when the event matches its filter and returns a `Mono<RoutingOutcome>`. Acknowledge the message only when that `Mono` completes with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`, the two outcomes `mayAcknowledge()` is true for.
+`acceptOrDefer(CloudEvent)` runs the registered handler when the event matches its filter and returns a `Mono<RoutingOutcome>`. Acknowledge the message only when that `Mono` completes with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`, the two outcomes `mayAcknowledge()` is true for. `redeliverLater()` hands the message back to the broker the same way as on the [blocking model](#push-subscription-blocking).
 
 [Consuming from a broker](#broker-consuming) says what a listener does with each outcome. When an outcome comes back differs from the [blocking model](#push-subscription-blocking-observer), so on this stack the `Mono` completes with:
 
@@ -6852,7 +6854,7 @@ The annotation and the DSL class share the name `Saga`, so a Java factory method
 
 ##### Fed from a broker {#saga-push-source}
 
-A saga does not have to read the event store. Set `source = Source.PUSH` and point it at a [`PushSubscriptionModel`](#push-subscription-blocking) bean, and it reacts to whatever your listener hands that model, from RabbitMQ, Kafka, or any other source that delivers an event again when it isn't acknowledged:
+A saga does not have to read the event store. Set `source = Source.PUSH` and point it at a [`PushSubscriptionModel`](#push-subscription-blocking) bean, and it reacts to whatever your listener hands that model, from RabbitMQ, Kafka, or any other source that can deliver an event again:
 
 {% capture kotlin %}
 import org.occurrent.annotation.Saga
