@@ -2615,7 +2615,7 @@ Behind a reactive `CatchupThenPushSubscriptionModel`, a handler that writes an e
 
 When the handler calls `acceptOrDefer(..)` on the model that feeds it, the model refuses the call for this subscription, whether it has gone live or not. The `Mono` completes with `NOT_DELIVERABLE` and the model never applies the event, because it could only report the event as queued behind the handler, not as applied. Write the event from the handler through `accept(..)` instead, the way the previous paragraph describes.
 
-The model recognizes the handler's call when the handler returns it as part of its own `Mono`, or subscribes to it on the thread it was called on, for example by blocking on it. A call from a thread the handler switched to isn't recognized, and completes with `DEFERRED` during a replay. Once the subscription is live, that call waits for the event to be applied, which can't happen before the handler returns, so a handler that blocks on it waits forever.
+The model recognizes the handler's call when the handler returns it as part of its own `Mono`, on whichever thread that `Mono` runs, or subscribes to it on the thread it was called on, for example by blocking on it. A call subscribed outside the handler's `Mono`, for example one the handler blocks on from a thread it switched to, isn't recognized, and completes with `DEFERRED` during a replay. Once the subscription is live, that call waits for the event to be applied, which can't happen before the handler returns, so a handler that waits for it never finishes.
 
 If applying an event the handler wrote fails, the write has already returned by then. The subscription then starts failing, and a failed catch-up makes it start failing the same way.
 
