@@ -2332,11 +2332,11 @@ A `DomainEventFeed` or `CatchupProjectionFeed` refuses three things rather than 
 * A projection keyed by metadata that is fed through the metadata-less `acceptAndWait(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `acceptAndWait(metadata, event)` instead.
 * `DomainEventFeed.acceptAndWait(..)` and `acceptOrDefer(..)` throw an `IllegalStateException` when no projection is registered on the feed. On the reactor stack the returned `Mono` fails with one. `catchUpAll()` refuses on a feed with no projection for the same reason.
 
-Refusing an event with no projection registered matters because you acknowledge the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
+Refusing an event with no projection registered matters because a listener acknowledges the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. On the refusal your listener hands the message back to the broker instead, the same way as for `HOLD` under [Observing pushed events](#push-subscription-blocking-observer), so the broker still has it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
 
 This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
 
-`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](#push-subscription-blocking-observer). When you drive it from a broker, call `acceptOrDefer(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, and the broker delivers the message again as long as you don't acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
+`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](#push-subscription-blocking-observer). When you drive it from a broker, call `acceptOrDefer(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, which is a `HOLD`, so hand the message back to the broker rather than acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
 
 ###### Feeding a `CloudEvent` to the feed {#feeding-cloudevents}
 
@@ -2352,7 +2352,7 @@ The feed matches the event against the filter the projection was registered with
 |:---|:---|:---|
 | `FILTERED` | The event doesn't match the filter. | Acknowledge it, since redelivering it gets the same answer. |
 | `DELIVERED` | The event matches, and the projection has applied it. | Acknowledge it. |
-| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. Redeliver it until it comes back `DELIVERED`, which is safe any number of times. |
+| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. Hand it back to the broker, as for `HOLD` under [Observing pushed events](#push-subscription-blocking-observer), until it comes back `DELIVERED`. That's safe any number of times. |
 
 With no projection registered, `acceptOrDeferCloudEvent(..)` throws `IllegalStateException`, the same as `acceptAndWait(..)`.
 
