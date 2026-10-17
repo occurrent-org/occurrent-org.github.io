@@ -1832,7 +1832,7 @@ Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of
 | `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event, for example because its live buffer is full while the replay is still running. The exception propagates out of `accept(..)` either way. |
 | `REFUSED` | The `CatchupThenPushSubscriptionModel` in front of the handler refused the event because its replay failed, and it refuses every event from then on. The exception propagates out of `accept(..)`. |
 
-Don't base a broker acknowledgement on what the observer is told. The observer is told `DELIVERED` even when the handler threw, and, behind a `CatchupThenPushSubscriptionModel`, when `accept(..)` only buffered the event. Base it on the outcome that `acceptRedeliverable(..)` returns, described below. [Consuming from a broker](#broker-consuming) says what to do with each outcome.
+Don't base a broker acknowledgement on what the observer is told. The observer is told `DELIVERED` even when the handler threw, and, behind a `CatchupThenPushSubscriptionModel`, when `accept(..)` only buffered the event. Base it on the outcome that `acceptOrDefer(..)` returns, described below. [Consuming from a broker](#broker-consuming) says what to do with each outcome.
 
 A broker listener that can redeliver a message should call `acceptOrDefer(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
 
@@ -6896,9 +6896,9 @@ A binding you derive this way has to stay at least as inclusive as the subscript
 
 At the CloudEvent level the source has no way to read the filter your subscription was registered with, since `PushSubscriptionModel` exposes neither it nor its matcher. Pass the same filter to the source's `bindingFilter(...)` yourself if you want the narrowing.
 
-At the domain level `DomainEventFeed` checks each event against the filter its projection registered with, in `acceptCloudEvent(..)`. Its `accept(metadata, event)` delivers every event it's given without that check.
+At the domain level `DomainEventFeed` checks each event against the filter its projection registered with, in `acceptOrDeferCloudEvent(..)`. Its `acceptAndWait(metadata, event)` and `acceptOrDefer(metadata, event)` deliver every event they're given without that check.
 
-The domain source filters nothing itself. It hands every message to `acceptCloudEvent(..)`, so the feed checks each one however coarse the binding is.
+The domain source filters nothing itself. It hands every message to `acceptOrDeferCloudEvent(..)`, so the feed checks each one however coarse the binding is.
 
 ### Consuming from a broker {#broker-consuming}
 
@@ -6917,11 +6917,11 @@ Building a source starts its background work right away. A RabbitMQ source start
 
 `RabbitMqDomainEventSource<E>` and `KafkaDomainEventSource<E>` hand it to a `DomainEventFeed<E>` instead, which decodes it with your `CloudEventConverter<E>` and delivers a domain event. A projection registered there receives an `OrderPlaced` rather than a `CloudEvent`.
 
-A domain source stops for good when `acceptCloudEvent(..)` throws [`UnreadableLiveFilterException`](#feeding-domain-events-instead-of-cloudevents), without applying its `DeliveryFailurePolicy`. It never acknowledges that message, and on Kafka never commits its offset, so the broker still has it once you fix the registration.
+A domain source stops for good when `acceptOrDeferCloudEvent(..)` throws [`UnreadableLiveFilterException`](#feeding-domain-events-instead-of-cloudevents), without applying its `DeliveryFailurePolicy`. It never acknowledges that message, and on Kafka never commits its offset, so the broker still has it once you fix the registration.
 
 So pick the source that matches the consumer you already have. Both sources read the same message, so a `CloudEventForwarder` publishing through a `CloudEventSink` feeds either one. The [runnable example](#broker-example) below consumes it both ways.
 
-A source acts on the `RoutingOutcome` that `acceptRedeliverable(..)` returns for each message. `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. `outcome.disposition()` sorts the six outcomes into four dispositions, so a source you write yourself switches on four values rather than six:
+A source acts on the `RoutingOutcome` that `acceptOrDefer(..)` returns for each message. `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. `outcome.disposition()` sorts the six outcomes into four dispositions, so a source you write yourself switches on four values rather than six:
 
 | Disposition | Outcomes | What to do with the message |
 |:---|:---|:---|
@@ -6969,15 +6969,15 @@ RabbitMqCloudEventSource source = RabbitMqCloudEventSource.builder(rabbitConnect
 
 Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The source then stops pulling messages while the replay runs. That only saves round trips to the broker, because a message that arrives before the catch-up has reached live delivery is reported `DEFERRED` and never acknowledged either way.
 
-The source calls `acceptRedeliverable(...)` rather than `accept(...)`. It routes the event the same way, but tells the model that the broker can send the event again later, so the model can refuse the event instead of holding on to it.
+The source calls `acceptOrDefer(...)` rather than `accept(...)`. It routes the event the same way, but tells the model that the broker can send the event again later, so the model can refuse the event instead of holding on to it.
 
-`acceptRedeliverable(...)` returns a refusal as an outcome, `REFUSED` or `NOT_DELIVERABLE`, and throws only when the subscription's filter or handler throws. The source decides what to do with a message from the returned `RoutingOutcome` alone.
+`acceptOrDefer(...)` returns a refusal as an outcome, `REFUSED` or `NOT_DELIVERABLE`, and throws only when the subscription's filter or handler throws. The source decides what to do with a message from the returned `RoutingOutcome` alone.
 
-The source handles each outcome as the table under [Consuming from a broker](#broker-consuming) says. What it does with an exception from `acceptRedeliverable(...)` is described below.
+The source handles each outcome as the table under [Consuming from a broker](#broker-consuming) says. What it does with an exception from `acceptOrDefer(...)` is described below.
 
 It holds a `DEFERRED` or `UNAVAILABLE` message unacknowledged, and its poll hands it back to RabbitMQ with `basicNack` and requeue, at most once per poll interval, one second by default. RabbitMQ then delivers it again. It stops consuming for good on `REFUSED`.
 
-Its configured `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeException` or `AssertionError` thrown out of `acceptRedeliverable(...)`, and a message that can't be rebuilt into a `CloudEvent`. Any other `Error`, or a checked exception, stops the source for good and closes its channel, which puts the message back on the queue.
+Its configured `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeException` or `AssertionError` thrown out of `acceptOrDefer(...)`, and a message that can't be rebuilt into a `CloudEvent`. Any other `Error`, or a checked exception, stops the source for good and closes its channel, which puts the message back on the queue.
 
 `onDeliveryFailure(DeliveryFailurePolicy)` picks that policy. `REDELIVER` is the default. It never acknowledges the original, and hands it back with `basicNack` and requeue on the next poll, the same pace as a held message. `PARK` needs a `parkingDestination(RabbitMqDestination)`. If you choose `PARK` without one, the source refuses to start.
 
@@ -7040,7 +7040,7 @@ Once a record comes back `DELIVERED` or `FILTERED`, or its failure ends in a con
 
 Once it has worked through a whole poll batch, it commits the marked offsets of every partition that made progress. It never uses the no-argument `commitSync()`, which would commit the whole batch including records nothing processed yet.
 
-As on RabbitMQ, the source's `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeException` or `AssertionError` thrown out of `acceptRedeliverable(...)`, and a record that can't be rebuilt into a `CloudEvent`.
+As on RabbitMQ, the source's `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeException` or `AssertionError` thrown out of `acceptOrDefer(...)`, and a record that can't be rebuilt into a `CloudEvent`.
 
 Any other `Error`, or a checked exception, stops the source for good and commits nothing further. Its consumer leaves the group straight away, even with `group.instance.id` set, and the next consumer in the group resumes from the last committed offset.
 
