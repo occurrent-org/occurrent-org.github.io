@@ -1828,13 +1828,13 @@ Several of the outcomes involve a `CatchupThenPushSubscriptionModel` in front of
 | `DELIVERED` | The subscription's filter accepted the event and the handler ran. Behind a `CatchupThenPushSubscriptionModel`, it can also mean the event was buffered for the replay to deliver, or had already been delivered. When the handler throws, the outcome is still `DELIVERED`, and the handler's exception propagates out of `accept(..)` once the observer has been told. |
 | `FILTERED` | The subscription's filter looked at the event and declined it. Offering it to the same subscription again gets the same answer. |
 | `UNAVAILABLE` | No filter was asked, because nothing is registered, the model is stopped, or the subscription is paused. Nothing is thrown. |
-| `DEFERRED` | The filter accepted the event, but the `CatchupThenPushSubscriptionModel` in front of the handler didn't deliver it. That happens, for example, when its catch-up was stopped, or when a broker listener called `acceptRedeliverable(..)`, described below, before the replay finished. Nothing is thrown, and offering the event again later is safe. |
+| `DEFERRED` | The filter accepted the event, but the `CatchupThenPushSubscriptionModel` in front of the handler didn't deliver it. That happens, for example, when its catch-up was stopped, or when a broker listener called `acceptOrDefer(..)`, described below, before the replay finished. Nothing is thrown, and offering the event again later is safe. |
 | `NOT_DELIVERABLE` | The filter threw instead of answering, or the `CatchupThenPushSubscriptionModel` in front of the handler refused the event, for example because its live buffer is full while the replay is still running. The exception propagates out of `accept(..)` either way. |
 | `REFUSED` | The `CatchupThenPushSubscriptionModel` in front of the handler refused the event because its replay failed, and it refuses every event from then on. The exception propagates out of `accept(..)`. |
 
 Don't base a broker acknowledgement on what the observer is told. The observer is told `DELIVERED` even when the handler threw, and, behind a `CatchupThenPushSubscriptionModel`, when `accept(..)` only buffered the event. Base it on the outcome that `acceptRedeliverable(..)` returns, described below. [Consuming from a broker](#broker-consuming) says what to do with each outcome.
 
-A broker listener that can redeliver a message should call `acceptRedeliverable(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
+A broker listener that can redeliver a message should call `acceptOrDefer(CloudEvent)` instead of `accept(..)`. It routes the event the same way, except that a `CatchupThenPushSubscriptionModel` in front that hasn't reached live delivery yet refuses the event instead of buffering it, and reports `DEFERRED`.
 
 Plain `accept(..)` buffers that event and reports `DELIVERED` before the handler has applied it. That's right for the in-memory event store, because its listener never offers the same event a second time. When the buffer is full it throws instead, and while the catch-up is stopped it drops the event and reports `DEFERRED`.
 
@@ -2003,21 +2003,21 @@ A replayed event is always backed by the stored `CloudEvent`, so the catch-up al
 A `DomainEventFeed` or `CatchupProjectionFeed` refuses three things rather than let a projection silently do the wrong thing:
 
 * `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, on both the blocking and reactor feeds. The durable checkpoint key it derives from `id` must be unique across every registered projection.
-* A projection keyed by metadata that is fed through the metadata-less `accept(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `accept(metadata, event)` instead.
-* `DomainEventFeed.accept(..)` throws an `IllegalStateException` when no projection is registered on the feed. On the reactor stack the returned `Mono` fails with one. `catchUpAll()` refuses on a feed with no projection for the same reason.
+* A projection keyed by metadata that is fed through the metadata-less `acceptAndWait(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `acceptAndWait(metadata, event)` instead.
+* `DomainEventFeed.acceptAndWait(..)` and `acceptOrDefer(..)` throw an `IllegalStateException` when no projection is registered on the feed. On the reactor stack the returned `Mono` fails with one. `catchUpAll()` refuses on a feed with no projection for the same reason.
 
-Refusing an event with no projection registered matters because you acknowledge the broker message once `accept` returns. Acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
+Refusing an event with no projection registered matters because you acknowledge the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
 
 This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
 
-`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](#push-subscription-blocking-observer). When you drive it from a broker, call `acceptRedeliverable(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, and the broker delivers the message again as long as you don't acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
+`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](#push-subscription-blocking-observer). When you drive it from a broker, call `acceptOrDefer(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, and the broker delivers the message again as long as you don't acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
 
 ###### Feeding a `CloudEvent` to the feed {#feeding-cloudevents}
 
-A listener that receives a `CloudEvent` instead of a domain event, a broker consumer for example, hands it to `DomainEventFeed.acceptCloudEvent(..)`. It returns a [`RoutingOutcome`](#push-subscription-blocking-observer) that tells the listener whether to acknowledge the message:
+A listener that receives a `CloudEvent` instead of a domain event, a broker consumer for example, hands it to `DomainEventFeed.acceptOrDeferCloudEvent(..)`. It returns a [`RoutingOutcome`](#push-subscription-blocking-observer) that tells the listener whether to acknowledge the message:
 
 ```java
-RoutingOutcome outcome = feed.acceptCloudEvent(cloudEvent);
+RoutingOutcome outcome = feed.acceptOrDeferCloudEvent(cloudEvent);
 ```
 
 The feed matches the event against the filter the projection was registered with, the same filter its catch-up reads the event store with. A matching event is decoded with the feed's `CloudEventConverter`. An event that doesn't match is never decoded, so a converter that only knows this projection's event types never sees another type.
@@ -2028,7 +2028,7 @@ The feed matches the event against the filter the projection was registered with
 | `DELIVERED` | The event matches, and the projection has applied it. | Acknowledge it. |
 | `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. Redeliver it until it comes back `DELIVERED`, which is safe any number of times. |
 
-With no projection registered, `acceptCloudEvent(..)` throws `IllegalStateException`, the same as `accept(..)`.
+With no projection registered, `acceptOrDeferCloudEvent(..)` throws `IllegalStateException`, the same as `acceptAndWait(..)`.
 
 A filter with a `Filter.data(...)` condition needs a [`DataFieldReader`](#filtering-on-payload-data) to be matched here. Pass it as the last constructor argument:
 
@@ -2037,11 +2037,11 @@ DomainEventFeed<OrderEvent> feed = new DomainEventFeed<>(eventStore, cloudEventC
         checkpointStorage, CatchupThenLiveOptions.defaults(), new JacksonDataFieldReader());
 ```
 
-Without one, `register(..)` still accepts that filter, and the first `acceptCloudEvent(..)` throws `UnreadableLiveFilterException`. Every later call on the same feed throws that same exception instance, so stop consuming instead of redelivering the event. Build a new feed with a reader, or register a filter without the `data` condition.
+Without one, `register(..)` still accepts that filter, and the first `acceptOrDeferCloudEvent(..)` throws `UnreadableLiveFilterException`. Every later call on the same feed throws that same exception instance, so stop consuming instead of redelivering the event. Build a new feed with a reader, or register a filter without the `data` condition.
 
-On the reactor stack `acceptCloudEvent(..)` returns a `Mono<RoutingOutcome>`, and the `IllegalStateException` and `UnreadableLiveFilterException` above arrive as that `Mono`'s error.
+On the reactor stack `acceptOrDeferCloudEvent(..)` returns a `Mono<RoutingOutcome>`, and the `IllegalStateException` and `UnreadableLiveFilterException` above arrive as that `Mono`'s error.
 
-On the blocking stack, once the projection's catch-up has failed, every later `acceptCloudEvent(..)` throws an `IllegalStateException`.
+Once the projection's catch-up has failed, every later `acceptOrDeferCloudEvent(..)` with an event that matches the filter throws an `IllegalStateException`, or on the reactor stack its `Mono` errors with one.
 
 `feed.isReadyForLiveDelivery()` is `false` both while the replay runs and after the catch-up has failed. `feed.refusesPermanently()` returns `true` only after the failure, so check it to tell the two apart.
 
@@ -2683,7 +2683,7 @@ The reactive model also takes an optional `PushObserver`, for the same reason as
 
 Six things differ.
 
-* The reactive `acceptRedeliverable(CloudEvent)` returns a `Mono<RoutingOutcome>` rather than the `RoutingOutcome` itself, so a broker listener acknowledges the message only when that `Mono` completes with `DELIVERED` or `FILTERED`.
+* The reactive `acceptOrDefer(CloudEvent)` returns a `Mono<RoutingOutcome>` rather than the `RoutingOutcome` itself, so a broker listener acknowledges the message only when that `Mono` completes with `DELIVERED` or `FILTERED`.
 * Behind a `CatchupThenPushSubscriptionModel` whose replay is still running, the `Mono` that `accept(..)` returns completes only once the event has been applied, where the blocking `accept(..)` reports `DELIVERED` and returns as soon as it has buffered the event. A full buffer or a failed replay fails that `Mono`, and a stopped catch-up completes it with the event dropped, as on the blocking side.
 * A handler that fails with a checked exception is reported `DELIVERED`, like any other exception. Only an `Error` other than `AssertionError` from the handler skips the observer.
 * The observer doesn't always run on the thread that called `accept(..)`. `UNAVAILABLE`, `FILTERED` and a filter that threw are reported on the thread that subscribed to the returned `Mono`. The other outcomes are reported once your handler, or the `CatchupThenPushSubscriptionModel` in front of it, has finished with the event, on whichever thread that happened.
