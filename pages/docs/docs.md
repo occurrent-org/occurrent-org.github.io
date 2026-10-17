@@ -1882,7 +1882,7 @@ Like every other subscription model, a `PushSubscriptionModel` can be stopped, s
 
 ###### Feeding domain events instead of CloudEvents
 
-If your listener already hands you domain events (for example a broker message converter deserializes them for you), pushing them through the CloudEvent model means `domainEvent` to `CloudEvent` and back, a full serialize and deserialize per event. Feed the projection in domain space instead and the live path does no conversion at all.
+If your listener already hands you domain events, for example because a broker message converter deserializes them for you, a projection that takes CloudEvents needs each event turned into a `CloudEvent` and back into a domain event. That's an extra serialize and deserialize for every event. Pass the domain events to the projection directly instead, and nothing is converted between your listener and the read model.
 
 `Projections.domainEventFeed(projection, repository)` is the live-only feed. On the blocking stack it returns a `MaterializedView<E>`, call `update(event)` or `update(metadata, event)`. On the reactor stack it returns a `BiFunction<EventMetadata, E, Mono<Void>>`. Either way it applies a domain event straight into the read model:
 
@@ -1895,22 +1895,253 @@ public void onMessage(OrderEvent event) {
 }
 ```
 
-For a new or rebuilt projection that also needs to catch up, use `CatchupProjectionFeed`. Its live path still applies domain events directly, and only the one-time catch-up reads the event store and decodes each replayed event once. It de-duplicates the replay-to-live overlap by an id you extract from the domain event, so the de-dup does not depend on the CloudEvent id:
+For a new or rebuilt projection that also needs to catch up, use `CatchupProjectionFeed`. Live events are still applied as domain events, and only the one-time catch-up reads the event store and converts each replayed event once.
 
-```java
+`CatchupProjectionFeed.create(...)` takes the feed's id, the projection, its repository, the event store, the CloudEvent converter, a function that returns an event's id, and the `CheckpointStorage` that records that the catch-up finished. Your listener passes each event to `acceptAndWait(event)`, called `accept(event)` before 0.34.0, or to `acceptAndWait(metadata, event)` when the message also includes the stream id, version or position. `catchUp()` replays the projection's history and then goes live, or goes live right away when the `CheckpointStorage` records that an earlier catch-up finished. On the blocking stack it runs on the thread that calls it, so call it from a thread other than the listener's:
+
+{% capture java %}
 CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
         "order-status", orderStatusProjection(), repository,
         eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage);
 
-// wire the listener to feed.accept(...), then catch up once:
-feed.catchUp();
-```
+@RabbitListener(queues = "orders")
+public void onMessage(OrderEvent event) {
+    feed.acceptAndWait(event);   // returns once the event is applied
+}
+
+// Once the listener is wired, on a thread other than the listener's
+void startFeed() {
+    feed.catchUp();
+}
+{% endcapture %}
+{% capture kotlin %}
+val feed = CatchupProjectionFeed.create(
+    "order-status", orderStatusProjection(), repository,
+    eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage)
+
+@RabbitListener(queues = ["orders"])
+fun onMessage(event: OrderEvent) {
+    feed.acceptAndWait(event)   // returns once the event is applied
+}
+
+// Once the listener is wired, on a thread other than the listener's
+fun startFeed() {
+    feed.catchUp()
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+###### Live events during the catch-up {#feeding-live-events-during-catch-up}
+
+`catchUp()` starts holding live events before it reads the history. An event passed to `acceptAndWait(...)` during the replay waits in memory, and `acceptAndWait(...)` doesn't return, or its `Mono` doesn't complete, until the event is applied. Once the last replayed event is applied, the feed applies the held events in the order they arrived and then goes live. The same holds for a catch-up started on a feed that's already live.
+
+An event can arrive both ways, once from the replay and once from the listener. The feed compares the ids your id function returns, `OrderEvent::eventId` above, and skips a live event whose id the replay already applied. `acceptAndWait(...)` then returns normally, so the listener acknowledges the message as usual. The feed remembers the last 10000 replayed ids, so a copy that arrives after the feed went live is skipped too. An older copy is applied again, so applying an event twice must leave the read model unchanged.
+
+The feed holds at most 100000 events waiting to be applied, the `maxBufferedEvents` of `CatchupThenLiveOptions`. Once that many are waiting, it refuses the next one.
+
+On the blocking stack only events that arrive while the feed isn't live count toward that limit, because a live event is applied on the calling thread. On the reactor stack every event the feed has taken in and not yet applied counts, live or not.
+
+The 10000 is a separate number, `dedupCacheSize`, and it doesn't limit how many events wait. It sizes two lists of ids, one for the events the replay applied and one for those applied live, so the feed also skips a live event it already applied live, such as a message the broker delivered again. Pass a `CatchupThenLiveOptions` to `create(...)` to change either number.
+
+Occurrent's own [RabbitMQ and Kafka modules](#broker-consuming) call `DomainEventFeed.acceptOrDeferCloudEvent(...)` rather than `acceptAndWait(...)`, because a broker can deliver a message again. That call never holds an event, and the modules stop fetching messages until the feed is live. A message that arrives anyway gets `DEFERRED` back and goes back to the broker unacknowledged, so no event waits in memory.
+
+Both modules [hand such a message back to the broker](#broker-redelivery), the RabbitMQ module at most once per poll interval.
+
+A listener you write yourself can do the same with `acceptOrDefer(...)`. It doesn't wait for the catch-up. Once the feed is live it applies the event and returns `DELIVERED`.
+
+Before that, and while a replay runs, `acceptOrDefer(...)` returns `DEFERRED` right away and keeps the event nowhere. Don't acknowledge the message then, and [hand it back to the broker](#broker-redelivery) so it's delivered again.
+
+`acceptAndWait(...)` waits until the event is applied, so a caller that has nothing to deliver the event again needs it. A broker listener can call it too, for as long as the broker lets a message stay unacknowledged, covered in [when `acceptAndWait(...)` returns](#feeding-accept-returns).
+
+On the reactor stack, once the feed is live, the `Mono` that `acceptOrDefer(...)` returns errors with an `IllegalStateException` when 100000 events are already waiting to be applied, so [hand the message back to the broker](#broker-redelivery) then too. It errors the same way when the projection itself calls it, or a callback such as `replayStarted()` does. Call `acceptAndWait(...)` there instead, as [feeding events from inside the projection](#feeding-from-the-projection) shows. The blocking `acceptOrDefer(...)` never reaches that limit, since it applies a live event on the calling thread.
+
+###### When `acceptAndWait(...)` returns {#feeding-accept-returns}
+
+Called from a listener, `acceptAndWait(...)` returns, or its `Mono` completes, only once the event has been applied. So a listener that acknowledges the message when `acceptAndWait(...)` returns never acknowledges an event that is only held in memory.
+
+A call from inside the projection, or from a callback such as `replayStarted()` that the feed calls on the projection, is different on the reactor stack. Its `Mono` completes once the event is queued, as [feeding events from inside the projection](#feeding-from-the-projection) shows.
+
+A listener that acknowledges RabbitMQ messages itself looks like this:
+
+{% capture java %}
+void onDelivery(Channel channel, long deliveryTag, OrderEvent event) throws IOException {
+    try {
+        feed.acceptAndWait(event);
+        channel.basicAck(deliveryTag, false);
+    } catch (RuntimeException e) {
+        // Not applied, so RabbitMQ puts the message back on the queue
+        channel.basicNack(deliveryTag, false, true);
+    }
+}
+{% endcapture %}
+{% capture kotlin %}
+fun onDelivery(channel: Channel, deliveryTag: Long, event: OrderEvent) {
+    try {
+        feed.acceptAndWait(event)
+        channel.basicAck(deliveryTag, false)
+    } catch (e: RuntimeException) {
+        // Not applied, so RabbitMQ puts the message back on the queue
+        channel.basicNack(deliveryTag, false, true)
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+When the event is not applied, `acceptAndWait(...)` throws an `IllegalStateException`, or its `Mono` errors with one. That happens when:
+
+* the catch-up was stopped before the feed went live
+* the event was fed after such a stop and before the next catch-up
+* the catch-up failed
+* the feed already holds 100000 events waiting to be applied, or the number set in `CatchupThenLiveOptions`
+
+On the blocking stack it also happens when:
+
+* the waiting thread was interrupted
+* another delivery of the same event was still running
+* `acceptAndWait(...)` was called from inside the projection, a view or another callback of the same feed while the feed wasn't live, since the thread would then wait for work it is holding up itself
+
+In that case, don't acknowledge the message. Hand it back to the broker instead, with `basicNack` and requeue as in the example above, or on Kafka as [handing a message back to the broker](#broker-redelivery) describes.
+
+A long replay keeps the listener waiting. A Kafka consumer that waits past its `max.poll.interval.ms`, 5 minutes by default, is taken out of its group and the record is delivered again. RabbitMQ delivers a message again once a consumer has held on to it without acknowledging it for longer than `consumer_timeout`, 30 minutes by default. In both cases the event is delivered again rather than lost.
+
+###### Feeding events from inside the projection {#feeding-from-the-projection}
+
+A projection or a view can pass a new event back to its own feed, for example an `OrderReadyToShip` for each `OrderPaid`. On the blocking stack it looks like this:
+
+{% capture java %}
+MaterializedView<OrderEvent> orderStatus = Projections.materializedView(orderStatusProjection(), repository);
+MaterializedView<OrderEvent> view = event -> {
+    orderStatus.update(event);
+    if (event instanceof OrderPaid paid) {
+        // Applied right away once the feed is live. During a replay it's refused, and the catch-up fails.
+        feed.acceptAndWait(new OrderReadyToShip(paid.orderId()));
+    }
+};
+feed = CatchupProjectionFeed.create("order-status", view, Filter.all(),
+        eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage);
+{% endcapture %}
+{% capture kotlin %}
+val orderStatus = Projections.materializedView(orderStatusProjection(), repository)
+val view = MaterializedView<OrderEvent> { event ->
+    orderStatus.update(event)
+    if (event is OrderPaid) {
+        // Applied right away once the feed is live. During a replay it's refused, and the catch-up fails.
+        feed.acceptAndWait(OrderReadyToShip(event.orderId()))
+    }
+}
+feed = CatchupProjectionFeed.create("order-status", view, Filter.all(),
+    eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Once the feed is live, the blocking feed applies the new event on the same thread before `acceptAndWait(...)` returns. While the catch-up replays history into it, the blocking feed refuses an `acceptAndWait(...)` called from inside the projection or a view, and that refusal makes the catch-up fail. From then on the feed refuses every event until you build a new feed. A caller that catches the refusal and moves on drops the event it fed.
+
+On the reactor stack, `acceptAndWait(...)` called from inside the projection, or from a callback such as `replayStarted()`, completes once the event is queued rather than once it is applied. The feed applies one event at a time, so the new event is applied after the projection or the callback returns, in the order it was fed. An event fed during the replay is applied once the feed has gone live. A replay that ends before the feed goes live writes no catch-up marker, the record that the catch-up finished, so the next replay hands the projection the same history again.
+
+On the reactor stack, when the projection or one of its callbacks calls `acceptOrDeferCloudEvent(...)` on its `DomainEventFeed` with an event that matches the feed's filter, the `Mono` errors with an `IllegalStateException`. Call `acceptAndWaitCloudEvent(...)` there instead. Its `Mono` completes once the event is queued.
+
+The feed recognizes the call as coming from the projection when the projection returns it as part of its own `Mono`, or subscribes to it on the thread the feed called the projection on, for example by blocking on it. If the projection switches to another thread and blocks on the call there, it waits forever. In the example below, the function the feed calls for each event returns the call as part of its own `Mono`:
+
+{% capture java %}
+Function<OrderEvent, Mono<Void>> orderStatus = Projections.reactiveUpdate(orderStatusProjection(), repository);
+Function<OrderEvent, Mono<Void>> fold = event -> {
+    Mono<Void> applied = orderStatus.apply(event);
+    if (event instanceof OrderPaid paid) {
+        // Part of the Mono the fold returns, so the feed knows the call comes from the projection
+        return applied.then(feed.acceptAndWait(new OrderReadyToShip(paid.orderId())));
+    }
+    return applied;
+};
+feed = CatchupProjectionFeed.create("order-status", fold, Filter.all(),
+        eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage);
+{% endcapture %}
+{% capture kotlin %}
+val orderStatus = Projections.reactiveUpdate(orderStatusProjection(), repository)
+val fold = Function<OrderEvent, Mono<Void>> { event ->
+    val applied = orderStatus.apply(event)
+    if (event is OrderPaid) {
+        // Part of the Mono the fold returns, so the feed knows the call comes from the projection
+        applied.then(feed.acceptAndWait(OrderReadyToShip(event.orderId())))
+    } else {
+        applied
+    }
+}
+feed = CatchupProjectionFeed.create("order-status", fold, Filter.all(),
+    eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage)
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+###### When the feed fails {#feeding-failure}
+
+The feed starts failing when applying an event the projection fed fails, or when a catch-up fails. Once it starts failing, the feed:
+
+* deletes its catch-up marker
+* refuses every later `acceptAndWait(...)` that doesn't come from the projection, with an `IllegalStateException`
+* applies the events it has already taken in, and those the projection feeds it meanwhile
+* then fails for good
+
+A failed catch-up also refuses each event from anywhere else that is still waiting, and doesn't apply it.
+
+To recover, build a new feed. Once the marker is gone, its catch-up replays the history. If deleting the marker still fails after 3 retries, the feed logs an error naming the feed id, and you have to delete the marker from the `CheckpointStorage` by hand before building a new feed. On the blocking stack, `catchUp()` throws when the catch-up fails, so the code that starts the feed can also rebuild it:
+
+{% capture java %}
+private volatile CatchupProjectionFeed<OrderEvent> feed;
+
+// Call at startup, and again once you've fixed what made the catch-up fail
+void startFeed() {
+    feed = CatchupProjectionFeed.create("order-status", orderStatusProjection(), repository,
+            eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage);
+    try {
+        feed.catchUp();
+    } catch (RuntimeException e) {
+        // The feed now refuses every event, so the listener acknowledges none of them
+        log.error("The order-status catch-up failed", e);
+    }
+}
+{% endcapture %}
+{% capture kotlin %}
+@Volatile
+private lateinit var feed: CatchupProjectionFeed<OrderEvent>
+
+// Call at startup, and again once you've fixed what made the catch-up fail
+fun startFeed() {
+    feed = CatchupProjectionFeed.create("order-status", orderStatusProjection(), repository,
+        eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage)
+    try {
+        feed.catchUp()
+    } catch (e: RuntimeException) {
+        // The feed now refuses every event, so the listener acknowledges none of them
+        log.error("The order-status catch-up failed", e)
+    }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+An event that no replay can bring back is lost only when applying it failed.
+
+A catch-up on the blocking stack that fails on an interrupted thread is not recorded as a failure. `catchUp()` still throws the exception, but the feed doesn't start refusing later events because of it, and `DomainEventFeed.refusesPermanently()` stays `false`.
+
+###### Stopping, starting and skipping the catch-up {#feeding-catch-up-control}
+
+On the reactor stack, a `stopCatchUp()` on a feed that hasn't gone live and has no catch-up running stops the feed too. The `Mono` of an event fed before that stop, or after it and before the next catch-up, errors with an `IllegalStateException`. A catch-up started after the stop doesn't apply that event, so it comes back only when the broker delivers it again.
+
+The `Mono` of each event that was still waiting errors on the thread that called `stopCatchUp()`, so your error handling runs there unless your own pipeline switches threads.
+
+A catch-up counts as running from the moment you call `CatchupProjectionFeed.catchUp()` or `goLive()`. For `DomainEventFeed.catchUpAll()`, `catchUp(id)` and `goLive(id)`, it counts as running from when you subscribe to the `Mono` they return, not from the call. It stops counting as running once the feed goes live, its replay notices a stop, or it fails.
+
+On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
+
+When a view calls `catchUp()`, `catchUp(id)` or `catchUpAll()` on its own feed while the feed is calling the view, the call doesn't wait for the replay. The replay can't start until the view's code returns, so the call returning, or its `Mono` completing, only means the catch-up was asked for, not that it has run. It may not run at all, for example after a `stopCatchUp()`, an interrupt, or another catch-up that failed in the meantime. The javadoc of `CatchupProjectionFeed.catchUp()` describes these cases in more detail.
+
+A view that hands the call to another thread and waits for it ends up waiting for a replay that can't start until the view returns, so it waits until its thread is interrupted.
 
 Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
 
 `stopCatchUp()` asks a running replay to stop, which is what a shutdown wants, since without it an application closing mid-replay would wait for the whole history to be applied. A stopped replay is reported as stopped rather than as a failure, so it is told apart from a replay that actually broke, and no catch-up marker is recorded, so the next start replays again from the beginning.
 
-When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still buffers every `accept(...)` until told to stop, so events pile up until the buffer's cap throws. Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
+When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and `register(...)` still holds every `acceptAndWait(...)` back until told to stop, so nothing is applied. On the blocking stack each listener thread stalls in its first `acceptAndWait(...)`, and the broker delivers that message again once one of the timeouts above runs out. On the reactor stack, events pile up until the buffer is full, and after that new ones are refused.
+
+Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
 
 ```java
 feed.goLive();
@@ -1918,7 +2149,11 @@ feed.goLive();
 
 It skips the replay and starts delivering the buffered and future live events directly, writing no completion marker, so a later real `catchUp()` on the same feed still replays the full history rather than treating it as already done.
 
-A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
+If you call `goLive()` or `goLive(id)` while a catch-up of the same projection is still replaying, the call waits for that replay to end, and on the reactor stack its `Mono` completes then. If a catch-up of the projection fails while the call waits, the call throws an `IllegalStateException` whose cause is that failure, or its `Mono` errors with one. When the view itself makes the call while the feed is calling the view, to apply an event or in a callback such as `replayStarted()`, the call doesn't wait.
+
+On the blocking stack, a catch-up that fails on an interrupted thread isn't recorded as a failure, so `goLive()` and `goLive(id)` don't throw for it.
+
+A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.acceptAndWait(metadata, event)` beside the plain `feed.acceptAndWait(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
 The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so applying the same event twice must leave the read model unchanged. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
 
@@ -4252,7 +4487,7 @@ val enrolledStudentsByStream = projection<Int, CourseEvent, String>(initialState
 
 Every event-only `on(...)` and `id(...)` keeps working unchanged, plain code never has to opt in to metadata. A `DcbProjection` gets the same fold and `id` overloads, and `DcbProjectionRunner` builds the metadata from the delivered event the same way the stream runner does, so a DCB fold can also read the position, or wrap the metadata with `DcbEventMetadata.from(metadata)` for the event's tags.
 
-The [on-demand](#reading-on-demand) query path has no originating CloudEvent, so it applies events with `EventMetadata.empty()`: reading the stream id or version throws, and `getPosition()` (`.position` in Kotlin) is `null`. That path genuinely has no metadata to give. A live domain-event feed is different: the application can supply real metadata itself with `accept(metadata, event)` on `DomainEventFeed` and `CatchupProjectionFeed` (see [Feeding domain events instead of CloudEvents](#feeding-domain-events-instead-of-cloudevents)). A projection keyed by metadata is therefore no longer limited to a subscription runner, only the on-demand query still has no metadata to key on.
+The [on-demand](#reading-on-demand) query path has no originating CloudEvent, so it applies events with `EventMetadata.empty()`: reading the stream id or version throws, and `getPosition()` (`.position` in Kotlin) is `null`. That path genuinely has no metadata to give. A live domain-event feed is different: the application can supply real metadata itself with `acceptAndWait(metadata, event)` on `DomainEventFeed` and `CatchupProjectionFeed` (see [Feeding domain events instead of CloudEvents](#feeding-domain-events-instead-of-cloudevents)). A projection keyed by metadata is therefore no longer limited to a subscription runner, only the on-demand query still has no metadata to key on.
 
 #### DCB projections
 
@@ -4304,9 +4539,9 @@ int total = Projections.project(totalEnrolledStudents, domainEventQueries);
 
 It's only valid for a single-instance (singleton) projection, since combining every instance of a keyed projection into one blended state on demand would be nonsense; use `Projections.project(projection, queries, instanceId)` to scope a keyed projection to one instance instead. `Projections.project(dcbProjection, dcbQueries)` is the DCB counterpart to both; a DCB projection's criteria already scopes the read to one instance, so there's no keyed/singleton distinction to make.
 
-Three guards keep a projection from silently doing the wrong thing. `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, since the durable checkpoint key it derives from `id` must be unique across every registered projection, on both the blocking and reactor feeds. A `DcbProjection` rejects a wrapped `Projection` that carries its own explicit `filter()`, because that filter would otherwise be silently ignored. A `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter. And a projection keyed by metadata that is fed through the metadata-less `accept(event)` on a `DomainEventFeed` or `CatchupProjectionFeed` throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `accept(metadata, event)` instead.
+Three guards keep a projection from silently doing the wrong thing. `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, since the durable checkpoint key it derives from `id` must be unique across every registered projection, on both the blocking and reactor feeds. A `DcbProjection` rejects a wrapped `Projection` that carries its own explicit `filter()`, because that filter would otherwise be silently ignored. A `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter. And a projection keyed by metadata that is fed through the metadata-less `acceptAndWait(event)` on a `DomainEventFeed` or `CatchupProjectionFeed` throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `acceptAndWait(metadata, event)` instead.
 
-A fourth guard covers the time before anything is registered. `DomainEventFeed.accept(..)` throws an `IllegalStateException` when no projection is registered on the feed, and on the reactor stack the returned `Mono` fails with one. Refusing matters because you acknowledge the broker message once `accept` returns, and acknowledging an event no projection received means the broker discards it for good. The refusal leaves the message unacknowledged, so your source redelivers it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch. `catchUpAll()` refuses on a feed with no projection for the same reason.
+A fourth guard covers the time before anything is registered. `DomainEventFeed.acceptAndWait(..)` throws an `IllegalStateException` when no projection is registered on the feed, and on the reactor stack the returned `Mono` fails with one. Refusing matters because a listener acknowledges the broker message once `acceptAndWait` returns, and acknowledging an event no projection received means the broker discards it for good. On the refusal your listener hands the message back to the broker instead, as in [when `acceptAndWait(...)` returns](#feeding-accept-returns), so the broker still has it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch. `catchUpAll()` refuses on a feed with no projection for the same reason.
 
 This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them, since the broker is the only thing holding a backlog and it only holds one while nobody acknowledges. `PushSubscriptionModel.accept(..)` is deliberately different and still returns normally, because it is also fed from the write path (as an `InMemoryEventStore` listener, say), where the event is already stored and refusing would fail the write. Ask its `hasSubscriptions()` when you drive it from a broker.
 
