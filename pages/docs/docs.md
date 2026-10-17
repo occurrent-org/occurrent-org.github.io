@@ -2102,19 +2102,29 @@ An event can arrive both ways, once from the replay and once from the listener. 
 
 The feed holds at most 100000 events waiting to be applied, the `maxBufferedEvents` of `CatchupThenLiveOptions`. Once that many are waiting, it refuses the next one.
 
+On the blocking stack only events that arrive while the feed isn't live count toward that limit, because a live event is applied on the calling thread. On the reactor stack every event the feed has taken in and not yet applied counts, live or not.
+
 The 10000 is a separate number, `dedupCacheSize`, and it doesn't limit how many events wait. It sizes two lists of ids, one for the events the replay applied and one for those applied live, so the feed also skips a live event it already applied live, such as a message the broker delivered again. Pass a `CatchupThenLiveOptions` to `create(...)` to change either number.
 
-Occurrent's own [RabbitMQ and Kafka modules](#broker-consuming) call `DomainEventFeed.acceptOrDeferCloudEvent(...)` rather than `acceptAndWait(...)`, because a broker delivers a message again when it got no acknowledgement for it. That call never holds an event, and the modules stop fetching messages until the feed is live. A message that arrives anyway gets `DEFERRED` back, stays unacknowledged and is delivered again, so no event waits in memory.
+Occurrent's own [RabbitMQ and Kafka modules](#broker-consuming) call `DomainEventFeed.acceptOrDeferCloudEvent(...)` rather than `acceptAndWait(...)`, because a broker can deliver a message again. That call never holds an event, and the modules stop fetching messages until the feed is live. A message that arrives anyway gets `DEFERRED` back and goes back to the broker unacknowledged, so no event waits in memory.
 
-A listener you write yourself can do the same with `acceptOrDefer(...)`, when its broker delivers an unacknowledged message again. It doesn't wait for the catch-up. Once the feed is live it applies the event and returns `DELIVERED`, and before that it returns `DEFERRED` right away and keeps the event nowhere, so leave the message unacknowledged.
+The RabbitMQ module requeues such a message with `basicNack`, at most once per poll interval. The Kafka module seeks back to the record without committing its offset.
+
+A listener you write yourself can do the same with `acceptOrDefer(...)`. It doesn't wait for the catch-up. Once the feed is live it applies the event and returns `DELIVERED`.
+
+Before that, and while a replay runs, `acceptOrDefer(...)` returns `DEFERRED` right away and keeps the event nowhere. Don't acknowledge the message then, and hand it back to the broker so it's delivered again. On RabbitMQ that's `basicNack` or `basicReject` with requeue, and on Kafka it's seeking back to the record without committing its offset.
 
 `acceptAndWait(...)` waits until the event is applied, so a caller that has nothing to deliver the event again needs it. A broker listener can call it too, for as long as the broker lets a message stay unacknowledged, covered in [when `acceptAndWait(...)` returns](#feeding-accept-returns).
 
-On the reactor stack the `Mono` that `acceptOrDefer(...)` returns errors with an `IllegalStateException` when 100000 events are already waiting to be applied, so don't acknowledge the message then. It errors the same way when the projection itself calls it, where `acceptAndWait(...)` is the call to use, as [feeding events from inside the projection](#feeding-from-the-projection) shows.
+On the reactor stack, once the feed is live, the `Mono` that `acceptOrDefer(...)` returns errors with an `IllegalStateException` when 100000 events are already waiting to be applied, so hand the message back to the broker then too. It errors the same way when the projection itself calls it, where `acceptAndWait(...)` is the call to use, as [feeding events from inside the projection](#feeding-from-the-projection) shows. The blocking `acceptOrDefer(...)` never reaches that limit, since it applies a live event on the calling thread.
 
 ###### When `acceptAndWait(...)` returns {#feeding-accept-returns}
 
-`acceptAndWait(...)` returns, or its `Mono` completes, only once the event has been applied. So a listener that acknowledges the message when `acceptAndWait(...)` returns never acknowledges an event that is only held in memory. A listener that acknowledges RabbitMQ messages itself looks like this:
+Called from a listener, `acceptAndWait(...)` returns, or its `Mono` completes, only once the event has been applied. So a listener that acknowledges the message when `acceptAndWait(...)` returns never acknowledges an event that is only held in memory.
+
+A call from inside the projection is different on the reactor stack, where its `Mono` completes once the event is queued, as [feeding events from inside the projection](#feeding-from-the-projection) shows.
+
+A listener that acknowledges RabbitMQ messages itself looks like this:
 
 {% capture java %}
 void onDelivery(Channel channel, long deliveryTag, OrderEvent event) throws IOException {
@@ -2145,7 +2155,7 @@ When the event is not applied, `acceptAndWait(...)` throws an `IllegalStateExcep
 * the catch-up was stopped before the feed went live
 * the event was fed after such a stop and before the next catch-up
 * the catch-up failed
-* the feed already holds 100000 events waiting for the replay, or the number set in `CatchupThenLiveOptions`
+* the feed already holds 100000 events waiting to be applied, or the number set in `CatchupThenLiveOptions`
 
 On the blocking stack it also happens when:
 
@@ -2153,7 +2163,7 @@ On the blocking stack it also happens when:
 * another delivery of the same event was still running
 * `acceptAndWait(...)` was called from inside the projection, a view or another callback of the same feed while the feed wasn't live, since the thread would then wait for work it is holding up itself
 
-In that case, don't acknowledge the message, and the broker delivers it again.
+In that case, don't acknowledge the message. Hand it back to the broker instead, with `basicNack` and requeue as in the example above, or on Kafka by seeking back to the record without committing its offset.
 
 A long replay keeps the listener waiting. A Kafka consumer that waits past its `max.poll.interval.ms`, 5 minutes by default, is taken out of its group and the record is delivered again. RabbitMQ delivers a message again once a consumer has held on to it without acknowledging it for longer than `consumer_timeout`, 30 minutes by default. In both cases the event is delivered again rather than lost.
 
@@ -2247,7 +2257,7 @@ void startFeed() {
     try {
         feed.catchUp();
     } catch (RuntimeException e) {
-        // The feed now refuses every event, and the listener leaves each message unacknowledged
+        // The feed now refuses every event, so the listener acknowledges none of them
         log.error("The order-status catch-up failed", e);
     }
 }
@@ -2263,7 +2273,7 @@ fun startFeed() {
     try {
         feed.catchUp()
     } catch (e: RuntimeException) {
-        // The feed now refuses every event, and the listener leaves each message unacknowledged
+        // The feed now refuses every event, so the listener acknowledges none of them
         log.error("The order-status catch-up failed", e)
     }
 }
@@ -2284,7 +2294,9 @@ A catch-up counts as running from the moment you call `CatchupProjectionFeed.cat
 
 On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the held events. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
 
-When a view calls `catchUp()`, `catchUp(id)` or `catchUpAll()` on its own feed while the feed is calling the view, the call doesn't wait for the replay. The replay runs after the view's code returns, so the call returning, or its `Mono` completing, only means the catch-up was asked for, not that it has run. A view that hands the call to another thread and waits for it ends up waiting for a replay that can't start until the view returns, so it waits until its thread is interrupted.
+When a view calls `catchUp()`, `catchUp(id)` or `catchUpAll()` on its own feed while the feed is calling the view, the call doesn't wait for the replay. The replay can't start until the view's code returns, so the call returning, or its `Mono` completing, only means the catch-up was asked for, not that it has run. It may not run at all, for example after a `stopCatchUp()`, an interrupt, or another catch-up that failed in the meantime, and the javadoc of `CatchupProjectionFeed.catchUp()` lists every case.
+
+A view that hands the call to another thread and waits for it ends up waiting for a replay that can't start until the view returns, so it waits until its thread is interrupted.
 
 Declaratively, `DomainEventFeed<E>` is a feed you declare as a bean (carrying the `eventId` function) and feed from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` feeds one consumer, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
 
