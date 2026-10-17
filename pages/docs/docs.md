@@ -2332,11 +2332,11 @@ A `DomainEventFeed` or `CatchupProjectionFeed` refuses three things rather than 
 * A projection keyed by metadata that is fed through the metadata-less `acceptAndWait(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `acceptAndWait(metadata, event)` instead.
 * `DomainEventFeed.acceptAndWait(..)` and `acceptOrDefer(..)` throw an `IllegalStateException` when no projection is registered on the feed. On the reactor stack the returned `Mono` fails with one. `catchUpAll()` refuses on a feed with no projection for the same reason.
 
-Refusing an event with no projection registered matters because a listener acknowledges the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. On the refusal your listener hands the message back to the broker instead, the same way as for `HOLD` under [Consuming from a broker](#broker-consuming), so the broker still has it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
+Refusing an event with no projection registered matters because a listener acknowledges the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. On the refusal your listener [hands the message back to the broker](#broker-redelivery) instead, the same way as for `HOLD`, so the broker still has it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
 
 This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
 
-`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](#push-subscription-blocking-observer). When you drive it from a broker, call `acceptOrDefer(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, which is a `HOLD`, so hand the message back to the broker rather than acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
+`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](#push-subscription-blocking-observer). When you drive it from a broker, call `acceptOrDefer(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, which is a `HOLD`, so [hand the message back to the broker](#broker-redelivery) rather than acknowledge it. A [`PushObserver`](#push-subscription-blocking-observer) is told the same outcome for each event the model is asked to deliver.
 
 ###### Feeding a `CloudEvent` to the feed {#feeding-cloudevents}
 
@@ -2352,7 +2352,7 @@ The feed matches the event against the filter the projection was registered with
 |:---|:---|:---|
 | `FILTERED` | The event doesn't match the filter. | Acknowledge it, since redelivering it gets the same answer. |
 | `DELIVERED` | The event matches, and the projection has applied it. | Acknowledge it. |
-| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. Hand it back to the broker, as for `HOLD` under [Consuming from a broker](#broker-consuming), until it comes back `DELIVERED`. That's safe any number of times. |
+| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. [Hand it back to the broker](#broker-redelivery), as for `HOLD`, until it comes back `DELIVERED`. That's safe any number of times. |
 
 With no projection registered, `acceptOrDeferCloudEvent(..)` throws `IllegalStateException`, the same as `acceptAndWait(..)`.
 
@@ -8366,7 +8366,7 @@ A source acts on the `RoutingOutcome` that `acceptOrDefer(..)` returns for each 
 | Disposition | Outcomes | What to do with the message |
 |:---|:---|:---|
 | `ACKNOWLEDGE` | `DELIVERED`, `FILTERED` | Acknowledge it. |
-| `HOLD` | `DEFERRED`, `UNAVAILABLE` | Don't acknowledge it, and hand it back to the broker so it's delivered again. On RabbitMQ that's `basicNack` or `basicReject` with requeue, and on Kafka it's seeking back to the record without committing its offset. Don't run it through your own retry or parking policy, because nothing about the message is broken. |
+| `HOLD` | `DEFERRED`, `UNAVAILABLE` | Don't acknowledge it, and [hand it back to the broker](#broker-redelivery) so it's delivered again. Don't run it through your own retry or parking policy, because nothing about the message is broken. |
 | `FAIL` | `NOT_DELIVERABLE` | Your own failure policy decides what happens to it. |
 | `STOP` | `REFUSED` | Stop consuming rather than redelivering it, because offering it again gets the same answer. |
 
@@ -8375,6 +8375,16 @@ A source acts on the `RoutingOutcome` that `acceptOrDefer(..)` returns for each 
 A running replay finishes by itself, so redelivering a message held for it eventually delivers it. A stopped model, a paused subscription and a stopped catch-up all wait for someone to start them again. Until then, a source that only redelivers a held message keeps getting the same answer.
 
 Both brokers ship both sources as plain classes you construct yourself, with no Spring Boot involved. [RabbitMQ](#broker-rabbitmq) and [Kafka](#broker-kafka) below show the wiring, the configuration each one requires, and how each one acknowledges a message.
+
+#### Handing a message back to the broker {#broker-redelivery}
+
+A message that came back `HOLD`, or that failed and should be tried again, hasn't been applied. It has to reach your listener again, and nothing may acknowledge it, or commit past it, until it's applied.
+
+On RabbitMQ, call `basicNack` or `basicReject` with requeue. Leaving the message unacknowledged isn't enough. RabbitMQ doesn't deliver it again while the channel stays open, and it counts against the channel's prefetch, the number of unacknowledged messages RabbitMQ sends a consumer before it stops sending more.
+
+On Kafka, a committed offset is where the consumer group resumes in that partition, so committing a later record also commits past this record. Turn auto-commit off with `enable.auto.commit=false`. Before you process or commit any later record in that partition, seek the consumer back to this record and poll again from there.
+
+Occurrent's four sources already do this. `RabbitMqCloudEventSource` and `RabbitMqDomainEventSource` requeue with `basicNack`. `KafkaCloudEventSource` and `KafkaDomainEventSource` refuse to start with auto-commit on, seek back, and leave the rest of that partition's records for a later poll. [RabbitMQ](#broker-rabbitmq) and [Kafka](#broker-kafka) below have the details.
 
 ### RabbitMQ {#broker-rabbitmq}
 
