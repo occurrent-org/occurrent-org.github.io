@@ -2332,7 +2332,7 @@ A `DomainEventFeed` or `CatchupProjectionFeed` refuses three things rather than 
 * A projection keyed by metadata that is fed through the metadata-less `acceptAndWait(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `acceptAndWait(metadata, event)` instead.
 * `DomainEventFeed.acceptAndWait(..)` and `acceptOrDefer(..)` throw an `IllegalStateException` when no projection is registered on the feed. On the reactor stack the returned `Mono` fails with one. `catchUpAll()` refuses on a feed with no projection for the same reason.
 
-Refusing an event with no projection registered matters because a listener acknowledges the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. On the refusal your listener hands the message back to the broker instead, the same way as for `HOLD` under [Observing pushed events](#push-subscription-blocking-observer), so the broker still has it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
+Refusing an event with no projection registered matters because a listener acknowledges the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. On the refusal your listener hands the message back to the broker instead, the same way as for `HOLD` under [Consuming from a broker](#broker-consuming), so the broker still has it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
 
 This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
 
@@ -2352,7 +2352,7 @@ The feed matches the event against the filter the projection was registered with
 |:---|:---|:---|
 | `FILTERED` | The event doesn't match the filter. | Acknowledge it, since redelivering it gets the same answer. |
 | `DELIVERED` | The event matches, and the projection has applied it. | Acknowledge it. |
-| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. Hand it back to the broker, as for `HOLD` under [Observing pushed events](#push-subscription-blocking-observer), until it comes back `DELIVERED`. That's safe any number of times. |
+| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. Hand it back to the broker, as for `HOLD` under [Consuming from a broker](#broker-consuming), until it comes back `DELIVERED`. That's safe any number of times. |
 
 With no projection registered, `acceptOrDeferCloudEvent(..)` throws `IllegalStateException`, the same as `acceptAndWait(..)`.
 
@@ -8366,7 +8366,7 @@ A source acts on the `RoutingOutcome` that `acceptOrDefer(..)` returns for each 
 | Disposition | Outcomes | What to do with the message |
 |:---|:---|:---|
 | `ACKNOWLEDGE` | `DELIVERED`, `FILTERED` | Acknowledge it. |
-| `HOLD` | `DEFERRED`, `UNAVAILABLE` | Leave it unacknowledged and offer it again later. Don't run it through your own retry or parking policy, because nothing about the message is broken. |
+| `HOLD` | `DEFERRED`, `UNAVAILABLE` | Don't acknowledge it, and hand it back to the broker so it's delivered again. On RabbitMQ that's `basicNack` or `basicReject` with requeue, and on Kafka it's seeking back to the record without committing its offset. Don't run it through your own retry or parking policy, because nothing about the message is broken. |
 | `FAIL` | `NOT_DELIVERABLE` | Your own failure policy decides what happens to it. |
 | `STOP` | `REFUSED` | Stop consuming rather than redelivering it, because offering it again gets the same answer. |
 
@@ -8423,7 +8423,7 @@ Its configured `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeExce
 
 Parking publishes the message to that destination and waits for its own publisher confirm. The source acknowledges the original only once that confirm arrives, the same order as for an ordinary delivery. So a message is acknowledged in exactly three cases, `DELIVERED`, `FILTERED`, and a confirmed park.
 
-A failed park never acknowledges the original message, so it's redelivered rather than lost.
+A failed park hands the original message back to RabbitMQ with `basicNack` and requeue instead of acknowledging it, so it's redelivered rather than lost.
 
 The source parks a message itself rather than through RabbitMQ's own dead-lettering, where a rejected message is moved to another exchange. `basicNack(requeue = false)` with no dead-letter exchange configured throws the message away, and with one the broker republishes it without confirms.
 
@@ -8433,7 +8433,7 @@ Each source handles its deliveries on a thread of its own, one at a time and in 
 
 The RabbitMQ client calls every consumer on a connection from one pool of threads, so each source moves a delivery onto its own thread before handling it. A handler waiting on a database that is down then holds up only its own source, never another source built on the same `Connection`.
 
-`close()` waits up to `closeTimeout(Duration)`, thirty seconds by default, for a delivery already being handled. A delivery it didn't finish was never acknowledged, so RabbitMQ delivers it again.
+`close()` waits up to `closeTimeout(Duration)`, thirty seconds by default, for a delivery already being handled. A delivery it didn't finish was never acknowledged, so closing the channel puts it back on the queue and RabbitMQ delivers it again.
 
 `build()` retries opening its channel and declaring the queue, the bindings and the QoS, backing off from 100ms to 2 seconds over ten attempts, so a broker that is still starting doesn't fail your application's startup. `retryStrategy(RetryStrategy)` on the builder replaces that backoff, and your strategy then also decides which failures are retried.
 
