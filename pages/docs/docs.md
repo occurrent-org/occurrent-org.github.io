@@ -1836,7 +1836,7 @@ If you acknowledge broker messages yourself, base the acknowledgement on the out
 `outcome.disposition()` sorts the six outcomes into the four things a broker source can do with a message, so a source you write yourself switches on four values rather than six:
 
 * `ACKNOWLEDGE` for `DELIVERED` and `FILTERED`.
-* `HOLD` for `DEFERRED` and `UNAVAILABLE`. Don't acknowledge the message, and hand it back to the broker so it's delivered again. On RabbitMQ that's `basicNack` or `basicReject` with requeue, and on Kafka it's seeking back to the record without committing its offset. Don't run it through your own retry or parking policy, because nothing about the message is broken.
+* `HOLD` for `DEFERRED` and `UNAVAILABLE`. Don't acknowledge the message, and [hand it back to the broker](#broker-redelivery) so it's delivered again. Don't run it through your own retry or parking policy, because nothing about the message is broken.
 * `FAIL` for `NOT_DELIVERABLE`. Your own failure policy decides what happens to the message.
 * `STOP` for `REFUSED`. Offering the message again gets the same answer, so stop consuming rather than redelivering.
 
