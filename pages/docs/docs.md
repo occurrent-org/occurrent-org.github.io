@@ -1939,7 +1939,7 @@ An event can arrive both ways, once from the replay and once from the listener. 
 
 The feed holds at most 100000 events waiting to be applied, the `maxBufferedEvents` of `CatchupThenLiveOptions`. Once that many are waiting, it refuses the next one.
 
-The 10000 ids it remembers are a separate number, `dedupCacheSize`. They only spot a copy the replay already applied, and they don't limit how many events wait. Pass a `CatchupThenLiveOptions` to `create(...)` to change either number.
+The 10000 is a separate number, `dedupCacheSize`, and it doesn't limit how many events wait. It sizes two lists of ids, one for the events the replay applied and one for those applied live, so the feed also skips a live event it already applied live, such as a message the broker delivered again. Pass a `CatchupThenLiveOptions` to `create(...)` to change either number.
 
 Occurrent's own [RabbitMQ and Kafka modules](#broker-consuming) call `DomainEventFeed.acceptOrDeferCloudEvent(...)` rather than `acceptAndWait(...)`, because a broker delivers a message again when it got no acknowledgement for it. That call never holds an event, and the modules stop fetching messages until the feed is live. A message that arrives anyway gets `DEFERRED` back, stays unacknowledged and is delivered again, so no event waits in memory.
 
