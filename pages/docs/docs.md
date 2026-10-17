@@ -1840,7 +1840,7 @@ void onMessage(byte[] body) {
 
 `acceptOrDefer(CloudEvent)` runs the registered handler synchronously, on the calling thread, when the event matches its filter. If the handler or the filter throws, the exception propagates back to your listener. Handle it the same way as `NOT_DELIVERABLE`. [Consuming from a broker](#broker-consuming) says what to do with each outcome.
 
-`redeliverLater()` has to hand the message back to the broker, since not acknowledging it doesn't get it delivered again. On RabbitMQ that's `basicNack` or `basicReject` with requeue, and on Kafka it's seeking back to the record without committing its offset.
+`redeliverLater()` has to [hand the message back to the broker](#broker-redelivery), since not acknowledging it doesn't get it delivered again.
 
 ###### Feeding it from a broker {#push-subscription-blocking-broker}
 
@@ -3399,7 +3399,7 @@ Mono<Void> onMessage(byte[] body) {
 }
 ```
 
-`acceptOrDefer(CloudEvent)` runs the registered handler when the event matches its filter and returns a `Mono<RoutingOutcome>`. Acknowledge the message only when that `Mono` completes with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`, the two outcomes `mayAcknowledge()` is true for. `redeliverLater()` hands the message back to the broker the same way as on the [blocking model](#push-subscription-blocking).
+`acceptOrDefer(CloudEvent)` runs the registered handler when the event matches its filter and returns a `Mono<RoutingOutcome>`. Acknowledge the message only when that `Mono` completes with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`, the two outcomes `mayAcknowledge()` is true for. `redeliverLater()` [hands the message back to the broker](#broker-redelivery) the same way as on the blocking model.
 
 [Consuming from a broker](#broker-consuming) says what a listener does with each outcome. When an outcome comes back differs from the [blocking model](#push-subscription-blocking-observer), so on this stack the `Mono` completes with:
 
