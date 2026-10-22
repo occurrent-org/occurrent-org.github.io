@@ -1846,7 +1846,7 @@ A broker listener that can redeliver a message should call `acceptOrDefer(CloudE
 
 Plain `accept(..)` buffers that event and reports `DELIVERED` before the handler has applied it. That's right for the in-memory event store, because its listener never offers the same event a second time. When the buffer is full it throws instead, and while the catch-up is stopped it drops the event and reports `DEFERRED`.
 
-The reported outcome always matches what happened to the event, even when a `stop()`, a pause or a resume happens at the same moment. That's because the report and the routing use the same filter check.
+The reported outcome is what the routing did with the event, even when a `stop()`, a pause or a resume happens at the same moment. The report reuses the routing's own filter check and never checks again whether the model is running or the subscription is paused.
 
 The table below shows what the observer is told, and what `accept(..)` throws, when the filter, the handler or the observer itself throws.
 
