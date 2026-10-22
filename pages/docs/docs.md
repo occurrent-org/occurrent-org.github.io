@@ -6977,6 +6977,10 @@ RabbitMqCloudEventSource source = RabbitMqCloudEventSource.builder(rabbitConnect
         .build();
 ```
 
+Build the source before delivery to its model or feed starts. Delivery starts with the first subscription on the `PushSubscriptionModel`, made directly or through a `CatchupThenPushSubscriptionModel`, or with a call to `catchUp(id)`, `catchUpAll()` or `goLive(id)` on the `DomainEventFeed`.
+
+`build()` declares the queue and its bindings, and RabbitMQ delivers a message only to the queues bound when it's published, so an event published before they exist never reaches the source. With `declareTopology(false)`, whoever owns the topology has to create them before delivery starts.
+
 Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The source then stops pulling messages while the replay runs. That only saves round trips to the broker, because a message that arrives before the catch-up has reached live delivery is reported `DEFERRED` and never acknowledged either way.
 
 The source calls `acceptOrDefer(...)` rather than `accept(...)`. It routes the event the same way, but tells the model that the broker can send the event again later, so the model can refuse the event instead of holding on to it.
@@ -7045,6 +7049,8 @@ KafkaCloudEventSource source = KafkaCloudEventSource.builder(consumerConfig, pus
         .resolver(resolver)
         .build();
 ```
+
+`auto.offset.reset` defaults to `earliest` when your consumer config doesn't set it, so a partition the group has no committed offset for, or whose committed offset the topic no longer holds, starts at the oldest record the topic still holds. A new group then doesn't miss a record published while it joins, and a group whose committed offsets expired or were deleted reads every record the topic still holds again, including the ones it already handled.
 
 Once a record comes back `DELIVERED` or `FILTERED`, or its failure ends in a confirmed `PARK`, the source marks `record.offset() + 1` to be committed for that record's partition.
 
