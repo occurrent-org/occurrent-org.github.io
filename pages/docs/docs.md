@@ -1956,11 +1956,13 @@ Two settings control the handover, and both have defaults.
 
 The first, `dedupCacheSize`, sets how many recently delivered events the handover remembers by id and source. That's how an event that both the replay and the live feed deliver reaches your handler only once. The handover keeps two of these caches. One holds events the replay delivered, and one holds events delivered live. `dedupCacheSize` is the size of each.
 
-Together the two caches hold up to twice the number you set, so 20000 events at the default of 10000.
+At the default of 10000 the two caches together hold up to 20000 events, twice the number you set.
 
 If the replay and the live feed overlap by more than `dedupCacheSize` events, an event can reach your handler twice, so make sure that applying an event a second time doesn't change your read model.
 
-The second, `maxBufferedEvents`, caps the live events buffered during the replay, at 100000 by default. It is a fail-loud ceiling rather than a throttle. Only `accept(..)` fills it, since `acceptOrDefer(..)` refuses an event during the replay instead of buffering it. When the buffer is full, the in-memory event store's write call throws although the store has kept the event. The push model's `accept(events)` stops at that event, so it routes none of the write's later events either, and the subscription can miss all of them. Pass `CatchupThenLiveOptions` to change either:
+The second, `maxBufferedEvents`, caps the live events buffered during the replay, at 100000 by default. It is a fail-loud ceiling rather than a throttle. Only `accept(..)` fills it, since `acceptOrDefer(..)` refuses an event during the replay instead of buffering it.
+
+When the buffer is full, the in-memory event store's write call throws, even though the event is already stored. The `PushSubscriptionModel`'s `accept(events)` stops at that event and doesn't route any of the later events from the same write either, so the subscription can miss all of them. Pass `CatchupThenLiveOptions` to change either:
 
 ```java
 CatchupThenPushSubscriptionModel model = new CatchupThenPushSubscriptionModel(
@@ -5084,8 +5086,8 @@ An explicit filter is used instead of deriving one, so nothing is expanded for t
 If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, use an explicit filter. Under such a mapper:
 
 * A declaration the table above refuses is still refused, because the check reads the class hierarchy and never asks the mapper.
-* When the hierarchy is open, an explicit filter is the only fix, because a concrete class that is neither final nor sealed can't be declared either.
-* Declaring the concrete types gives you a filter that matches the whole hierarchy rather than only the types you listed, because every one of them maps to that same string.
+* A concrete class that is neither final nor sealed is one of the refused declarations, so if you can't change such a class, set an explicit filter.
+* Declaring the concrete types still selects their events. The filter it derives matches the whole hierarchy rather than only the types you listed, because every one of them maps to that same string.
 
 ### An empty list of types selects nothing on a query {#derived-filter-empty}
 
@@ -6529,7 +6531,7 @@ If a saga declares a type listed as refused in [Deriving the Event Filter](#deri
 
 To fix a refused declaration, [seal the hierarchy](#derived-filter-seal) or [declare the concrete types](#derived-filter-concrete). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
-A `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string needs a `replacementFilter(..)` instead, as [Setting an Explicit Filter](#saga-explicit-filter) shows.
+Sealing the hierarchy and declaring the concrete types both keep events arriving under a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, since the saga then subscribes on that string. If a class you need to handle is neither final nor sealed and you can't change it, use `replacementFilter(..)` instead, as [Setting an Explicit Filter](#saga-explicit-filter) shows.
 
 #### Setting an Explicit Filter {#saga-explicit-filter}
 
@@ -6557,7 +6559,7 @@ saga<OrderEvent, OrderCommand> {
 
 Because a selector is still derived, the hierarchy check from [Declared Event Types](#saga-event-types) still runs under a narrowing.
 
-`replacementFilter(Filter)` replaces the derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy below the declared types looks like. It's the fix for a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, as [Set an explicit filter](#derived-filter-explicit) explains:
+`replacementFilter(Filter)` replaces the derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy below the declared types looks like. Use it when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, as [Set an explicit filter](#derived-filter-explicit) explains:
 
 {% capture java %}
 Saga.<OrderEvent, OrderState, OrderCommand>builder()
@@ -7025,7 +7027,7 @@ Where the model does offer the event again, fix the converter or the correlation
 
 On the timer path the poller catches what the reaction throws, logs it at `WARN` and leaves the timer due, so one failing timer does not stop the poller. A failing timer never quarantines its instance and records no failure. An `OutOfMemoryError` is not caught per instance, so it ends that poll for every instance after it.
 
-A failing timer can still keep other instances' timers from firing. A poll fires at most `timerBatchLimit` instances, 100 by default, and `findWithDueTimers` does not require a store to give a different instance a turn. Once 100 instances keep failing their timers, every poll can pick those same 100, and then no other instance's timer fires.
+A failing timer can still keep other instances' timers from firing. A poll fires at most `timerBatchLimit` instances, 100 by default, and `findWithDueTimers` does not require a store to give a different instance a turn. Once `timerBatchLimit` instances keep failing their timers, every poll can pick those same instances, and then no other instance's timer fires.
 
 `timerBatchLimit` is set through the `SagaRunnerConfig` constructor, and there is no Spring Boot property for it.
 
@@ -7262,7 +7264,9 @@ One timing constraint comes with the annotation path. A `@Saga` factory can only
 
 ##### Quarantined Instances {#saga-quarantined-instances}
 
-Each saga gets one subscription, and that subscription delivers the events for all of its instances. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again. Quarantine limits how long that lasts. It is off by default, and [Turning quarantine on](#saga-quarantine-on) says how to turn it on and why it is off.
+Each saga gets one subscription, and that subscription delivers the events for all of its instances. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again.
+
+Quarantine can end that once the instance has been failing for a length of time you set, and only when the conditions in [What else has to be true](#saga-quarantine-conditions) hold as well. It is off by default, and [Turning quarantine on](#saga-quarantine-on) says how to turn it on and why it is off.
 
 When an instance is quarantined, this happens to it and to the rest of the saga:
 
@@ -8417,6 +8421,10 @@ RabbitMqCloudEventSource source = RabbitMqCloudEventSource.builder(rabbitConnect
         .build();
 ```
 
+Build the source before delivery to its model or feed starts. Delivery starts with the first subscription on the `PushSubscriptionModel`, made directly or through a `CatchupThenPushSubscriptionModel`, or with a call to `catchUp(id)`, `catchUpAll()` or `goLive(id)` on the `DomainEventFeed`.
+
+`build()` declares the queue and its bindings, and RabbitMQ delivers a message only to the queues bound when it's published, so an event published before they exist never reaches the source. With `declareTopology(false)`, whoever owns the topology has to create them before delivery starts.
+
 Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The source then stops pulling messages while the replay runs. That only saves round trips to the broker, because a message that arrives before the catch-up has reached live delivery is reported `DEFERRED` and never acknowledged either way.
 
 The source calls `acceptOrDefer(...)` rather than `accept(...)`. It routes the event the same way, but tells the model that the broker can send the event again later, so the model can refuse the event instead of holding on to it.
@@ -8485,6 +8493,8 @@ KafkaCloudEventSource source = KafkaCloudEventSource.builder(consumerConfig, pus
         .resolver(resolver)
         .build();
 ```
+
+`auto.offset.reset` defaults to `earliest` when your consumer config doesn't set it, so a partition the group has no committed offset for, or whose committed offset the topic no longer holds, starts at the oldest record the topic still holds. A new group then doesn't miss a record published while it joins, and a group whose committed offsets expired or were deleted reads every record the topic still holds again, including the ones it already handled.
 
 Once a record comes back `DELIVERED` or `FILTERED`, or its failure ends in a confirmed `PARK`, the source marks `record.offset() + 1` to be committed for that record's partition.
 
