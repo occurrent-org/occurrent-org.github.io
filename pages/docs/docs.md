@@ -5805,7 +5805,7 @@ Where the model does offer the event again, fix the converter or the correlation
 
 On the timer path the poller catches what the reaction throws, logs it at `WARN` and leaves the timer due, so one failing timer does not stop the poller. A failing timer never quarantines its instance and records no failure. An `OutOfMemoryError` is not caught per instance, so it ends that poll for every instance after it.
 
-A failing timer can still keep other instances' timers from firing. A poll fires at most `timerBatchLimit` instances, 100 by default, and `findWithDueTimers` does not require a store to give a different instance a turn. Once 100 instances keep failing their timers, every poll can pick those same 100, and then no other instance's timer fires.
+A failing timer can still keep other instances' timers from firing. A poll fires at most `timerBatchLimit` instances, 100 by default, and `findWithDueTimers` does not require a store to give a different instance a turn. Once `timerBatchLimit` instances keep failing their timers, every poll can pick those same instances, and then no other instance's timer fires.
 
 `timerBatchLimit` is set through the `SagaRunnerConfig` constructor, and there is no Spring Boot property for it.
 
@@ -6016,7 +6016,9 @@ One timing constraint comes with the annotation path. A `@Saga` factory can only
 
 ##### Quarantined Instances {#saga-quarantined-instances}
 
-Each saga gets one subscription, and that subscription delivers the events for all of its instances. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again. Quarantine limits how long that lasts. It is off by default, and [Turning quarantine on](#saga-quarantine-on) says how to turn it on and why it is off.
+Each saga gets one subscription, and that subscription delivers the events for all of its instances. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again.
+
+Quarantine can end that once the instance has been failing for a length of time you set, and only when the conditions in [What else has to be true](#saga-quarantine-conditions) hold as well. It is off by default, and [Turning quarantine on](#saga-quarantine-on) says how to turn it on and why it is off.
 
 When an instance is quarantined, this happens to it and to the rest of the saga:
 
