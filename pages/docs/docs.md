@@ -4169,8 +4169,8 @@ An explicit filter is used instead of deriving one, so nothing is expanded for t
 If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, use an explicit filter. Under such a mapper:
 
 * A declaration the table above refuses is still refused, because the check reads the class hierarchy and never asks the mapper.
-* When the hierarchy is open, an explicit filter is the only fix, because a concrete class that is neither final nor sealed can't be declared either.
-* Declaring the concrete types gives you a filter that matches the whole hierarchy rather than only the types you listed, because every one of them maps to that same string.
+* A concrete class that is neither final nor sealed is one of the refused declarations, so if you can't change such a class, set an explicit filter.
+* Declaring the concrete types still selects their events. The filter it derives matches the whole hierarchy rather than only the types you listed, because every one of them maps to that same string.
 
 ### An empty list of types selects nothing on a query {#derived-filter-empty}
 
@@ -5458,7 +5458,7 @@ If a saga declares a type listed as refused in [Deriving the Event Filter](#deri
 
 To fix a refused declaration, [seal the hierarchy](#derived-filter-seal) or [declare the concrete types](#derived-filter-concrete). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
-A `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string needs a `replacementFilter(..)` instead, as [Setting an Explicit Filter](#saga-explicit-filter) shows.
+Sealing the hierarchy and declaring the concrete types both keep events arriving under a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, since the saga then subscribes on that string. If a class you need to handle is neither final nor sealed and you can't change it, use `replacementFilter(..)` instead, as [Setting an Explicit Filter](#saga-explicit-filter) shows.
 
 #### Setting an Explicit Filter {#saga-explicit-filter}
 
@@ -5486,7 +5486,7 @@ saga<OrderEvent, OrderCommand> {
 
 Because a selector is still derived, the hierarchy check from [Declared Event Types](#saga-event-types) still runs under a narrowing.
 
-`replacementFilter(Filter)` replaces the derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy below the declared types looks like. It's the fix for a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, as [Set an explicit filter](#derived-filter-explicit) explains:
+`replacementFilter(Filter)` replaces the derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy below the declared types looks like. Use it when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, as [Set an explicit filter](#derived-filter-explicit) explains:
 
 {% capture java %}
 Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
