@@ -94,6 +94,11 @@ permalink: /documentation
 * * [Querying Domain Events](#query-dsl)
 * * * [DCB Query DSL](#dcb-query-dsl)
 * * [Subscribing to Domain Events](#subscription-dsl)
+* * [Deriving the Event Filter](#deriving-the-event-filter)
+* * * [Seal the Hierarchy](#derived-filter-seal)
+* * * [Declare the Concrete Event Types](#derived-filter-concrete)
+* * * [Set an Explicit Filter](#derived-filter-explicit)
+* * * [An Empty List of Types Selects Nothing on a Query](#derived-filter-empty)
 * * [Views](#views)
 * * * [The View DSL](#view-dsl)
 * * * * [Storing a view](#materialized-view)
@@ -139,6 +144,7 @@ permalink: /documentation
 * * * * [Running Across Multiple Instances](#saga-multi-instance)
 * * * * [Side Effects and Compensation](#saga-side-effects)
 * * * * [Observing Saga Instances](#observing-saga-instances)
+* * * * * [Quarantined Instances](#saga-quarantined-instances)
 * [Layer 2: Spring Boot](#layer-2)
 * * [Starter](#spring-boot-starter)
 * * * [Deferring Subscription Startup](#deferring-subscription-startup)
@@ -202,6 +208,8 @@ permalink: /documentation
 * * * [Competing Consumer Strategy Conformance](#competing-consumer-strategy-conformance)
 * * * [The Reactive Bridge](#subscription-reactive-bridge)
 * [Upgrading](#upgrading)
+* * [Upgrading to 0.34.0](#upgrading-to-0-34-0)
+* * * [Repairing events damaged before 0.34.0](#update-event-repair)
 * * [Upgrading to 0.33.0](#upgrading-to-0-33-0)
 * * [Upgrading to 0.32.0](#upgrading-to-0-32-0)
 * * [Upgrading to 0.31.0](#upgrading-to-0-31-0)
@@ -1303,6 +1311,10 @@ eventStoreOperations.updateEvent("cloudEventId", cloudEventSource) { cloudEvent 
 }
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`updateEvent` keeps the values the store owns, whatever event your update function returns. Those values are the event's `position`, its DCB tags, its `streamId` and its `streamVersion`. The event `updateEvent` returns has the same values as the stored document.
+
+If you called `updateEvent` on a MongoDB event store running 0.33.0 or earlier, read [repairing events damaged before 0.34.0](#update-event-repair) under upgrading to 0.34.0.
 
 ### Stream Filtering {#eventstore-stream-filtering}
 
@@ -4005,6 +4017,10 @@ GameStarted event1 = domainEventQueries.queryOne(GameStarted.class); // Find the
 GamePlayed event2 = domainEventQueries.queryOne(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")); // Find event with this id
 ```
 
+`query(GameStarted.class, GameEnded.class)` and the `Collection` overloads derive a filter from the types you list, as described in [Deriving the Event Filter](#deriving-the-event-filter). If a query names a type listed as refused in that section, the query throws.
+
+Given a `null` or empty collection, these overloads return no events. [An empty list of types selects nothing on a query](#derived-filter-empty) says how that differs from a projection.
+
 There are also some Kotlin extensions that you can use to query for a `Sequence` of events instead of a `Stream`:
  ```kotlin
  val events : Sequence<DomainEvent> = domainEventQueries.queryForSequence(GamePlayed::class, GameWon::class, skip = 2) // Find only events of this type and skip the first two events
@@ -4104,11 +4120,151 @@ subscriptions.subscribe("gameStarted", GameStarted.class, gameStarted -> {
 For this to work, your domain events must all "implement" a `DomainEvent` interface (or a sealed class in Kotlin). Note that `DomainEvent` is something you create yourself, 
 it's not something that is provided by Occurrent.
 
+`subscribe(..)` derives the subscription filter from the event types you name, as described in [Deriving the Event Filter](#deriving-the-event-filter). If you name a type listed as refused in that section, `subscribe(..)` throws.
+
 As of version 0.17.0 you can also get metadata (such as stream version, stream id and all other cloud event extension properties) when consuming an event:
 
 {% include macros/subscription/dsl/subscription_dsl_metadata_example.md %}
 
 `Subscriptions` and `subscriptions(...)` accept any `Subscribable`. That includes a [`PushSubscriptionModel`](#push-subscription-blocking) (or its [reactive counterpart](#push-subscription-reactive)), which feeds events from a broker such as RabbitMQ or Kafka instead of reading a MongoDB change stream.
+
+## Deriving the Event Filter {#deriving-the-event-filter}
+
+A projection, a snapshot view, a saga, a subscription and a query all say which event types they handle, and Occurrent turns that list into the filter that selects events for them. An application service's `ExecuteFilter` and a `DcbCriteriaBuilder` criterion name event types the same way. There is no separate list of subscribed types to keep in sync with the handlers.
+
+A sealed type is expanded into every concrete type it permits, all the way down, so it selects more than the type you named. A projection with one handler on a sealed `OrderEvent` asks for `OrderEvent`, `OrderPlaced` and `PaymentReserved`, and receives the concrete events stored under that hierarchy:
+
+{% capture java %}
+public sealed interface OrderEvent permits OrderPlaced, PaymentReserved {
+    String orderId();
+}
+public record OrderPlaced(String orderId) implements OrderEvent { }
+public record PaymentReserved(String orderId) implements OrderEvent { }
+
+// One handler, and both OrderPlaced and PaymentReserved arrive
+Projection<Integer, OrderEvent, String> orderCount =
+        Projection.<Integer, OrderEvent, String>builder(0)
+                .id(OrderEvent::orderId)
+                .on(OrderEvent.class, (count, event) -> count + 1)
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+sealed interface OrderEvent {
+    val orderId: String
+}
+data class OrderPlaced(override val orderId: String) : OrderEvent
+data class PaymentReserved(override val orderId: String) : OrderEvent
+
+// One handler, and both OrderPlaced and PaymentReserved arrive
+val orderCount = projection<Int, OrderEvent, String>(initialState = 0) {
+    id { event -> event.orderId }
+    on<OrderEvent> { count, _ -> count + 1 }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+When Occurrent can't find the concrete types, it refuses the declaration with an `IllegalArgumentException` that names the type. That happens for these declared types:
+
+| Declared type | Java | Kotlin |
+|---|---|---|
+| An interface that is not sealed | `interface OrderEvent` | `interface OrderEvent` |
+| An abstract class that is not sealed | `abstract class OrderEvent` | `abstract class OrderEvent` |
+| A sealed hierarchy reopened below the declared type | `non-sealed class Payment implements OrderEvent` | `open class Payment : OrderEvent` or `abstract class Payment : OrderEvent` |
+| A concrete class that is neither final nor sealed | `class OrderPlaced` | `open class OrderPlaced` |
+| An array type | `OrderEvent[]` | `Array<OrderEvent>` |
+| A primitive class literal | `int.class` | `Int::class` |
+
+A final class is accepted, and so is a sealed type whose subtypes are all sealed or final, all the way down. Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs nothing from you.
+
+A `sealed class` you can instantiate is accepted too. Its filter names the class itself as well as every type it permits.
+
+Enums are accepted as well, including ones whose constants have bodies, and so is a sealed interface that permits an enum. A constant with a body is stored under its own class, `PaymentEvent$Reserved` for example, while a constant without one is stored under the enum class itself. Decide whether a constant has a body before you have events in the store.
+
+A refusal is thrown when the filter is derived, and each place derives it at a different moment. None of them waits until an event is delivered.
+
+| Where you declared the types | Where a refusal is thrown |
+|---|---|
+| A `Projection` started by `ProjectionRunner.project(..)` | that call |
+| A `Projection` given to `DomainEventFeed.register(..)` or `CatchupProjectionFeed.create(..)` | that call |
+| A `Projection` read on demand with `Projections.project(projection, queries)` | that read |
+| A `@Projection` or `@Snapshot` factory method | Spring Boot startup, while the bean is processed |
+| `@Subscription`, `@StreamSubscription`, `@SynchronousSubscription` and `@DcbSubscription` | Spring Boot startup |
+| The [subscription DSL](#subscription-dsl)'s `subscribe(..)`, and `filterFromEventTypes` under it | that call |
+| `DomainEventQueries.query(Class..)` and `query(Collection)` | each query |
+| A saga built with `Saga.Builder` or `FlowSaga.Builder` | `build()` |
+| A saga made with the `Saga.create(..)` factory | that call |
+| `ExecuteFilter.type(..)` or `includeTypes(..)`, and Kotlin's `ExecuteFilters` equivalents | each application service `execute(..)` call given that filter |
+| `DcbCriteriaBuilder.type(..)` or `types(..)` | that call |
+
+`ExecuteFilter.excludeTypes(..)` excludes more instead of refusing, because excluding a supertype has to exclude everything under it. It excludes the declared type and every concrete type it can find below it by following `permits` clauses. A type it can't reach that way stays in the read.
+
+`excludeTypes(..)` refuses an array or a primitive type. It also refuses an interface or a non-sealed abstract class with nothing concrete found below it, since no event is stored under that type's own name with the mappers Occurrent ships.
+
+`excludeTypes(..)` doesn't refuse a sealed type that permits an interface or abstract class that is not sealed. With `ReflectionCloudEventTypeMapper` it excludes nothing below that interface or abstract class, so seal the hierarchy or exclude the concrete types.
+
+A `DcbCriteriaBuilder` seeded with a boundary that excludes types can fail in one more way. A sealed type passed to `type(..)` or `types(..)` expands to its concrete types, and when one of them is a type the boundary excludes, the call throws `IllegalArgumentException` saying types and excluded types cannot overlap.
+
+A criterion built from a sealed type also matches every concrete type it permits when you use it in `DcbAppendCondition.failIfEventsMatch(..)`, so the append fails on a concurrent write of any of them.
+
+There are three ways to fix a refused declaration, and which one fits depends on who owns the events.
+
+### Seal the hierarchy {#derived-filter-seal}
+
+Prefer this when you own the events, because the declaration then keeps working as you add event types under it:
+
+{% capture java %}
+// Before, refused, since Payment reopens the hierarchy and nothing below it can be found
+public sealed interface OrderEvent permits Payment { }
+public non-sealed class Payment implements OrderEvent { }
+
+// After
+public sealed interface OrderEvent permits Payment { }
+public sealed class Payment implements OrderEvent permits PaymentReserved { }
+public final class PaymentReserved extends Payment { }
+{% endcapture %}
+{% capture kotlin %}
+sealed interface OrderEvent
+sealed class Payment : OrderEvent          // was open class or abstract class
+data class PaymentReserved(val orderId: String) : Payment()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+For a concrete class that is neither final nor sealed, marking it `final` is the smaller fix when nothing extends it. In Kotlin that means dropping `open`, since a Kotlin class is final unless it says otherwise.
+
+### Declare the concrete event types {#derived-filter-concrete}
+
+Use this when the hierarchy is not yours to seal, or is deliberately open. List the concrete types where you would have named the supertype:
+
+* One handler per concrete type on a `Projection`, a `SnapshotView` or a saga, in place of a single handler on the supertype.
+* `filterFromEventTypes(converter, arrayOf(OrderPlaced::class, PaymentReserved::class))` on the [subscription DSL](#subscription-dsl).
+* `domainEventQueries.query(OrderPlaced.class, PaymentReserved.class)` on the [query DSL](#query-dsl).
+* The concrete types in the `eventTypes` attribute of `@Subscription` and the other subscription annotations.
+* `ExecuteFilter.includeTypes(OrderPlaced.class, PaymentReserved.class)` on an [application service](#application-service-stream-filtering-and-execute-options).
+* `types(OrderPlaced.class, PaymentReserved.class)` on a `DcbCriteriaBuilder`.
+
+### Set an explicit filter {#derived-filter-explicit}
+
+An explicit filter is used instead of deriving one, so nothing is expanded for that declaration and nothing is refused. Where you set it depends on where you declared the types:
+
+* `Projection`'s builder and `SnapshotView`'s builder both take a `filter(Filter)`.
+* A saga takes [`replacementFilter(Filter)`](#saga-explicit-filter). Its `narrowingFilter(Filter)` doesn't work for this, because a filter is still derived underneath it.
+* `DomainEventQueries` has no override on its `Class` and `Collection` overloads, so call `query(Filter, ..)` directly.
+* The subscription DSL has none on `filterFromEventTypes`, so build the `Filter` yourself and pass it to the `subscribe(..)` overload that takes a `StreamSubscriptionFilter` or an `AgnosticSubscriptionFilter`.
+* `@Subscription` and the other subscription annotations have none, so declare the concrete types there instead.
+* An application service takes `ExecuteFilter.from(StreamReadFilter)` in place of `type(..)` or `includeTypes(..)`.
+* `DcbCriteriaBuilder` has none, so build the criterion from CloudEvent type strings with `DcbCriteria.type(String)` or `DcbCriteria.types(String, ..)`.
+
+If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, use an explicit filter. Under such a mapper:
+
+* A declaration the table above refuses is still refused, because the check reads the class hierarchy and never asks the mapper.
+* A concrete class that is neither final nor sealed is one of the refused declarations, so if you can't change such a class, set an explicit filter.
+* Declaring the concrete types still selects their events. The filter it derives matches the whole hierarchy rather than only the types you listed, because every one of them maps to that same string.
+
+### An empty list of types selects nothing on a query {#derived-filter-empty}
+
+`DomainEventQueries.query(Collection)` and its sibling overloads return no events for a `null` or empty collection.
+
+A projection or a `SnapshotView` with no handlers, and `filterFromEventTypes` given no types, do the opposite and match every event.
 
 ## Views
 
@@ -4149,19 +4305,19 @@ A `View<S, E>` is a pure fold, an initial state and an `evolve` that applies one
 {% capture java %}
 record NameState(String userId, String name) {}
 
-View<NameState, DomainEvent> view = View.create(null, (state, event) -> switch (event) {
+View<@Nullable NameState, DomainEvent> view = View.create((state, event) -> switch (event) {
     case NameDefined e    -> new NameState(e.userId(), e.name());
     case NameWasChanged e -> new NameState(state.userId(), e.name());
     default               -> state;
 });
 
 // Applying a list of events gives the current state, which is all a unit test needs
-NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
+@Nullable NameState current = view.evolve(List.of(nameDefined, nameWasChanged));
 {% endcapture %}
 {% capture kotlin %}
 data class NameState(val userId: String, val name: String)
 
-val view: View<NameState?, DomainEvent> = view(initialState = null) { state, event ->
+val view: View<NameState?, DomainEvent> = view { state, event ->
     when (event) {
         is NameDefined    -> NameState(event.userId(), event.name)
         is NameWasChanged -> state!!.copy(name = event.name)
@@ -4172,6 +4328,8 @@ val view: View<NameState?, DomainEvent> = view(initialState = null) { state, eve
 val current: NameState? = view.evolveAll(nameDefined, nameWasChanged)
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Neither example passes an initial state, so the state starts out as `null` and its type is nullable, `@Nullable NameState` in Java and `NameState?` in Kotlin. When the state has a natural starting value, pass it with `View.create(initialState, ...)` or `view(initialState) { }`.
 
 A view can also handle the delivering event's metadata, its stream id and version, global position, and CloudEvent extensions, through the metadata-carrying `evolve(state, metadata, event)` (`View.create(initialState, (state, metadata, event) -> ...)` in Java, `view(initialState) { state, metadata, event -> ... }` in Kotlin). The event-only form applies the event with empty metadata. That lets a view key on the stream id or the global position without carrying either in the event payload. Metadata support was added in 0.31.0.
 
@@ -4210,7 +4368,7 @@ To key on something only the delivery carries rather than the event body, derive
 On the Spring MongoDB stack, `View.materialized(...)` hands you a Mongo-backed `MaterializedView` in one call, over the same `MongoOperations` the rest of Occurrent uses. It stores each instance as a document keyed by the id you derive, retries an optimistic-locking clash with a backoff, and ignores a duplicate-key race by default. Point the blocking [subscription DSL](#subscription-dsl)'s `updateView` at it and the view catches up and then follows the live stream like any other subscription:
 
 ```kotlin
-val view: View<NameState?, DomainEvent> = view(initialState = null) { state, event ->
+val view: View<NameState?, DomainEvent> = view { state, event ->
     when (event) {
         is NameDefined    -> NameState(event.userId(), event.name)
         is NameWasChanged -> state!!.copy(name = event.name)
@@ -4260,11 +4418,15 @@ val enrolledStudents = projection<Int, CourseEvent, String>(initialState = 0) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The builder both assembles the `View` and records the event types you registered handlers for, so the subscription that feeds the projection is filtered to exactly those events. There's no separate list of subscribed types to keep in sync with the fold. The fold returns the state unchanged for any event type without a handler, so pointing a projection at a broader stream is safe for the fold itself.
+The builder both assembles the `View` and records the event types you registered handlers for, so the subscription that feeds the projection is filtered to those events. There's no separate list of subscribed types to keep in sync with the fold. [Deriving the Event Filter](#deriving-the-event-filter) describes how those types become the filter. The fold returns the state unchanged for any event type without a handler, so pointing a projection at a broader stream is safe for the fold itself.
 
 That safety has a limit though. Every event the filter admits is still converted to a domain event before the fold ever sees it, and one the converter can't turn into your event type fails that delivery instead of being ignored. A subscription that keeps redelivering a failing event holds up everything queued behind it, so a broader stream is only safe while it stays inside what the converter can convert.
 
 When you need to select on more than the event type, for example a subject, a source, or a time range, set an explicit `filter(...)` on the builder.
+
+When the state has no natural starting value, leave the initial state out. `Projection.<CourseSummary, CourseEvent, String>builder()` in Java and `projection<CourseSummary, CourseEvent, String> { }` in Kotlin then start with a `null` state, so its type is nullable, `@Nullable CourseSummary` in Java and `CourseSummary?` in Kotlin.
+
+The single-instance builders below have the same no-argument form, `singletonBuilder()` and `singletonProjection { }`, and so does a snapshot view, `SnapshotView.builder()` and `snapshotView { }`.
 
 #### Single-instance projections
 
@@ -4721,6 +4883,8 @@ fun accountSnapshot(): SnapshotView<AccountState, AccountEvent> = snapshotView(A
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+The subscription that keeps the snapshot up to date is filtered to the event types the `SnapshotView` registers handlers for, derived as described in [Deriving the Event Filter](#deriving-the-event-filter). If the `SnapshotView` registers a handler for a type listed as refused in that section, Spring Boot startup fails.
+
 <div class="comment">The declarative <code>@Snapshot</code> annotation works on both the blocking and reactor stacks, for stream and DCB. The application services and the <code>SnapshotViews</code> facade described in the other sections are the programmatic path when you would rather not use the annotation.</div>
 
 ### DCB snapshots
@@ -4848,12 +5012,12 @@ There are two ways to write a saga, and both produce the same `Saga<E, S, C>`, s
 
 #### The Core DSL {#saga-core-dsl}
 
-The core DSL is `Saga.builder(initialState)` in Java and `saga(initialState) { }` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state, or none when the state should start out as `null`. Without one, the state's type is nullable, `@Nullable S` in Java and `S?` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
 
 Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
 
 {% capture kotlin %}
-val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand>(initialState = null) {
+val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand> {
     correlateAll { it.orderId }
     startsOn<OrderPlaced>()
     evolve<OrderPlaced> { _, e -> AwaitingPayment(e.orderId) }
@@ -4877,8 +5041,8 @@ val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand>(initialSt
 }
 {% endcapture %}
 {% capture java %}
-Saga<OrderEvent, OrderSagaState, OrderCommand> orderFulfillment =
-        Saga.<OrderEvent, OrderSagaState, OrderCommand>builder(null)
+Saga<OrderEvent, @Nullable OrderSagaState, OrderCommand> orderFulfillment =
+        Saga.<OrderEvent, OrderSagaState, OrderCommand>builder()
                 .correlateAll(OrderEvent::orderId)
                 .startsOn(OrderPlaced.class)
                 .evolve(OrderPlaced.class, (state, e) -> new AwaitingPayment(e.orderId()))
@@ -5111,8 +5275,6 @@ Saga<ShipmentEvent, FlowState<ShipmentEvent>, DispatchShipment> shipment =
 
 Use `anyOf` when the alternatives share a reaction. A reaction cannot find out which of the alternatives completed the step, so when each alternative needs its own command, write them as separate branches instead, the way `awaiting-decision` does above.
 
-The older `join(...)`, which waited for a list of `Expectation`s, does the same thing as `on(allOf(...))` and is deprecated in favor of it. Existing code keeps working.
-
 `event(...)` also takes a predicate alongside its count, so a match can depend on the arriving event's own data and not only its type. In the example below, `monitoring` completes the moment a reading exceeds a threshold:
 
 {% capture kotlin %}
@@ -5277,8 +5439,6 @@ A guard's `onlyIf` and a `timeout`'s reaction read everything the instance has k
 
 `received.initiating<T>()` is the exception, reaching the start event whichever step you are in and whichever callback you are writing, so building a command from an id on the start event always works.
 
-The deprecated `join`'s reaction used to read everything the instance has kept, and no longer does. It now reads the same events a condition branch's reaction reads, so a `join` past a saga's first step sees nothing from an earlier step, not even another event of the type it was waiting for. A `join` on the first step also stops seeing the start event through `count`, `all`, `first`, `any`, `none` and `asList`, though `received.initiating<T>()` still reaches it.
-
 ###### Counted Conditions and `stepWindow` {#saga-counted-conditions}
 
 A condition declared in a step, such as
@@ -5382,28 +5542,13 @@ Two things happen at run time rather than at build time, and both are deliberate
 
 A saga's event types are also its subscription filter. Occurrent takes the types you registered through `startsOn`, `evolve`, `react`, a step's `on(...)` and an `event(...)` condition, asks the `CloudEventTypeMapper` for the CloudEvent type of each one, and subscribes on those.
 
-A sealed type is expanded into the concrete types it permits, all the way down. A saga declaring a sealed `OrderEvent` subscribes on `OrderEvent`, `OrderPlaced` and `PaymentReserved`, so it receives the concrete events stored under that hierarchy (before 0.33.0 the filter asked only for `OrderEvent`'s own CloudEvent type, so with the mappers Occurrent ships the saga received nothing).
+The types are expanded and checked as described in [Deriving the Event Filter](#deriving-the-event-filter). A saga declaring a sealed `OrderEvent` receives the concrete events stored under it.
 
-Where the concrete types cannot be found, `build()` throws `IllegalArgumentException` naming the type. That covers an interface or an abstract class that is not sealed, and a sealed hierarchy with a level below the declared type that is neither sealed nor final, `non-sealed` in Java, `open class` or `abstract class` in Kotlin. A `sealed class` you can instantiate is no exception, because a sealed declaration says its subtypes are knowable whether or not events are stored under the root's own name.
+If a saga declares a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), `build()` throws `IllegalArgumentException` naming the type.
 
-The remedy to prefer when you own the events is to seal every level, since the saga then keeps working when you add an event type:
+To fix a refused declaration, [seal the hierarchy](#derived-filter-seal) or [declare the concrete types](#derived-filter-concrete). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
-{% capture kotlin %}
-sealed interface OrderEvent
-sealed class Payment : OrderEvent          // was open class or abstract class
-data class PaymentReserved(val orderId: String) : Payment()
-{% endcapture %}
-{% capture java %}
-public sealed interface OrderEvent permits Payment { }
-// was non-sealed class Payment implements OrderEvent
-public sealed class Payment implements OrderEvent permits PaymentReserved { }
-public final class PaymentReserved extends Payment { }
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-When the hierarchy is not yours to seal, or is deliberately open, declare the concrete types instead, one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
-
-Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs none of this. If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one type string, declaring the supertype worked before 0.33.0 and now throws. Declaring the concrete types keeps it working, since they all map to the same string.
+Sealing the hierarchy and declaring the concrete types both keep events arriving under a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, since the saga then subscribes on that string. If a class you need to handle is neither final nor sealed and you can't change it, use `replacementFilter(..)` instead, as [Setting an Explicit Filter](#saga-explicit-filter) shows.
 
 #### Setting an Explicit Filter {#saga-explicit-filter}
 
@@ -5412,7 +5557,7 @@ A saga can also select on more than its declared event types, or subscribe on so
 `narrowingFilter(Filter)` is combined (ANDed) with the selector `eventTypes()` derives, so the saga keeps asking for its own declared types and also requires your condition, on subject, source, data or time:
 
 {% capture java %}
-Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
+Saga.<OrderEvent, OrderState, OrderCommand>builder()
         .correlateAll(OrderEvent::orderId)
         .startsOn(OrderEvent.class)
         .react(OrderEvent.class, (state, event) -> ...)
@@ -5431,10 +5576,10 @@ saga<OrderEvent, OrderCommand> {
 
 Because a selector is still derived, the hierarchy check from [Declared Event Types](#saga-event-types) still runs under a narrowing.
 
-`replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. This is the way out when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, since reflection cannot tell that mapper apart from the default one, and declaring the concrete types would not help either, as they all collapse to the same string:
+`replacementFilter(Filter)` replaces the derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy below the declared types looks like. Use it when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, as [Set an explicit filter](#derived-filter-explicit) explains:
 
 {% capture java %}
-Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
+Saga.<OrderEvent, OrderState, OrderCommand>builder()
         .correlateAll(OrderEvent::orderId)
         .startsOn(OrderEvent.class)
         .react(OrderEvent.class, (state, event) -> ...)
@@ -5453,7 +5598,19 @@ saga<OrderEvent, OrderCommand> {
 
 Setting a replacement switches off the hierarchy check for every event type the saga declares, not only for one whose concrete types you could not enumerate. An array or a primitive declared type is still refused. The check belongs to `Saga.Builder`, `FlowSaga.Builder` and `Saga.create(...)` alone, so a saga you implement directly by hand, rather than through a builder or the factory, never runs it at any `eventTypes()`, and a declared type whose concrete types cannot all be found then leaves it subscribing on a filter that misses events its own handlers would take. Declare the concrete types there, the same thing a builder would otherwise have insisted on. `Saga.create(...)` takes a replacement but not a narrowing, since the saga it returns is an anonymous implementation with nothing left to set afterwards. Implement `Saga` yourself for a narrowing, the same route the factory's own javadoc already sends you down for `onStart` and `isTerminal`.
 
-Both members leave two things for you to get right, since neither is checked for you. The condition has to admit the saga's start events, because one that excludes them means no instance is ever created. It also has to admit the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running. A `replacementFilter` adds two more of its own. Every CloudEvent it admits is converted to a domain event before the saga sees it, so keep it inside what your `CloudEventConverter` can turn into an event, since one it cannot convert fails that delivery rather than being skipped. And a flow saga appends every correlated event it receives to the instance's retained history before it looks at which branch handles it, so a replacement wider than the flow's own types grows that history, taking slots a `stepWindow` cap would otherwise reserve for the step's own events. A saga that declares no event types and sets no replacement derives a selector matching everything, so a narrowing on it is the whole selector, and the conversion obligation above then falls on that narrowing too.
+Neither member checks the condition you give it. Make sure it admits:
+
+* the saga's start events, because a condition that excludes them means no instance is ever created
+* the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running
+
+Two more things apply to a `replacementFilter`:
+
+* Every CloudEvent it admits is converted to a domain event before the saga sees it. Keep it inside what your `CloudEventConverter` can convert, since an event the converter can't convert fails that delivery instead of being skipped.
+* A flow saga appends every correlated event it receives to the instance's retained history before it looks at which branch handles it. So a replacement wider than the flow's own types grows that history.
+
+An event of a type the flow doesn't declare never counts toward a `stepWindow` cap. [Delivery Contract](#saga-delivery-contract) explains when the cap drops such an event, and why a step that only receives such events has no limit from `stepWindow`.
+
+A saga that declares no event types and sets no replacement gets a selector that matches every event. A narrowing on such a saga then becomes the whole selector, so it has to stay inside what your `CloudEventConverter` can convert, the same as a `replacementFilter`.
 
 On a flow saga, either member can also change what a guard sees. A guard's `onlyIf` reads `ReceivedEvents`, so a selector that excludes an event type changes what `received.none(Rejected.class)` or `received.any(Rejected.class)` answers, and a branch can fire that would not have fired otherwise. This is not a narrowing-only risk. A narrowing can only remove matches, so that is the only direction it can move the answer. A replacement can be wider or narrower than the declared types, and does the same thing whenever it is narrower.
 
@@ -5568,7 +5725,7 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 The store's type parameter follows the saga's state, so it is `SagaStateStore<OrderSagaState>` for the core-DSL saga above and `SagaStateStore<FlowState<OrderEvent>>` for the flow one. The `SagaStateStore` persists each instance. `SagaStateStore.inMemory()` is for tests and single-node use, and `SpringMongoSagaStateStore` (in the blocking MongoDB starter) is the durable one. Unlike a read-model store it supports a compare-and-set save, because an event and a timer can touch the same instance concurrently, so the runner detects a lost update and retries instead of overwriting. Timers live in the same stored envelope as the state, not in an external scheduler. A timer poller inside the runner periodically reads instances with a due timer and re-enters them through the same pipeline a live event uses. That means no deadline or JobRunr infrastructure to run, at the cost of firing precision bounded by the poll interval, which does not matter at the minutes-to-days timescale sagas work on.
 
-Building a `SpringMongoSagaStateStore` by hand for a flow saga needs its four-argument constructor, with the application's `CloudEventConverter` passed alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using the three-argument constructor, throws `IllegalArgumentException` rather than silently losing that package independence. A core saga's state carries no such requirement, since it serializes with the application's own `MongoConverter`.
+Building a `SpringMongoSagaStateStore` by hand for a flow saga means passing the application's `CloudEventConverter` alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using a constructor that takes no converter, throws `IllegalArgumentException` rather than falling back to Java class names, which stop matching once an event class moves to another package. A core saga has no such requirement, since it serializes with the application's own `MongoConverter`.
 
 #### Sagas Without Command Types {#sagas-without-command-types}
 
@@ -5809,7 +5966,11 @@ A saga that has run before picks up where it left off either way, because its pe
 
 ###### Forward the Occurrent extensions
 
-A saga recognizes a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. A broker delivers at least once, so an event carrying none of those would make the saga react a second time and issue its commands again on every redelivery. The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs. The event goes unacknowledged, so the problem lands at the listener that dropped the metadata, which is where it can be fixed. Occurrent's own stored events always carry the extensions, so this is about what your listener forwards, not about the event store.
+A saga recognizes a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. That pair, or the position, is the event's redelivery key. A broker delivers at least once, so an event with none of those would make the saga react a second time and issue its commands again on every redelivery.
+
+The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs, instead of acknowledging it. What happens to the event after that is up to your feed. Whatever the feed does, the listener that dropped the metadata sees the exception, and that listener is where it can be fixed.
+
+Occurrent's own stored events always have the extensions, so this only happens with events your listener forwards without them.
 
 Your feed might carry none of that redelivery metadata, another application's broker for example, while every command the saga issues is still safe to receive more than once. When both are true, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always carry the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
 
@@ -5855,11 +6016,61 @@ CommandDispatcher<OrderCommand> dispatcher =
 
 Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` are saved atomically with the rest of the state in the same write, so timers are exactly-once.
 
-A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so a stuck timer never blocks the poller. Nothing isolates it from the saga's other instances, though. A poll fires at most `timerBatchLimit` instances, a hundred by default, and nothing in `findWithDueTimers` requires a store to give a different instance a turn, so once a hundred instances cannot fire their timers the saga can stop firing timers altogether. [Issue 1003](https://github.com/johanhaleby/occurrent/issues/1003) is where that is being fixed. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
+When a `SagaConcurrencyException` exhausts its compare-and-set retries on a live event, the exception propagates to the subscription model, and the whole step is retried wherever that model offers the event again.
 
-A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`. The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
+Whether the event is offered again, and which other events wait behind it, depends on what feeds the subscription. On a push feed your listener decides both. On a broker source, the source's `DeliveryFailurePolicy` setting decides whether the event is offered again.
 
-`stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. There is no cap unless you set one, so an instance that stays in a step while a large number of correlated events arrive keeps all of them, whatever `historyWindow` says. The minimum is 1.
+When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka source delays at most the later records in that record's partition, and it delays nothing once it has parked the record under `PARK`. The RabbitMQ source delays no other message once it has requeued the failed one under `REDELIVER` or parked it under `PARK`.
+
+Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either source.
+
+An instance that keeps failing can be quarantined, so the saga's other instances keep getting their events. Quarantine is off by default. [Quarantined Instances](#saga-quarantined-instances) says what happens to a quarantined instance, what has to be true before one is quarantined, how to turn quarantine on for both `SagaRunnerConfig` and `@Saga`, and why it's off by default.
+
+An instance that isn't quarantined keeps failing for as long as the model keeps offering the event. That ends when:
+
+* the retry succeeds
+* you abandon the instance with `SagaStateStore.delete(sagaId)`
+* you stop the subscription, which stops the whole saga rather than only the failing instance
+
+Only an event the saga routed to an instance can be quarantined. When the converter or `correlate`/`correlateAll` throws, the saga cannot tell which instance the event belongs to, so there is no instance to quarantine.
+
+The runner refuses such an event on every delivery, whatever the budget, because it may still belong to an instance and acknowledging it would lose it. Nothing is written to the state store for it, so no `SagaInstance` shows it.
+
+The first refusal is logged at `WARN`. After that it is logged at `ERROR` once per interval for as long as the model keeps offering the event. The interval is the quarantine budget when one is configured and five minutes when none is. A model that does not offer the event again gets only the `WARN`.
+
+Where the model does offer the event again, fix the converter or the correlation and the saga applies the event in the order it was written, with nothing to feed it by hand.
+
+On the timer path the poller catches what the reaction throws, logs it at `WARN` and leaves the timer due, so one failing timer does not stop the poller. A failing timer never quarantines its instance and records no failure. An `OutOfMemoryError` is not caught per instance, so it ends that poll for every instance after it.
+
+A failing timer can still keep other instances' timers from firing. A poll fires at most `timerBatchLimit` instances, 100 by default, and `findWithDueTimers` does not require a store to give a different instance a turn. Once `timerBatchLimit` instances keep failing their timers, every poll can pick those same instances, and then no other instance's timer fires.
+
+`timerBatchLimit` is set through the `SagaRunnerConfig` constructor, and there is no Spring Boot property for it.
+
+<div class="notification">Giving a different instance a turn when the same timers keep failing is tracked in <a href="https://github.com/johanhaleby/occurrent/issues/1003">issue 1003</a>.</div>
+
+A failing timer stays armed, so once its reaction stops failing a later poll fires it and the instance needs nothing done to it.
+
+Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
+
+A flow saga does not remember its whole history. A condition, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default.
+
+Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition or guard that needs to count back further than 100 events, or lower it to trim what a long-running instance persists.
+
+`historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`.
+
+The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup. Anything older than the window is dropped and not persisted.
+
+`stepWindow(int events)` caps how many of the current step's own events are kept, and it's applied on every delivery. An event counts toward the cap when its type is declared, meaning one of the flow's own `on(...)` branches or an `event(...)` check inside a window condition names it. A repeat of the type that started the instance counts too.
+
+An event of any other type is still retained, but it doesn't count toward the cap. `stepWindow` drops it only when the cap drops a counted event that arrived after it.
+
+For example, take `stepWindow(2)` and the events A, x, B, C, D, where x is of a type no step declares. C arriving drops A and keeps x. D arriving drops B, and x goes with it, because the kept events are always an unbroken run ending with the newest.
+
+`historyWindow` can drop an event that doesn't count toward the cap too. Once the flow has left the step the event arrived in, the event is part of the history kept from earlier steps, and a later transition can drop it the same as a counted one.
+
+Such an event reaches a flow saga only through a `replacementFilter` wider than the flow's own types, or a `CloudEventTypeMapper` that maps several domain types onto one CloudEvent type string. A `narrowingFilter` cannot let one in, because it only narrows the filter derived from the flow's types.
+
+There is no cap unless you set one, so an instance that stays in a step while a large number of correlated events arrive keeps all of them, whatever `historyWindow` says. The minimum is 1.
 
 {% capture kotlin %}
 saga<OrderEvent, OrderCommand> {
@@ -5876,15 +6087,23 @@ FlowSaga.<OrderEvent, OrderCommand>builder()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Set both and an instance keeps at most `historyWindow + 2 * stepWindow + 1` events at any one moment. `stepWindow` is doubled because a transition keeps the events of the step being left so that step's reaction can read them, and the step being entered then fills its own cap before anything is dropped.
+Set both and, at any one moment, an instance keeps at most `historyWindow + 2 * stepWindow + 1` events of the types `stepWindow` counts. Events of any other type come on top of that. `stepWindow` is doubled because a transition keeps the events of the step being left so that step's reaction can read them, and the step being entered then fills its own cap before anything is dropped.
 
 A step condition still completes on the same event it would have without the cap, because its counts are kept in the instance's state instead of being counted from the events again. What reads less is everything that reads the events directly, a guard's `onlyIf`, a `timeout` reaction, and a window condition's reaction. A retry guard counting `PaymentFailed` across a self-looping step therefore needs its threshold to fit inside `stepWindow`, the same requirement `historyWindow` already has.
+
+A step that only receives events of types no step declares keeps growing with no limit from `stepWindow`, since none of those events count toward the cap.
+
+`SpringMongoSagaStateStore` logs a warning when an instance's retained events reach 1,000. It doesn't warn again until the count has dropped below 1,000 and reached it once more. A saga running on a state store of your own gets no such warning.
 
 Two things stay true at any cap of 1 or more. `received.initiating<T>()` reaches the start event, which is kept as the first retained event and never counts against the cap, and the event that fired a branch is the last element of `received.asList()`.
 
 Before a flow can cap its steps, every `event(...)` condition with a predicate needs a name for that predicate. [Counted Conditions and `stepWindow`](#saga-counted-conditions) has the details.
 
 Changing what a capped step waits on while instances are still in it, whether that is an event type or a predicate's name, makes those instances refuse their next delivery with an `IllegalStateException` naming the step. Retrying does not help, because the events those counts would be rebuilt from are gone. Put the previous condition declaration back until those instances have moved on, so they stop refusing deliveries. Delete the instance instead if you don't need to keep it running. An instance still inside the cap counts its kept events again and continues.
+
+A flow saga instance waiting in a step stores that step's name. Renaming or removing the step while instances are still in it makes each of them refuse its next event or timeout with an `IllegalStateException` naming the step, because the new flow definition has no step by that name. Retrying does not help.
+
+To move those instances on, put the step back under its old name, or add a temporary step under the old name that transitions to the new one, until every instance has left it. To unblock an instance before you redeploy, delete it from the `SagaStateStore`.
 
 What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name. So a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
@@ -5977,7 +6196,32 @@ List<SagaInstance> stalled = instances.findByStatus(SagaStatus.ACTIVE, Instant.n
 
 `SagaInstances` reads the saga's state store, so it is not the event subscription answering these questions. `SagaSubscription.instances()` is a shortcut that hands you a view over the store the saga already runs against, which is also why it keeps working after you close the handle. Closing stops that instance's timer poller, but it does not close the store. With no handle at hand, in a separate admin process for instance, build one straight from the store with `SagaInstances.of(stateStore)`.
 
-A `SagaInstance` carries the id, the `SagaStatus` (`ACTIVE` or `COMPLETED`), the created, updated, and completed timestamps, when the next pending timer is due, and which step a flow saga is waiting in. `currentStep()` is `null` for a core saga, which names its states in your own state type rather than in a step the executor knows about.
+A `SagaInstance` holds:
+
+* the id and the `SagaStatus`
+* the created, updated and completed timestamps
+* when the next pending timer is due
+* which step a flow saga is waiting in
+* what the instance is failing on
+
+`currentStep()` is `null` for a core saga, which names its states in your own state type rather than in a step the executor knows about.
+
+The status is `ACTIVE`, `COMPLETED`, or `QUARANTINED`. A quarantined instance stopped on an event it could not handle, so it is neither running nor finished, and [Quarantined Instances](#saga-quarantined-instances) below says what to do with one.
+
+A `null` from `failure()` means no failure is on record. The instance can still be failing, because these failures record nothing:
+
+* a failing timeout
+* a failing event the saga could not route to an instance
+* a failing event on a saga with quarantine off, whether you never turned it on or the runner switched it off at startup because the subscription model cannot guarantee it holds every event it delivers
+* a failing event that has no redelivery key
+* an `OutOfMemoryError`
+* a failing event the instance already counts as handled
+* a failure where the store read or the record write throws, for example a store that can only read an instance together with its state, when that state no longer decodes
+* a failure whose record write loses its compare-and-set to another writer
+
+When the store read or the record write throws, or the write loses its compare-and-set, the next failure tries the write again.
+
+On an `ACTIVE` instance a non-null answer means an event has failed at least once and the instance has not been quarantined, which can still be true after the budget has run out. On a `QUARANTINED` one it means the instance stopped there.
 
 It leaves out the saga's own state and the executor's delivery bookkeeping on purpose. A read model shaped for querying belongs in the [Projection DSL](#views), and reaching into a saga's private state from outside ties your code to how that process happens to be written.
 
@@ -5985,7 +6229,11 @@ There is no way to write through this. Nothing here starts, advances, completes,
 
 `findByStatus` returns the instances in a status whose `updatedAt` falls strictly before the instant you pass, least recently updated first, at most `limit` of them. Pass `Instant.now()` to list everything in a status, or `Instant.now().minus(threshold)` to find the ones that have gone quiet. Stalest-first is what a stuck-instance check wants, because the worst offenders arrive first rather than last. `limit` caps how many instances you get back, there is no paging. Many instances can share the same millisecond `updatedAt`, and resuming a second query from "after that timestamp" would skip the rest of the instances saved in that same millisecond.
 
+`findByStatus(ACTIVE, ...)` does not return a quarantined instance, so once quarantine is on, a check for instances that have stopped moving has to ask for both statuses. Pass `Instant.now()` for the quarantined query rather than a threshold, because a quarantined instance's `updatedAt` stops at the moment it was quarantined and a threshold would hide the ones quarantined most recently.
+
 Enumeration is an optional store capability. A store implements `SagaStateStoreQueries` to support it, both shipped stores do, and `findByStatus` throws an `UnsupportedOperationException` on a store that does not. `find(sagaId)` works on any store, so a store you wrote yourself to run sagas never has to answer an ordered query it does not need.
+
+Enumerating instances is cheap. Listing flow-saga instances never deserializes their state or received events, so a periodic stuck-instance check costs little even with many instances. Rationale in [ADR 0070](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-saga-instance-observation.md).
 
 On the Spring stack the `@Saga` registrar publishes each saga's `SagaInstances` under a registry keyed by saga id:
 
@@ -5993,8 +6241,11 @@ On the Spring stack the `@Saga` registrar publishes each saga's `SagaInstances` 
 @Service
 class SagaDashboard(private val registry: SagaInstancesRegistry) {
 
-    fun stalled(sagaId: String, threshold: Duration): List<SagaInstance> =
-        registry.get(sagaId).findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100)
+    fun stalled(sagaId: String, threshold: Duration): List<SagaInstance> {
+        val instances = registry.get(sagaId)
+        return instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100) +
+                instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 100)
+    }
 
     fun sagaIds(): Set<String> = registry.sagaIds()
 }
@@ -6010,7 +6261,11 @@ class SagaDashboard {
     }
 
     List<SagaInstance> stalled(String sagaId, Duration threshold) {
-        return registry.get(sagaId).findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100);
+        SagaInstances instances = registry.get(sagaId);
+        List<SagaInstance> stalled = new ArrayList<>(
+                instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100));
+        stalled.addAll(instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 100));
+        return stalled;
     }
 }
 {% endcapture %}
@@ -6018,9 +6273,141 @@ class SagaDashboard {
 
 `get(id)` throws and names every id that is registered, which is what you want when the id is a constant in your own code. `find(id)` returns an `Optional` for an id that came from a request or a configuration value. `sagaIds()` lists them so a dashboard does not hardcode ids. Each saga is also published under the bean name `sagaInstances-<id>`, reachable with `getBean` or a `@Qualifier` if you prefer to inject one saga's view directly.
 
+Each saga's running `SagaSubscription` is published the same way, as `sagaSubscription-<id>`. It's the handle `SagaRunner` returns on the programmatic path, so it gives you the saga's event `Subscription` and `waitUntilStarted()` as well as `instances()`. A saga on a push feed that you start through `ManualStartPushSources` gets this bean when you start it, not when the context refreshes.
+
 One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
 
-Enumerating instances is cheap. Listing flow-saga instances never deserializes their state or received events, so a periodic stuck-instance check costs little even with many instances. Rationale in [ADR 0070](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-saga-instance-observation.md).
+##### Quarantined Instances {#saga-quarantined-instances}
+
+Each saga gets one subscription, and that subscription delivers the events for all of its instances. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again.
+
+Quarantine can end that once the instance has been failing for a length of time you set, and only when the conditions in [What else has to be true](#saga-quarantine-conditions) hold as well. It is off by default, and [Turning quarantine on](#saga-quarantine-on) says how to turn it on and why it is off.
+
+When an instance is quarantined, this happens:
+
+* The instance never applies the event it failed on, or any later event addressed to it. Those events still reach the saga, which skips them for this instance without recording them as handled.
+* Its timers stay armed but never fire, so a timeout it relies on to cancel or compensate never runs.
+* The other instances of the saga keep getting their events.
+* Nothing is deleted. The events stay in the event store, and the instance's state stays in the state store.
+* Nothing resumes it. Fixing what made it fail doesn't release it, and deleting it with `SagaStateStore.delete(sagaId)` is the only way out. Whatever business process the instance was running then has to be finished outside the saga.
+
+Before an instance is quarantined, or when quarantine is off, [Delivery Contract](#saga-delivery-contract) says which other events wait behind the failing one.
+
+This lists the quarantined instances of a saga and what each one stopped on:
+
+{% capture kotlin %}
+val stopped = instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 50)
+
+for (instance in stopped) {
+    val failure = instance.failure()
+    println("${instance.sagaId()} stopped on ${failure?.input()} with ${failure?.failureType()}")
+}
+{% endcapture %}
+{% capture java %}
+List<SagaInstance> stopped = instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 50);
+
+for (SagaInstance instance : stopped) {
+    SagaFailure failure = instance.failure();
+    System.out.println(instance.sagaId() + " stopped on " + failure.input() + " with " + failure.failureType());
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+###### The failure record and the quarantine budget {#saga-quarantine-budget}
+
+`failure()` holds the failing event's redelivery key, its global position where the feed assigns one, the exception's class name and message, and `firstFailedAt`, the time the instance's first failure was recorded. A message longer than 1,000 characters is cut short in the record, and the log still has the whole exception.
+
+The runner measures how long the instance has been failing, not how many times it failed. The budget is `SagaRunnerConfig.quarantineAfter`, measured from `firstFailedAt`.
+
+An instance's first failure writes the failure record and is then rethrown, whether or not the write succeeded, so a subscription model that offers the event again lets the saga try again. An event that fails before its instance exists creates the instance to hold the record.
+
+That first write happens only for a failure that could be quarantined later, and [Observing Saga Instances](#observing-saga-instances) lists the failures that record nothing. When nothing was recorded, the next failure is treated as a first failure again.
+
+The same event failing again inside the budget writes nothing more. A different event failing rewrites the record to name that event and keeps `firstFailedAt`. The budget is still measured from `firstFailedAt`, so the instance can be quarantined on the new event's first failure.
+
+Once the instance has been failing for at least the budget, the next failure can move it to `SagaStatus.QUARANTINED` on whichever event it is failing on then. When it does, the runner returns normally instead of rethrowing. The instance never applies that event or any later one of its own, and the other instances of the saga move on to their next events.
+
+Reaching the budget does not quarantine an instance on its own, so an instance past its budget can still be `ACTIVE`. Read its status instead of working it out from the time.
+
+When the event the record names later succeeds, the record is cleared. A different input succeeding does not clear it.
+
+Every way of failing counts once the saga knows which instance the event belongs to. Checking for a redelivery, `evolve`, `react`, your command dispatcher and the state store all do, and an `Error` counts like a `RuntimeException`. The exception is `OutOfMemoryError`. It means the JVM ran out of heap while that instance happened to hold the thread, so the runner rethrows it and the instance keeps its state.
+
+A short MongoDB outage never reaches the runner as a failure. `SpringMongoSagaStateStore` retries every read and write it makes, backing off from 100 ms up to 2 seconds and giving up after ten attempts, so a database that answers again before those run out is not a failure at all. A longer outage does count, but the quarantine is written to that same database, so it quarantines nothing while the outage lasts.
+
+Pass your own [RetryStrategy](#retry-configuration-blocking) to the store's five-argument constructor to change that, or `RetryStrategy.none()` to have every failure reach the runner on the first attempt. A `@Saga` that declares no store of its own gets the default, since the Spring Boot starter builds the store the same way.
+
+An event the saga cannot route to an instance stops no instance at all. [Delivery Contract](#saga-delivery-contract) says what happens to it.
+
+###### Quarantine on a `SagaStateStore` of your own {#saga-quarantine-own-store}
+
+Writing your own `SagaStateStore` takes two more members before quarantine works on an instance whose state can no longer be decoded, which is what a renamed event class or a changed converter produces. That instance is very often the one you most want quarantined, since it fails on every event addressed to it.
+
+`findWithoutState(sagaId)` reads an instance without decoding its state, returning an envelope whose `state()` is `null` and whose other members are all filled in, the way `findByStatus` already does. `compareAndSaveWithoutState(sagaId, envelope, expectedVersion)` writes one back under the same compare-and-set rule as `compareAndSave`, leaving the stored state where it is, so the state the instance stopped on is still there for whoever repairs the converter.
+
+Both are `default` methods that call `find` and `compareAndSave`, so a store that does not override them compiles and runs sagas exactly as before. It just never quarantines an instance it cannot decode, because the runner's own read throws on that instance for the same reason yours does.
+
+Override both or neither. The runner saves the envelope it read, so a store that reads without the state and then writes the whole envelope back replaces the stored state with `null`.
+
+`SpringMongoSagaStateStore` overrides both. `SagaStateStore.inMemory()` does not and does not need to, since it holds each envelope as an object rather than a document, so nothing there can fail to decode. `SagaInstances.find(sagaId)` uses `findWithoutState` too, so looking one instance up by id costs the same as enumerating them and also works for an instance whose state no longer decodes.
+
+###### What else has to be true {#saga-quarantine-conditions}
+
+An instance past its budget is quarantined only when a few other conditions are met too. The next three sections cover the ones you're most likely to run into, and the javadoc on `SagaStatus.QUARANTINED` lists every one.
+
+###### Use a subscription model that keeps every event {#saga-quarantine-model-keeps-every-event}
+
+Quarantine only works on a subscription model that keeps every event it delivers. A model says it does by implementing `HistoryRetainingSubscriptions` and returning `true` from `retainsEveryEvent()`.
+
+Quarantining an instance returns normally, which acknowledges the event to whatever fed it. Behind a broker source, the source then acknowledges the record to the broker, and nothing can hand that event to the saga a second time.
+
+`NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` return `true`, either of them alone or behind `DurableSubscriptionModel`, `CompetingConsumerSubscriptionModel` or `CatchupSubscriptionModel`. The runner looks through those three wrappers to the model inside, so a wrapper around any other model doesn't qualify.
+
+`CatchupThenPushSubscriptionModel` implements `HistoryRetainingSubscriptions` but returns `false` from `retainsEveryEvent()`, since the live events pushed to it need not be in the event store it replays. A push feed on its own does not implement the interface at all.
+
+When you turn quarantine on for a saga on a model that returns `false` from `retainsEveryEvent()`, or doesn't implement `HistoryRetainingSubscriptions`, the runner switches it off again at startup and logs a `WARN` saying why. An instance that keeps failing on such a model is never quarantined.
+
+###### An event without a redelivery key is never quarantined {#saga-quarantine-redelivery-key}
+
+The failure record identifies the failing event by its redelivery key, the stream id with its stream version, or the global position when the event has no stream metadata. An event with neither can't be told apart from its own redelivery, so its budget never runs out and it is never quarantined.
+
+`SagaRunnerConfig.redeliveryDetection` refuses such an event under `REQUIRED`, its default, before the saga sees it. You only meet this case after setting it to `BEST_EFFORT`.
+
+An event store that assigns no global position still gives every event a redelivery key. A store built with `withoutStreamPosition()` gives every event a stream id and a stream version, so a saga on it quarantines like any other and `failure().position()` returns `null`.
+
+###### The runner checks that the model still holds the event {#saga-quarantine-checked-per-event}
+
+Before the runner quarantines an instance, it calls the model's `retains(event)` for the event the instance stopped on. `retains` returns `true` when acknowledging the event doesn't delete the only copy of it. A model that returns `true` from `retainsEveryEvent()` by mistake is caught this way, before the event is gone.
+
+When `retains` returns `false`, or throws, the instance isn't quarantined. The runner logs a `WARN` once per instance, and the instance keeps failing for as long as your model offers the event again.
+
+An event an operator has already deleted from the event store isn't deleted by the acknowledgement, so `retains` returns `true` for it. The instance can then be quarantined, so it doesn't keep failing on an event nobody can supply.
+
+###### Turning quarantine on {#saga-quarantine-on}
+
+Quarantine is off by default, because nothing brings a quarantined instance back. Deleting the instance with `SagaStateStore.delete(sagaId)` is the only way out of quarantine.
+
+With quarantine off, the saga keeps refusing a failing instance's event for as long as your subscription model offers it again. On the MongoDB subscription models the saga's other instances wait behind that event the whole time. Turn quarantine on when you would rather delete one instance than have its failing event hold up the others.
+
+Pass the budget to `withQuarantineAfter`. Five minutes is a reasonable budget.
+
+{% capture kotlin %}
+val config = SagaRunnerConfig.defaults().withQuarantineAfter(Duration.ofMinutes(5))
+{% endcapture %}
+{% capture java %}
+SagaRunnerConfig config = SagaRunnerConfig.defaults().withQuarantineAfter(Duration.ofMinutes(5));
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`withQuarantineAfter(null)` throws, and so does a zero or negative budget. `disableQuarantine()` turns quarantine off again.
+
+On the annotation path you never build a `SagaRunnerConfig`, so the budget is the property `occurrent.saga.quarantine-after`, one value for every `@Saga` in the application. It has no default. Leave it out, or leave it blank, to keep quarantine off, or set it to a positive duration to turn it on. Zero or a negative value stops an application with at least one `@Saga` from starting.
+
+```properties
+occurrent.saga.quarantine-after=5m
+```
+
+The design, including why releasing an instance back into service is harder than it looks, is in [ADR 0134](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0134-a-saga-instance-that-keeps-failing-is-quarantined-at-its-own-position.md).
 
 # Layer 2: Spring Boot {#layer-2}
 
@@ -6111,6 +6498,21 @@ occurrent:
 
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java)
 to find which configuration properties that are supported.
+
+The settings that only apply to a MongoDB event store or a MongoDB subscription model have `mongodb` in their key:
+
+| Key | Default | Deprecated key it replaces |
+|:---|:---|:---|
+| `occurrent.event-store.mongodb.collection` | `events` | `occurrent.event-store.collection` |
+| `occurrent.event-store.mongodb.time-representation` | `DATE` | `occurrent.event-store.time-representation` |
+| `occurrent.subscription.mongodb.collection` | `subscriptions` | `occurrent.subscription.collection` |
+| `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` | `true` | `occurrent.subscription.restart-on-change-stream-history-lost` |
+
+The deprecated keys still work, and will be removed two releases after 0.34.0.
+
+You can set both the old and the new key as long as they have the same value. That way an old key you have not found yet, in an environment variable for example, does not break a configuration you have already migrated. If the two values differ, the application fails at startup with an error that names both keys.
+
+The `org.occurrent.UpgradeToOccurrent_0_34` OpenRewrite recipe renames the keys in your `.properties` and `.yaml` files, as described in [section 4 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb). It can't rename environment variables such as `OCCURRENT_EVENT_STORE_COLLECTION`, so you have to find those in your deployment configuration and rename them yourself.
 
 ### Deferring Subscription Startup {#deferring-subscription-startup}
 
@@ -6212,7 +6614,7 @@ For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` 
 
 The filter Occurrent derives from a sealed type names the declared type as well as the concrete types it permits. That only matters if you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto the type string of the type it was declared with, because such a subscription used to receive nothing at all. No mapper Occurrent ships stores an event under a sealed interface's own type, so nothing changes for the default setup.
 
-The hierarchy has to be sealed or final all the way down. A subscription on an interface or an abstract class that is not sealed, or on an array, is refused at startup, and so is one on a sealed hierarchy with a level below the declared type that is neither sealed nor final, `non-sealed` in Java, `open class` or `abstract class` in Kotlin. The message names the type and points you at `eventTypes()`. `@Saga` derives its filter the same way and refuses the same shapes when the saga is built, which [Declared Event Types](#saga-event-types) covers. `@Projection` derives its filter differently, from the types you register with `on(...)`, and does not expand or refuse a sealed type.
+If you declare a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), Spring Boot startup fails. The message names the type and points you at `eventTypes()`. The same section has a table of when each of the other places refuses one.
 
 ### Event Metadata
 
@@ -7942,6 +8344,171 @@ The reactor `IntrospectableSubscriptions`, in `occurrent-subscription-api-reacto
 # Upgrading
 
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
+
+## Upgrading to 0.34.0 {#upgrading-to-0-34-0}
+
+The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
+
+These changes can stop your code from compiling. Each item below names the code it affects:
+
+* the removal of `join`, `expect<T>` and `Expectation`, for any code that uses them
+* a fourth component on `WriteResult` and `DcbAppendResult`, for a record pattern that deconstructs either
+* `SagaStatus.QUARANTINED`, `SagaInstance.failure()` and new record components on `SagaEnvelope` and `SagaRunnerConfig`, for an exhaustive `switch` or Kotlin `when` over `SagaStatus`, a class that implements `SagaInstance`, or a record pattern over either record
+* the removed `protected` constructor of `SpringMongoSubscription`, for a subclass or code that creates one
+* `globalCheckpointAsOfNow()`, which has no default, for a reactor `CheckpointAwareSubscriptionModel` of your own
+* the `Mono<Void>` the reactor `cancelSubscription(..)` returns, for a class that implements it
+
+The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) covers these and every change in behaviour, grouped by area, with what to do about each one. These points from it aren't covered elsewhere on this page:
+
+* An equality assertion on a whole `WriteResult` or `DcbAppendResult` fails, because every write that persists an event gets a new append id. Compare only the components you care about.
+* A reactor `@Projection`, `@Saga` or `@Snapshot` factory method that returns `null` fails startup with `IllegalStateException`, as on the blocking stack.
+* An HTTP endpoint whose caller retries can call `acceptOrDefer(CloudEvent)`, the same as a RabbitMQ or Kafka listener.
+
+### Repairing events damaged before 0.34.0 {#update-event-repair}
+
+On 0.33.0 and earlier, `updateEvent` on a MongoDB event store could damage the values the store owns, an event's `position`, its DCB tags, its `streamId` and its `streamVersion`:
+
+* It wrote `position` back as a string instead of a number.
+* It didn't write back the indexed `dcbTags` array of a DCB event.
+* An update function that built a replacement event from scratch could drop or change any of them.
+
+So if you called `updateEvent` on a MongoDB event store running 0.33.0 or earlier, some of your events may be damaged.
+
+A damaged event is left out of reads without any error:
+
+* Position-ordered reads and position-based catch-up skip an event whose `position` is a string or missing.
+* DCB reads, `exists` and `count` find a DCB event only through its `dcbTags` array, so they miss it when they look for a tag the array lacks.
+* The conflict query behind a conditional append misses a damaged DCB event too, so an append that should have been refused is accepted.
+
+#### Finding damaged events at startup {#update-event-repair-startup-check}
+
+A MongoDB event store that writes `position` checks for a `position` stored as a string when it starts, and logs a warning that points at the repair. On a store that was never damaged the check adds almost nothing to startup, because it looks for a string `position` in the `position` index and finds none.
+
+That check only finds a damaged `position`. A startup without the warning doesn't rule out the damage described under [what the repair cannot find](#update-event-repair-limits).
+
+To make the store refuse to start over such an event, set `requireRepairedEvents(true)` on its `EventStoreConfig.Builder`. It's off by default. When it's on, the store refuses to start while any of these is true:
+
+* an event's `position` is not a positive integer, or is above the store's position counter
+* a DCB event's `dcbtags` has an empty line or whitespace around a tag
+* a DCB event's `dcbTags` array doesn't hold the tags its `dcbtags` lists
+* an event without `dcbtags` has a `dcbTags` field
+* the counter is negative, or is not the int32 or int64 every writer stores
+
+A missing counter document counts as zero, since every read takes it to be zero.
+
+So `requireRepairedEvents(true)` also finds damage the warning can't see:
+
+* a `position` that is a string, `null`, `NaN` or an array
+* a DCB event whose position is gone
+* a position set by hand that no store would assign
+* a tag array that is missing or names other tags
+* an event collection renamed without its `_position` collection
+
+A non-DCB event with no `position` field at all is left to `requireBackfilledPosition`.
+
+The Spring Boot starters have no property for `requireRepairedEvents`, so with Spring Boot you define your own `EventStoreConfig` bean to turn it on.
+
+With `requireRepairedEvents(true)` the store runs the check even when it writes no `position`. Comparing a tag array with `dcbtags` can't use an index, so a startup that finds no damage reads the whole collection.
+
+An event the repair [reports instead of fixing](#update-event-repair-unrecoverable), such as a DCB event whose position is gone, can keep a store with `requireRepairedEvents(true)` from starting even after a repair run. The store keeps refusing to start until you fix the event by hand, as step 5 of the [repair runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/update-event-repair.md) describes. You can also turn the setting off once you've accepted that event.
+
+#### Running the repair {#update-event-repair-run}
+
+The repair is a separate module, `org.occurrent:occurrent-eventstore-mongodb-update-event-repair`, and you run it yourself. The store only warns or refuses to start. It never changes a damaged event.
+
+{% capture java %}
+MongoDatabase database = mongoClient.getDatabase("my-database");
+UpdateEventRepair repair = new UpdateEventRepair(database, "events", UpdateEventRepairOptions.defaults());
+
+UpdateEventRepairReport report = repair.report();   // counts the damage, writes nothing
+UpdateEventRepairResult result = repair.run();      // repairs it
+{% endcapture %}
+{% capture kotlin %}
+val database = mongoClient.getDatabase("my-database")
+val repair = UpdateEventRepair(database, "events", UpdateEventRepairOptions.defaults())
+
+val report = repair.report()   // counts the damage, writes nothing
+val result = repair.run()      // repairs it
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+`report()` counts the damage and writes nothing. `run()` repairs it and only touches events that still look damaged, so running it twice is safe. If a run is killed, start it again and it resumes from a checkpoint document.
+
+The module also builds a runnable jar with the `cli` classifier. It takes the arguments `<mongoUri> <database> <collection> [report|repair]`, and only reports unless the last argument is `repair`. A repair that leaves an event for a person to look at exits with status `2`, so a job scheduler doesn't record it as a clean run.
+
+Before you start:
+
+* Upgrade every instance that writes to the collection to 0.34.0. The repair goes through the collection once in `_id` order and never goes back. An instance still on an older version can damage an event the repair has already passed, and the run then finishes even though it has left the collection broken.
+* Plan for a full read. `report()` and `run()` both read the whole collection, because finding an event whose tag array doesn't hold its tags can't use an index. On a large store, run them during a quiet period.
+* Run one repair at a time. Two runs at once share one checkpoint document, and the first to finish deletes it while the other is still going.
+
+A run retries the errors the MongoDB driver retries a read or a write on, as MongoDB's retryable reads and retryable writes specifications define them:
+
+* a lost connection
+* a cleared connection pool
+* an error labelled `RetryableWriteError`
+* a command or write concern error with one of the codes those specifications list, such as a primary stepping down or a server shutting down
+* a failure to authenticate that one of those errors caused
+
+It doubles the wait before each new attempt, up to 2 seconds, never stops trying, and logs each retry at `WARN`.
+
+Any other error ends the run at once, a user without the privileges the run needs for example. So does finding no server before the driver's server selection timeout runs out. Fix the cause and start the run again.
+
+The repair fixes the stored events, not the checkpoints of your subscriptions. A consumer that reads in position order, a position-based catch-up for example, may have moved past a repaired event's position before the repair reached that event. It never goes back for it.
+
+`UpdateEventRepairResult.minRepairedPosition()` and `maxRepairedPosition()` give the lowest and highest position the run repaired, and the finished run logs the same two numbers:
+
+* A consumer whose checkpoint is below the lowest one hasn't reached a repaired event yet and needs nothing from you.
+* A consumer whose checkpoint is at or above it may have skipped a repaired event.
+
+A later run only reports the positions it repaired itself, so keep the range from every run. A run that was killed and resumed can report a wider range than it actually repaired, and more unrecoverable events than there really are, but never a narrower range or fewer events.
+
+The [repair runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/update-event-repair.md) has the full sequence. That includes the queries that tell you whether you're affected, what to do with each event the tool won't fix by itself, and how to replay or reconcile a consumer that skipped a repaired event.
+
+#### What the repair restores, and what it cannot find {#update-event-repair-limits}
+
+The repair rebuilds `position` from the string the document still holds. It rebuilds the DCB tag index from the `dcbtags` extension, which is a string and so came through intact:
+
+* It rebuilds the index whenever the index doesn't hold the tags `dcbtags` lists.
+* It rewrites a `dcbtags` with whitespace around a tag the way an append writes it.
+
+It reuses the store's own mappers, so a repaired event is what a running store would have written.
+
+A position the repair restores is the value the document holds, and the repair has no way to check that value. If an update function set `position` itself, `updateEvent` on 0.33.0 and earlier kept that number like any other.
+
+The repair catches three kinds of wrong value and reports them instead of restoring them, as the table below shows. They are a value another event already holds, a value at or below zero, and a value above the highest position the store has handed out. A wrong value that none of those three checks catches looks exactly like the event's own position, so the repair restores it and counts it as repaired.
+
+If your update functions never set `position`, every position the repair restores is the event's own. If they did, a clean run doesn't prove the positions are right, and only a record kept outside the store can tell you.
+
+The tool can't see two kinds of damage. Both come from an update function that returned a replacement event built from scratch:
+
+* It dropped the `dcbtags` extension. The document then no longer looks like a DCB event at all.
+* It dropped the `position` of a plain stream event. The document then looks like an event written before `position` existed.
+
+A store that writes `position` also runs a separate startup check, for events with no `position` at all. It logs a warning when it finds one, or refuses to start when `requireBackfilledPosition(true)` is set on its `EventStoreConfig.Builder`.
+
+The warning and the refusal both point at the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md). They also tell you to read the repair runbook first if your application called `updateEvent` on 0.33.0 or earlier. The position backfill gives every event without a `position` a new one, so an event that lost its `position` to an update function would get a position it never had, and that can't be undone.
+
+#### Events the repair reports instead of fixing {#update-event-repair-unrecoverable}
+
+Where `updateEvent` on 0.33.0 or earlier destroyed the only copy of a value, there is nothing left to rebuild it from. The tool then names the event by `_id` and leaves that value alone. `UpdateEventRepairResult.unrecoverableEvents()` contains up to 1,000 findings by default (`UpdateEventRepairOptions.maxReportedUnrecoverable`), and every one is logged at `WARN`.
+
+|  Reason | What it means | What to do |
+|:----|:------|:----|
+| `POSITION_LOST` | The event has DCB tags, so it was written with a position, and the document has no `position` field or holds `null` in it. | The tag index is rebuilt and the event stays outside position-ordered reads and DCB reads. Set the position by hand if your own records have it. |
+| `POSITION_ALREADY_TAKEN` | The position is a string holding a value another event already holds as a number, which the unique `position` index refuses. | The event is left exactly as it was, tag index included. Look at both events and decide which keeps the position, since nothing in either document says. |
+| `POSITION_NOT_A_NUMBER` | The `position` isn't a whole number. It's a string that doesn't parse as one, or a stored fraction, NaN, array or number above the largest `long`. | No known path produces this, so investigate before changing anything. The tag index is rebuilt either way, except next to an array position, which MongoDB will not index alongside it. Fix the position and run the repair again. |
+| `POSITION_NOT_POSITIVE` | The position is zero or negative, which is not a value any store assigns. | Treat it as a lost position when an update function set `position` itself. A mistake in a position set by hand produces it too, and then you set the position again. |
+| `POSITION_ABOVE_COUNTER` | The position is above the store's position counter, the highest position the store has handed out, so the store never assigned it. DCB reads and position-ordered reads stop at that counter, so they skip the event anyway. | Treat it as a lost position. Without a counter document, or with a counter that is not the int32 or int64 every writer stores, the repair has no ceiling and never reports this. `requireRepairedEvents(true)` refuses such a store until you fix the counter, as step 5 of the runbook describes. |
+| `UNREADABLE` | The `dcbtags` extension is not a string, is an explicit null, or does not decode to a set of tags, an empty line for instance. Or the event has a `dcbTags` index and no `dcbtags`, and then nothing says whether the index is stray or the tags were lost, so neither field is written. Nothing Occurrent writes produces this. | The document was most likely edited outside Occurrent, so find out how before changing it. The run continues past it, and a readable `position` is still repaired. |
+
+The reasons are independent of each other, so an event can be counted as repaired and still appear here. A `POSITION_LOST` event gets its tag index back, which is a repair, while its position stays gone.
+
+`unrecoverableEventCount()` counts events rather than findings, so an event with two things wrong with it counts once.
+
+`eventsWithLostPosition()` counts the events in the collection that have DCB tags and no `position` at all. A run is clean only when it and `unrecoverableEventCount()` are both zero.
+
+`eventsWithLostPosition()` is counted from the collection when the run finishes, so it includes events whose tag index an earlier run already rebuilt.
 
 ## Upgrading to 0.33.0 {#upgrading-to-0-33-0}
 
