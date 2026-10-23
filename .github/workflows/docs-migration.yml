@@ -1,0 +1,37 @@
+# Checks the scripts that guard the move to the new docs site (see _migration/README.md).
+name: Docs migration
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test the migration scripts
+        run: node --test '_migration/test/*.test.mjs'
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.3.6
+          bundler-cache: true
+
+      - name: Build today's site with Jekyll
+        run: bundle exec jekyll build -d _site
+
+      - name: Check the inventory against the page Jekyll built
+        run: node _migration/check-against-jekyll.mjs _site/documentation.html
+
+      - name: Report what the new site still lacks
+        run: node _migration/verify.mjs --report

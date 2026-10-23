@@ -27,3 +27,7 @@ Human-facing prose (documentation, news posts, PR descriptions) follows Johan's 
 ## Release workflow
 
 Documentation for an unreleased Occurrent feature lives on its own branch, one branch and pull request per feature, and is held until the matching library release ships. `main` tracks the released site, so do not push feature documentation straight to `main`.
+
+## Docs migration
+
+The docs are moving from `pages/docs/docs.md` to a multi-page site. Until that is done, CI checks that every anchor and code block on today's page is accounted for, see [`_migration/README.md`](_migration/README.md). Editing `docs.md` as usual needs nothing extra. If `check-against-jekyll.mjs` fails after a docs change, fix the parser in `_migration/lib.mjs` rather than the docs.
