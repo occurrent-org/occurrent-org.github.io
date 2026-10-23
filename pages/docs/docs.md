@@ -3433,7 +3433,7 @@ When it starts failing, the subscription:
 * applies the events it has already taken in, and those its handler writes meanwhile
 * then fails for good
 
-A failed catch-up also refuses each event from anywhere else that is still waiting, without applying it.
+A failed catch-up also refuses the events that other callers fed while the replay ran, and doesn't apply them.
 
 To recover, cancel the subscription and subscribe again. Once the marker is gone, its catch-up replays the history. If deleting the marker still fails after 3 retries, the subscription logs an error naming the subscription id, and you have to delete the marker from the `CheckpointStorage` by hand before subscribing again.
 
@@ -3443,7 +3443,7 @@ Feeding `accept(..)` from the write path of a durable event store, such as Mongo
 
 A handler that feeds another `PushSubscriptionModel` from inside its own subscription has to act on the outcome the `Mono` from `acceptOrDefer(..)` completes with, because nothing redelivers an event that the other model refuses. For example, fail with an error on anything but `DELIVERED` or `FILTERED`, so the outer handler fails instead of completing as if the event had been handled. Calling `accept(..)` there is no safer, since its `Mono` also completes normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
 
-As on the blocking side, [one model feeds one consumer](#push-subscription-blocking), and a second projection registering on it fails at startup.
+As on the blocking side, [a `PushSubscriptionModel` takes one projection](#push-subscription-blocking), and registering a second one fails at startup.
 
 The reactive model also takes an optional `PushObserver`, for the same reason as the [blocking model](#push-subscription-blocking-observer). The constructor arguments, the six outcomes, and what happens when the filter or the observer itself throws are the same on both stacks.
 
