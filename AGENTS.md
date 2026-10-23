@@ -30,4 +30,4 @@ Documentation for an unreleased Occurrent feature lives on its own branch, one b
 
 ## Docs migration
 
-The docs are moving from `pages/docs/docs.md` to a multi-page site. Until that is done, CI checks that every anchor and code block on today's page is accounted for, see [`_migration/README.md`](_migration/README.md). Editing `docs.md` as usual needs nothing extra. If `check-against-jekyll.mjs` fails after a docs change, fix the parser in `_migration/lib.mjs` rather than the docs.
+The docs are moving from `pages/docs/docs.md` to a multi-page Starlight site in `site/`, see [`site/README.md`](site/README.md). It isn't live yet. Until the move is done, CI checks that every anchor and code block on today's page is accounted for, see [`_migration/README.md`](_migration/README.md). Editing `docs.md` as usual needs nothing extra. If `check-against-jekyll.mjs` fails after a docs change, fix the parser in `_migration/lib.mjs` rather than the docs.

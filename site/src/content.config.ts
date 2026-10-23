@@ -1,0 +1,20 @@
+import { defineCollection } from "astro:content";
+import { z } from "astro/zod";
+import { docsLoader } from "@astrojs/starlight/loaders";
+import { docsSchema } from "@astrojs/starlight/schema";
+
+// Every page says which layer, stack and programming model it is about, and which modules it needs.
+// remark-page-meta.mjs shows this under the page title, so it also ends up in the page's Markdown copy.
+export const collections = {
+    docs: defineCollection({
+        loader: docsLoader(),
+        schema: docsSchema({
+            extend: z.object({
+                layer: z.enum(["0", "1", "spring-boot", "3"]).optional(),
+                stack: z.array(z.enum(["plain-java", "spring-data", "spring-boot"])).optional(),
+                model: z.array(z.enum(["blocking", "reactive"])).optional(),
+                modules: z.array(z.string()).optional(),
+            }),
+        }),
+    }),
+};

@@ -106,3 +106,8 @@ Temporary Items
 .bundle/
 
 vendor/bundle/
+
+### Starlight site ###
+site/node_modules/
+site/dist/
+site/.astro/

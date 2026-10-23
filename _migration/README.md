@@ -32,7 +32,10 @@ Run `node _migration/inventory.mjs` for the totals, or add `--out inventory.json
 node --test '_migration/test/*.test.mjs'
 bundle exec jekyll build -d _site
 node _migration/check-against-jekyll.mjs _site/documentation.html
+(cd site && npm ci && npm run build)
 node _migration/verify.mjs --report
 ```
+
+`verify.mjs` reads the new site's sources from `site/src/content/docs` and the built pages from `site/dist`. A page's title has the id `_top`, so an old anchor for a whole section that became a page maps to `/docs/<group>/<page>/#_top`.
 
 CI runs all of this on every pull request. `verify.mjs` runs with `--report` until the content has moved to the new site, because until then every anchor is reported as missing. Once the content is in, CI drops `--report` and a gap fails the build.
