@@ -1996,9 +1996,9 @@ It skips the replay and starts delivering the buffered and future live events di
 
 A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.accept(metadata, event)` beside the plain `feed.accept(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
 
-###### What the feed refuses {#feeding-refusals}
+###### When the feed throws {#feeding-refusals}
 
-A `DomainEventFeed` or `CatchupProjectionFeed` refuses three things rather than let a projection silently do the wrong thing:
+A `DomainEventFeed` or `CatchupProjectionFeed` throws an exception in these three cases, instead of losing the event or applying it to the wrong projection instance:
 
 * `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, on both the blocking and reactor feeds. The durable checkpoint key it derives from `id` must be unique across every registered projection.
 * A projection keyed by metadata that is fed through the metadata-less `acceptAndWait(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `acceptAndWait(metadata, event)` instead.
