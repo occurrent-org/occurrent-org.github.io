@@ -94,6 +94,11 @@ permalink: /documentation
 * * [Querying Domain Events](#query-dsl)
 * * * [DCB Query DSL](#dcb-query-dsl)
 * * [Subscribing to Domain Events](#subscription-dsl)
+* * [Deriving the Event Filter](#deriving-the-event-filter)
+* * * [Seal the Hierarchy](#derived-filter-seal)
+* * * [Declare the Concrete Event Types](#derived-filter-concrete)
+* * * [Set an Explicit Filter](#derived-filter-explicit)
+* * * [An Empty List of Types Selects Nothing on a Query](#derived-filter-empty)
 * * [Views](#views)
 * * * [The View DSL](#view-dsl)
 * * * * [Storing a view](#materialized-view)
@@ -3930,6 +3935,10 @@ GameStarted event1 = domainEventQueries.queryOne(GameStarted.class); // Find the
 GamePlayed event2 = domainEventQueries.queryOne(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")); // Find event with this id
 ```
 
+`query(GameStarted.class, GameEnded.class)` and the `Collection` overloads derive a filter from the types you list, as described in [Deriving the Event Filter](#deriving-the-event-filter). If a query names a type listed as refused in that section, the query throws.
+
+Given a `null` or empty collection, these overloads return no events. [An empty list of types selects nothing on a query](#derived-filter-empty) says how that differs from a projection.
+
 There are also some Kotlin extensions that you can use to query for a `Sequence` of events instead of a `Stream`:
  ```kotlin
  val events : Sequence<DomainEvent> = domainEventQueries.queryForSequence(GamePlayed::class, GameWon::class, skip = 2) // Find only events of this type and skip the first two events
@@ -4029,11 +4038,151 @@ subscriptions.subscribe("gameStarted", GameStarted.class, gameStarted -> {
 For this to work, your domain events must all "implement" a `DomainEvent` interface (or a sealed class in Kotlin). Note that `DomainEvent` is something you create yourself, 
 it's not something that is provided by Occurrent.
 
+`subscribe(..)` derives the subscription filter from the event types you name, as described in [Deriving the Event Filter](#deriving-the-event-filter). If you name a type listed as refused in that section, `subscribe(..)` throws.
+
 As of version 0.17.0 you can also get metadata (such as stream version, stream id and all other cloud event extension properties) when consuming an event:
 
 {% include macros/subscription/dsl/subscription_dsl_metadata_example.md %}
 
 `Subscriptions` and `subscriptions(...)` accept any `Subscribable`. That includes a [`PushSubscriptionModel`](#push-subscription-blocking) (or its [reactive counterpart](#push-subscription-reactive)), which feeds events from a broker such as RabbitMQ or Kafka instead of reading a MongoDB change stream.
+
+## Deriving the Event Filter {#deriving-the-event-filter}
+
+A projection, a snapshot view, a saga, a subscription and a query all say which event types they handle, and Occurrent turns that list into the filter that selects events for them. An application service's `ExecuteFilter` and a `DcbCriteriaBuilder` criterion name event types the same way. There is no separate list of subscribed types to keep in sync with the handlers.
+
+A sealed type is expanded into every concrete type it permits, all the way down, so it selects more than the type you named. A projection with one handler on a sealed `OrderEvent` asks for `OrderEvent`, `OrderPlaced` and `PaymentReserved`, and receives the concrete events stored under that hierarchy:
+
+{% capture java %}
+public sealed interface OrderEvent permits OrderPlaced, PaymentReserved {
+    String orderId();
+}
+public record OrderPlaced(String orderId) implements OrderEvent { }
+public record PaymentReserved(String orderId) implements OrderEvent { }
+
+// One handler, and both OrderPlaced and PaymentReserved arrive
+Projection<Integer, OrderEvent, String> orderCount =
+        Projection.<Integer, OrderEvent, String>builder(0)
+                .id(OrderEvent::orderId)
+                .on(OrderEvent.class, (count, event) -> count + 1)
+                .build();
+{% endcapture %}
+{% capture kotlin %}
+sealed interface OrderEvent {
+    val orderId: String
+}
+data class OrderPlaced(override val orderId: String) : OrderEvent
+data class PaymentReserved(override val orderId: String) : OrderEvent
+
+// One handler, and both OrderPlaced and PaymentReserved arrive
+val orderCount = projection<Int, OrderEvent, String>(initialState = 0) {
+    id { event -> event.orderId }
+    on<OrderEvent> { count, _ -> count + 1 }
+}
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+When Occurrent can't find the concrete types, it refuses the declaration with an `IllegalArgumentException` that names the type. That happens for these declared types:
+
+| Declared type | Java | Kotlin |
+|---|---|---|
+| An interface that is not sealed | `interface OrderEvent` | `interface OrderEvent` |
+| An abstract class that is not sealed | `abstract class OrderEvent` | `abstract class OrderEvent` |
+| A sealed hierarchy reopened below the declared type | `non-sealed class Payment implements OrderEvent` | `open class Payment : OrderEvent` or `abstract class Payment : OrderEvent` |
+| A concrete class that is neither final nor sealed | `class OrderPlaced` | `open class OrderPlaced` |
+| An array type | `OrderEvent[]` | `Array<OrderEvent>` |
+| A primitive class literal | `int.class` | `Int::class` |
+
+A final class is accepted, and so is a sealed type whose subtypes are all sealed or final, all the way down. Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs nothing from you.
+
+A `sealed class` you can instantiate is accepted too. Its filter names the class itself as well as every type it permits.
+
+Enums are accepted as well, including ones whose constants have bodies, and so is a sealed interface that permits an enum. A constant with a body is stored under its own class, `PaymentEvent$Reserved` for example, while a constant without one is stored under the enum class itself. Decide whether a constant has a body before you have events in the store.
+
+A refusal is thrown when the filter is derived, and each place derives it at a different moment. None of them waits until an event is delivered.
+
+| Where you declared the types | Where a refusal is thrown |
+|---|---|
+| A `Projection` started by `ProjectionRunner.project(..)` | that call |
+| A `Projection` given to `DomainEventFeed.register(..)` or `CatchupProjectionFeed.create(..)` | that call |
+| A `Projection` read on demand with `Projections.project(projection, queries)` | that read |
+| A `@Projection` or `@Snapshot` factory method | Spring Boot startup, while the bean is processed |
+| `@Subscription`, `@StreamSubscription`, `@SynchronousSubscription` and `@DcbSubscription` | Spring Boot startup |
+| The [subscription DSL](#subscription-dsl)'s `subscribe(..)`, and `filterFromEventTypes` under it | that call |
+| `DomainEventQueries.query(Class..)` and `query(Collection)` | each query |
+| A saga built with `Saga.Builder` or `FlowSaga.Builder` | `build()` |
+| A saga made with the `Saga.create(..)` factory | that call |
+| `ExecuteFilter.type(..)` or `includeTypes(..)`, and Kotlin's `ExecuteFilters` equivalents | each application service `execute(..)` call given that filter |
+| `DcbCriteriaBuilder.type(..)` or `types(..)` | that call |
+
+`ExecuteFilter.excludeTypes(..)` excludes more instead of refusing, because excluding a supertype has to exclude everything under it. It excludes the declared type and every concrete type it can find below it by following `permits` clauses. A type it can't reach that way stays in the read.
+
+`excludeTypes(..)` refuses an array or a primitive type. It also refuses an interface or a non-sealed abstract class with nothing concrete found below it, since no event is stored under that type's own name with the mappers Occurrent ships.
+
+`excludeTypes(..)` doesn't refuse a sealed type that permits an interface or abstract class that is not sealed. With `ReflectionCloudEventTypeMapper` it excludes nothing below that interface or abstract class, so seal the hierarchy or exclude the concrete types.
+
+A `DcbCriteriaBuilder` seeded with a boundary that excludes types can fail in one more way. A sealed type passed to `type(..)` or `types(..)` expands to its concrete types, and when one of them is a type the boundary excludes, the call throws `IllegalArgumentException` saying types and excluded types cannot overlap.
+
+A criterion built from a sealed type also matches every concrete type it permits when you use it in `DcbAppendCondition.failIfEventsMatch(..)`, so the append fails on a concurrent write of any of them.
+
+There are three ways to fix a refused declaration, and which one fits depends on who owns the events.
+
+### Seal the hierarchy {#derived-filter-seal}
+
+Prefer this when you own the events, because the declaration then keeps working as you add event types under it:
+
+{% capture java %}
+// Before, refused, since Payment reopens the hierarchy and nothing below it can be found
+public sealed interface OrderEvent permits Payment { }
+public non-sealed class Payment implements OrderEvent { }
+
+// After
+public sealed interface OrderEvent permits Payment { }
+public sealed class Payment implements OrderEvent permits PaymentReserved { }
+public final class PaymentReserved extends Payment { }
+{% endcapture %}
+{% capture kotlin %}
+sealed interface OrderEvent
+sealed class Payment : OrderEvent          // was open class or abstract class
+data class PaymentReserved(val orderId: String) : Payment()
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+For a concrete class that is neither final nor sealed, marking it `final` is the smaller fix when nothing extends it. In Kotlin that means dropping `open`, since a Kotlin class is final unless it says otherwise.
+
+### Declare the concrete event types {#derived-filter-concrete}
+
+Use this when the hierarchy is not yours to seal, or is deliberately open. List the concrete types where you would have named the supertype:
+
+* One handler per concrete type on a `Projection`, a `SnapshotView` or a saga, in place of a single handler on the supertype.
+* `filterFromEventTypes(converter, arrayOf(OrderPlaced::class, PaymentReserved::class))` on the [subscription DSL](#subscription-dsl).
+* `domainEventQueries.query(OrderPlaced.class, PaymentReserved.class)` on the [query DSL](#query-dsl).
+* The concrete types in the `eventTypes` attribute of `@Subscription` and the other subscription annotations.
+* `ExecuteFilter.includeTypes(OrderPlaced.class, PaymentReserved.class)` on an [application service](#application-service-stream-filtering-and-execute-options).
+* `types(OrderPlaced.class, PaymentReserved.class)` on a `DcbCriteriaBuilder`.
+
+### Set an explicit filter {#derived-filter-explicit}
+
+An explicit filter is used instead of deriving one, so nothing is expanded for that declaration and nothing is refused. Where you set it depends on where you declared the types:
+
+* `Projection`'s builder and `SnapshotView`'s builder both take a `filter(Filter)`.
+* A saga takes [`replacementFilter(Filter)`](#saga-explicit-filter). Its `narrowingFilter(Filter)` doesn't work for this, because a filter is still derived underneath it.
+* `DomainEventQueries` has no override on its `Class` and `Collection` overloads, so call `query(Filter, ..)` directly.
+* The subscription DSL has none on `filterFromEventTypes`, so build the `Filter` yourself and pass it to the `subscribe(..)` overload that takes a `StreamSubscriptionFilter` or an `AgnosticSubscriptionFilter`.
+* `@Subscription` and the other subscription annotations have none, so declare the concrete types there instead.
+* An application service takes `ExecuteFilter.from(StreamReadFilter)` in place of `type(..)` or `includeTypes(..)`.
+* `DcbCriteriaBuilder` has none, so build the criterion from CloudEvent type strings with `DcbCriteria.type(String)` or `DcbCriteria.types(String, ..)`.
+
+If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, use an explicit filter. Under such a mapper:
+
+* A declaration the table above refuses is still refused, because the check reads the class hierarchy and never asks the mapper.
+* A concrete class that is neither final nor sealed is one of the refused declarations, so if you can't change such a class, set an explicit filter.
+* Declaring the concrete types still selects their events. The filter it derives matches the whole hierarchy rather than only the types you listed, because every one of them maps to that same string.
+
+### An empty list of types selects nothing on a query {#derived-filter-empty}
+
+`DomainEventQueries.query(Collection)` and its sibling overloads return no events for a `null` or empty collection.
+
+A projection or a `SnapshotView` with no handlers, and `filterFromEventTypes` given no types, do the opposite and match every event.
 
 ## Views
 
@@ -4185,7 +4334,7 @@ val enrolledStudents = projection<Int, CourseEvent, String>(initialState = 0) {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The builder both assembles the `View` and records the event types you registered handlers for, so the subscription that feeds the projection is filtered to exactly those events. There's no separate list of subscribed types to keep in sync with the fold. The fold returns the state unchanged for any event type without a handler, so pointing a projection at a broader stream is safe for the fold itself.
+The builder both assembles the `View` and records the event types you registered handlers for, so the subscription that feeds the projection is filtered to those events. There's no separate list of subscribed types to keep in sync with the fold. [Deriving the Event Filter](#deriving-the-event-filter) describes how those types become the filter. The fold returns the state unchanged for any event type without a handler, so pointing a projection at a broader stream is safe for the fold itself.
 
 That safety has a limit though. Every event the filter admits is still converted to a domain event before the fold ever sees it, and one the converter can't turn into your event type fails that delivery instead of being ignored. A subscription that keeps redelivering a failing event holds up everything queued behind it, so a broader stream is only safe while it stays inside what the converter can convert.
 
@@ -4646,6 +4795,8 @@ fun accountSnapshot(): SnapshotView<AccountState, AccountEvent> = snapshotView(A
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
+The subscription that keeps the snapshot up to date is filtered to the event types the `SnapshotView` registers handlers for, derived as described in [Deriving the Event Filter](#deriving-the-event-filter). If the `SnapshotView` registers a handler for a type listed as refused in that section, Spring Boot startup fails.
+
 <div class="comment">The declarative <code>@Snapshot</code> annotation works on both the blocking and reactor stacks, for stream and DCB. The application services and the <code>SnapshotViews</code> facade described in the other sections are the programmatic path when you would rather not use the annotation.</div>
 
 ### DCB snapshots
@@ -5036,8 +5187,6 @@ Saga<ShipmentEvent, FlowState<ShipmentEvent>, DispatchShipment> shipment =
 
 Use `anyOf` when the alternatives share a reaction. A reaction cannot find out which of the alternatives completed the step, so when each alternative needs its own command, write them as separate branches instead, the way `awaiting-decision` does above.
 
-The older `join(...)`, which waited for a list of `Expectation`s, does the same thing as `on(allOf(...))` and is deprecated in favor of it. Existing code keeps working.
-
 `event(...)` also takes a predicate alongside its count, so a match can depend on the arriving event's own data and not only its type. In the example below, `monitoring` completes the moment a reading exceeds a threshold:
 
 {% capture kotlin %}
@@ -5202,8 +5351,6 @@ A guard's `onlyIf` and a `timeout`'s reaction read everything the instance has k
 
 `received.initiating<T>()` is the exception, reaching the start event whichever step you are in and whichever callback you are writing, so building a command from an id on the start event always works.
 
-The deprecated `join`'s reaction used to read everything the instance has kept, and no longer does. It now reads the same events a condition branch's reaction reads, so a `join` past a saga's first step sees nothing from an earlier step, not even another event of the type it was waiting for. A `join` on the first step also stops seeing the start event through `count`, `all`, `first`, `any`, `none` and `asList`, though `received.initiating<T>()` still reaches it.
-
 ###### Counted Conditions and `stepWindow` {#saga-counted-conditions}
 
 A condition declared in a step, such as
@@ -5307,28 +5454,13 @@ Two things happen at run time rather than at build time, and both are deliberate
 
 A saga's event types are also its subscription filter. Occurrent takes the types you registered through `startsOn`, `evolve`, `react`, a step's `on(...)` and an `event(...)` condition, asks the `CloudEventTypeMapper` for the CloudEvent type of each one, and subscribes on those.
 
-A sealed type is expanded into the concrete types it permits, all the way down. A saga declaring a sealed `OrderEvent` subscribes on `OrderEvent`, `OrderPlaced` and `PaymentReserved`, so it receives the concrete events stored under that hierarchy (before 0.33.0 the filter asked only for `OrderEvent`'s own CloudEvent type, so with the mappers Occurrent ships the saga received nothing).
+The types are expanded and checked as described in [Deriving the Event Filter](#deriving-the-event-filter). A saga declaring a sealed `OrderEvent` receives the concrete events stored under it.
 
-Where the concrete types cannot be found, `build()` throws `IllegalArgumentException` naming the type. That covers an interface or an abstract class that is not sealed, and a sealed hierarchy with a level below the declared type that is neither sealed nor final, `non-sealed` in Java, `open class` or `abstract class` in Kotlin. A `sealed class` you can instantiate is no exception, because a sealed declaration says its subtypes are knowable whether or not events are stored under the root's own name.
+If a saga declares a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), `build()` throws `IllegalArgumentException` naming the type.
 
-The remedy to prefer when you own the events is to seal every level, since the saga then keeps working when you add an event type:
+To fix a refused declaration, [seal the hierarchy](#derived-filter-seal) or [declare the concrete types](#derived-filter-concrete). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
 
-{% capture kotlin %}
-sealed interface OrderEvent
-sealed class Payment : OrderEvent          // was open class or abstract class
-data class PaymentReserved(val orderId: String) : Payment()
-{% endcapture %}
-{% capture java %}
-public sealed interface OrderEvent permits Payment { }
-// was non-sealed class Payment implements OrderEvent
-public sealed class Payment implements OrderEvent permits PaymentReserved { }
-public final class PaymentReserved extends Payment { }
-{% endcapture %}
-{% include macros/docsSnippet.html java=java kotlin=kotlin %}
-
-When the hierarchy is not yours to seal, or is deliberately open, declare the concrete types instead, one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
-
-Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs none of this. If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one type string, declaring the supertype worked before 0.33.0 and now throws. Declaring the concrete types keeps it working, since they all map to the same string.
+Sealing the hierarchy and declaring the concrete types both keep events arriving under a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, since the saga then subscribes on that string. If a class you need to handle is neither final nor sealed and you can't change it, use `replacementFilter(..)` instead, as [Setting an Explicit Filter](#saga-explicit-filter) shows.
 
 #### Setting an Explicit Filter {#saga-explicit-filter}
 
@@ -5356,7 +5488,7 @@ saga<OrderEvent, OrderCommand> {
 
 Because a selector is still derived, the hierarchy check from [Declared Event Types](#saga-event-types) still runs under a narrowing.
 
-`replacementFilter(Filter)` is used instead of a derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy underneath the declared types looks like. This is the way out when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, since reflection cannot tell that mapper apart from the default one, and declaring the concrete types would not help either, as they all collapse to the same string:
+`replacementFilter(Filter)` replaces the derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy below the declared types looks like. Use it when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, as [Set an explicit filter](#derived-filter-explicit) explains:
 
 {% capture java %}
 Saga.<OrderEvent, OrderState, OrderCommand>builder(null)
@@ -5378,7 +5510,19 @@ saga<OrderEvent, OrderCommand> {
 
 Setting a replacement switches off the hierarchy check for every event type the saga declares, not only for one whose concrete types you could not enumerate. An array or a primitive declared type is still refused. The check belongs to `Saga.Builder`, `FlowSaga.Builder` and `Saga.create(...)` alone, so a saga you implement directly by hand, rather than through a builder or the factory, never runs it at any `eventTypes()`, and a declared type whose concrete types cannot all be found then leaves it subscribing on a filter that misses events its own handlers would take. Declare the concrete types there, the same thing a builder would otherwise have insisted on. `Saga.create(...)` takes a replacement but not a narrowing, since the saga it returns is an anonymous implementation with nothing left to set afterwards. Implement `Saga` yourself for a narrowing, the same route the factory's own javadoc already sends you down for `onStart` and `isTerminal`.
 
-Both members leave two things for you to get right, since neither is checked for you. The condition has to admit the saga's start events, because one that excludes them means no instance is ever created. It also has to admit the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running. A `replacementFilter` adds two more of its own. Every CloudEvent it admits is converted to a domain event before the saga sees it, so keep it inside what your `CloudEventConverter` can turn into an event, since one it cannot convert fails that delivery rather than being skipped. And a flow saga appends every correlated event it receives to the instance's retained history before it looks at which branch handles it, so a replacement wider than the flow's own types grows that history, taking slots a `stepWindow` cap would otherwise reserve for the step's own events. A saga that declares no event types and sets no replacement derives a selector matching everything, so a narrowing on it is the whole selector, and the conversion obligation above then falls on that narrowing too.
+Neither member checks the condition you give it. Make sure it admits:
+
+* the saga's start events, because a condition that excludes them means no instance is ever created
+* the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running
+
+Two more things apply to a `replacementFilter`:
+
+* Every CloudEvent it admits is converted to a domain event before the saga sees it. Keep it inside what your `CloudEventConverter` can convert, since an event the converter can't convert fails that delivery instead of being skipped.
+* A flow saga appends every correlated event it receives to the instance's retained history before it looks at which branch handles it. So a replacement wider than the flow's own types grows that history.
+
+An event of a type the flow doesn't declare never counts toward a `stepWindow` cap. [Delivery Contract](#saga-delivery-contract) explains when the cap drops such an event, and why a step that only receives such events has no limit from `stepWindow`.
+
+A saga that declares no event types and sets no replacement gets a selector that matches every event. A narrowing on such a saga then becomes the whole selector, so it has to stay inside what your `CloudEventConverter` can convert, the same as a `replacementFilter`.
 
 On a flow saga, either member can also change what a guard sees. A guard's `onlyIf` reads `ReceivedEvents`, so a selector that excludes an event type changes what `received.none(Rejected.class)` or `received.any(Rejected.class)` answers, and a branch can fire that would not have fired otherwise. This is not a narrowing-only risk. A narrowing can only remove matches, so that is the only direction it can move the answer. A replacement can be wider or narrower than the declared types, and does the same thing whenever it is narrower.
 
@@ -5782,9 +5926,25 @@ Timer bookkeeping has no such gap, because `startTimeout` and `cancelTimeout` ar
 
 A live event and a firing timer do not fail the same way when a `SagaConcurrencyException` exhausts its compare-and-set retries. On the event path the exception propagates to the subscription model, which redelivers the event and retries the whole step. The event is never lost, but the subscription is one ordered channel shared by every instance the saga handles, so an instance that keeps failing blocks the events queued behind it until you stop the subscription or the retry succeeds. On the timer path the poller catches the exception per instance, logs it, and leaves the timer due for the next poll, so a stuck timer never blocks the poller. Nothing isolates it from the saga's other instances, though. A poll fires at most `timerBatchLimit` instances, a hundred by default, and nothing in `findWithDueTimers` requires a store to give a different instance a turn, so once a hundred instances cannot fire their timers the saga can stop firing timers altogether. [Issue 1003](https://github.com/johanhaleby/occurrent/issues/1003) is where that is being fixed. Because commands are dispatched before the save and a lost compare-and-set retries the step, a single input can also re-dispatch its whole command list several times, up to the configured `maxCasAttempts`. A receiver can see the same command several times in a row, not just twice.
 
-A flow saga does not remember its whole history. A condition, join, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default. Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition, guard, or join that needs to count back further than 100 events, or lower it to trim what a long-running instance persists. `historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`. The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup, but anything older than the window is dropped and not persisted.
+A flow saga does not remember its whole history. A condition, guard, or timeout reaction reads that history through `ReceivedEvents`, which keeps the current step's own events plus the `historyWindow` most recent earlier ones, 100 by default.
 
-`stepWindow(int events)` limits the other half, how many of the current step's own events are kept, and it is applied on every delivery. There is no cap unless you set one, so an instance that stays in a step while a large number of correlated events arrive keeps all of them, whatever `historyWindow` says. The minimum is 1.
+Set it with `FlowSaga.Builder.historyWindow(int events)` in Java or `historyWindow(events)` inside the Kotlin `saga { }` block. Raise it for a condition or guard that needs to count back further than 100 events, or lower it to trim what a long-running instance persists.
+
+`historyWindow` limits only the history carried over from earlier steps, and it is applied when a step is left. On its own it puts no limit on the current step's own events, so a condition counting since the step was entered sees every one of them, even with `historyWindow(0)`.
+
+The initiating event is kept whatever the window is, since `received.initiating<T>()` is a common lookup. Anything older than the window is dropped and not persisted.
+
+`stepWindow(int events)` caps how many of the current step's own events are kept, and it's applied on every delivery. An event counts toward the cap when its type is declared, meaning one of the flow's own `on(...)` branches or an `event(...)` check inside a window condition names it. A repeat of the type that started the instance counts too.
+
+An event of any other type is still retained, but it doesn't count toward the cap. `stepWindow` drops it only when the cap drops a counted event that arrived after it.
+
+For example, take `stepWindow(2)` and the events A, x, B, C, D, where x is of a type no step declares. C arriving drops A and keeps x. D arriving drops B, and x goes with it, because the kept events are always an unbroken run ending with the newest.
+
+`historyWindow` can drop an event that doesn't count toward the cap too. Once the flow has left the step the event arrived in, the event is part of the history kept from earlier steps, and a later transition can drop it the same as a counted one.
+
+Such an event reaches a flow saga only through a `replacementFilter` wider than the flow's own types, or a `CloudEventTypeMapper` that maps several domain types onto one CloudEvent type string. A `narrowingFilter` cannot let one in, because it only narrows the filter derived from the flow's types.
+
+There is no cap unless you set one, so an instance that stays in a step while a large number of correlated events arrive keeps all of them, whatever `historyWindow` says. The minimum is 1.
 
 {% capture kotlin %}
 saga<OrderEvent, OrderCommand> {
@@ -5801,15 +5961,23 @@ FlowSaga.<OrderEvent, OrderCommand>builder()
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-Set both and an instance keeps at most `historyWindow + 2 * stepWindow + 1` events at any one moment. `stepWindow` is doubled because a transition keeps the events of the step being left so that step's reaction can read them, and the step being entered then fills its own cap before anything is dropped.
+Set both and, at any one moment, an instance keeps at most `historyWindow + 2 * stepWindow + 1` events of the types `stepWindow` counts. Events of any other type come on top of that. `stepWindow` is doubled because a transition keeps the events of the step being left so that step's reaction can read them, and the step being entered then fills its own cap before anything is dropped.
 
 A step condition still completes on the same event it would have without the cap, because its counts are kept in the instance's state instead of being counted from the events again. What reads less is everything that reads the events directly, a guard's `onlyIf`, a `timeout` reaction, and a window condition's reaction. A retry guard counting `PaymentFailed` across a self-looping step therefore needs its threshold to fit inside `stepWindow`, the same requirement `historyWindow` already has.
+
+A step that only receives events of types no step declares keeps growing with no limit from `stepWindow`, since none of those events count toward the cap.
+
+`SpringMongoSagaStateStore` logs a warning when an instance's retained events reach 1,000. It doesn't warn again until the count has dropped below 1,000 and reached it once more. A saga running on a state store of your own gets no such warning.
 
 Two things stay true at any cap of 1 or more. `received.initiating<T>()` reaches the start event, which is kept as the first retained event and never counts against the cap, and the event that fired a branch is the last element of `received.asList()`.
 
 Before a flow can cap its steps, every `event(...)` condition with a predicate needs a name for that predicate. [Counted Conditions and `stepWindow`](#saga-counted-conditions) has the details.
 
 Changing what a capped step waits on while instances are still in it, whether that is an event type or a predicate's name, makes those instances refuse their next delivery with an `IllegalStateException` naming the step. Retrying does not help, because the events those counts would be rebuilt from are gone. Put the previous condition declaration back until those instances have moved on, so they stop refusing deliveries. Delete the instance instead if you don't need to keep it running. An instance still inside the cap counts its kept events again and continues.
+
+A flow saga instance waiting in a step stores that step's name. Renaming or removing the step while instances are still in it makes each of them refuse its next event or timeout with an `IllegalStateException` naming the step, because the new flow definition has no step by that name. Retrying does not help.
+
+To move those instances on, put the step back under its old name, or add a temporary step under the old name that transitions to the new one, until every instance has left it. To unblock an instance before you redeploy, delete it from the `SagaStateStore`.
 
 What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name. So a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](#snapshots) store.
 
@@ -5943,6 +6111,8 @@ class SagaDashboard {
 
 `get(id)` throws and names every id that is registered, which is what you want when the id is a constant in your own code. `find(id)` returns an `Optional` for an id that came from a request or a configuration value. `sagaIds()` lists them so a dashboard does not hardcode ids. Each saga is also published under the bean name `sagaInstances-<id>`, reachable with `getBean` or a `@Qualifier` if you prefer to inject one saga's view directly.
 
+Each saga's running `SagaSubscription` is published the same way, as `sagaSubscription-<id>`. It's the handle `SagaRunner` returns on the programmatic path, so it gives you the saga's event `Subscription` and `waitUntilStarted()` as well as `instances()`. A saga on a push feed that you start through `ManualStartPushSources` gets this bean when you start it, not when the context refreshes.
+
 One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
 
 Enumerating instances is cheap. Listing flow-saga instances never deserializes their state or received events, so a periodic stuck-instance check costs little even with many instances. Rationale in [ADR 0070](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-saga-instance-observation.md).
@@ -6036,6 +6206,21 @@ occurrent:
 
 You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-{{site.occurrentversion}}/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java)
 to find which configuration properties that are supported.
+
+The settings that only apply to a MongoDB event store or a MongoDB subscription model have `mongodb` in their key:
+
+| Key | Default | Deprecated key it replaces |
+|:---|:---|:---|
+| `occurrent.event-store.mongodb.collection` | `events` | `occurrent.event-store.collection` |
+| `occurrent.event-store.mongodb.time-representation` | `DATE` | `occurrent.event-store.time-representation` |
+| `occurrent.subscription.mongodb.collection` | `subscriptions` | `occurrent.subscription.collection` |
+| `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` | `true` | `occurrent.subscription.restart-on-change-stream-history-lost` |
+
+The deprecated keys still work, and will be removed two releases after 0.34.0.
+
+You can set both the old and the new key as long as they have the same value. That way an old key you have not found yet, in an environment variable for example, does not break a configuration you have already migrated. If the two values differ, the application fails at startup with an error that names both keys.
+
+The `org.occurrent.UpgradeToOccurrent_0_34` OpenRewrite recipe renames the keys in your `.properties` and `.yaml` files, as described in [section 4 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb). It can't rename environment variables such as `OCCURRENT_EVENT_STORE_COLLECTION`, so you have to find those in your deployment configuration and rename them yourself.
 
 ### Deferring Subscription Startup {#deferring-subscription-startup}
 
@@ -6137,7 +6322,7 @@ For example, if you want to subscribe on both `DomainEvent1` and `DomainEvent3` 
 
 The filter Occurrent derives from a sealed type names the declared type as well as the concrete types it permits. That only matters if you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto the type string of the type it was declared with, because such a subscription used to receive nothing at all. No mapper Occurrent ships stores an event under a sealed interface's own type, so nothing changes for the default setup.
 
-The hierarchy has to be sealed or final all the way down. A subscription on an interface or an abstract class that is not sealed, or on an array, is refused at startup, and so is one on a sealed hierarchy with a level below the declared type that is neither sealed nor final, `non-sealed` in Java, `open class` or `abstract class` in Kotlin. The message names the type and points you at `eventTypes()`. `@Saga` derives its filter the same way and refuses the same shapes when the saga is built, which [Declared Event Types](#saga-event-types) covers. `@Projection` derives its filter differently, from the types you register with `on(...)`, and does not expand or refuse a sealed type.
+If you declare a type listed as refused in [Deriving the Event Filter](#deriving-the-event-filter), Spring Boot startup fails. The message names the type and points you at `eventTypes()`. The same section has a table of when each of the other places refuses one.
 
 ### Event Metadata
 
@@ -7781,6 +7966,23 @@ The reactor `IntrospectableSubscriptions`, in `occurrent-subscription-api-reacto
 Most of the mechanical changes between Occurrent versions (type renames, package moves, and the safe part of the `Stream` to `List` write-side migration) are automated by an [OpenRewrite](https://docs.openrewrite.org/) recipe, so you rarely have to hand-edit imports and call sites.
 
 ## Upgrading to 0.34.0 {#upgrading-to-0-34-0}
+
+The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
+
+These changes can stop your code from compiling. Each item below names the code it affects:
+
+* the removal of `join`, `expect<T>` and `Expectation`, for any code that uses them
+* a fourth component on `WriteResult` and `DcbAppendResult`, for a record pattern that deconstructs either
+* `SagaStatus.QUARANTINED`, `SagaInstance.failure()` and new record components on `SagaEnvelope` and `SagaRunnerConfig`, for an exhaustive `switch` or Kotlin `when` over `SagaStatus`, a class that implements `SagaInstance`, or a record pattern over either record
+* the removed `protected` constructor of `SpringMongoSubscription`, for a subclass or code that creates one
+* `globalCheckpointAsOfNow()`, which has no default, for a reactor `CheckpointAwareSubscriptionModel` of your own
+* the `Mono<Void>` the reactor `cancelSubscription(..)` returns, for a class that implements it
+
+The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) covers these and every change in behaviour, grouped by area, with what to do about each one. These points from it aren't covered elsewhere on this page:
+
+* An equality assertion on a whole `WriteResult` or `DcbAppendResult` fails, because every write that persists an event gets a new append id. Compare only the components you care about.
+* A reactor `@Projection`, `@Saga` or `@Snapshot` factory method that returns `null` fails startup with `IllegalStateException`, as on the blocking stack.
+* An HTTP endpoint whose caller retries can call `acceptOrDefer(CloudEvent)`, the same as a RabbitMQ or Kafka listener.
 
 ### Repairing events damaged before 0.34.0 {#update-event-repair}
 
