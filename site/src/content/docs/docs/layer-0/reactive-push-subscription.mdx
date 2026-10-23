@@ -1,0 +1,124 @@
+---
+title: "Reactive push subscription"
+description: "Feed events from any source into a reactive subscription model."
+sidebar:
+  order: 19
+layer: "0"
+model: [reactive]
+---
+
+The reactive twin of the [blocking push subscription](/docs/layer-0/push-subscription/). Use it when the writing application forwards events to a broker such as RabbitMQ or Kafka instead of a MongoDB change stream, and a reactive listener consumes them. `org.occurrent.subscription.push.reactor.PushSubscriptionModel` is a register-only `Subscribable` with no start position, checkpoint, catch-up, or replay of its own.
+
+First include the dependency:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-subscription-push-reactor</artifactId>
+    <version>%OCCURRENT_VERSION%</version>
+</dependency>
+```
+
+Because it matches entirely in memory, `new PushSubscriptionModel()` refuses a subscription filter on the event `data` payload. Pass a `DataFieldReader` to its constructor to give it one, see [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data).
+
+Register it like any other `Subscribable`, for example with `ReactiveProjectionRunner` from Occurrent's `projection-dsl` module:
+
+```java
+PushSubscriptionModel pushModel = new PushSubscriptionModel();
+
+ReactiveProjectionRunner.agnostic(pushModel, cloudEventConverter)
+        .project("order-status", orderStatusProjection(), repository);
+```
+
+Reconstruct the `CloudEvent` from the CloudEvents JSON payload on the listener side, then hand it to the model and act on the outcome. In the example below, `acknowledge()`, `redeliverLater()`, `applyFailurePolicy()` and `stopConsuming()` each return a `Mono<Void>` that makes the matching call on your broker client:
+
+```java
+Mono<Void> onMessage(byte[] body) {
+    CloudEvent cloudEvent = EventFormatProvider.getInstance()
+            .resolveFormat(JsonFormat.CONTENT_TYPE)
+            .deserialize(body);
+    return pushModel.acceptOrDefer(cloudEvent).flatMap(outcome -> switch (outcome) {
+        case DELIVERED, FILTERED -> acknowledge();
+        case DEFERRED, UNAVAILABLE -> redeliverLater();
+        case NOT_DELIVERABLE -> applyFailurePolicy();
+        case REFUSED -> stopConsuming();
+    });
+}
+```
+
+`acceptOrDefer(CloudEvent)` runs the registered handler when the event matches its filter and returns a `Mono<RoutingOutcome>`. Acknowledge the message only when that `Mono` completes with `RoutingOutcome.DELIVERED` or `RoutingOutcome.FILTERED`, the two outcomes `mayAcknowledge()` is true for. `redeliverLater()` [hands the message back to the broker](/docs/stores/brokers/#handing-a-message-back-to-the-broker) the same way as on the blocking model.
+
+[Consuming from a broker](/docs/stores/brokers/#consuming-from-a-broker) says what a listener does with each outcome. When an outcome comes back differs from the [blocking model](/docs/layer-0/push-subscription/#observing-pushed-events), so on this stack the `Mono` completes with:
+
+* `DELIVERED` once the handler has applied the event, or once a `CatchupThenPushSubscriptionModel` in front finds it had already applied it. An event offered while an earlier delivery of the same event is still running waits for that delivery to finish.
+* `FILTERED` when the subscription's filter declined the event.
+* `DEFERRED` when a `CatchupThenPushSubscriptionModel` in front hasn't gone live, for example because its replay is still running.
+* `UNAVAILABLE` when nothing is registered, the model is stopped or the subscription is paused. Stopping a `CatchupThenPushSubscriptionModel` in front stops this model too, whether or not its replay had finished.
+* `REFUSED` once the subscription has failed, because a catch-up in front failed or an event its handler wrote failed.
+* `NOT_DELIVERABLE` for any other refusal decided before the handler would run, for example a full live buffer in a `CatchupThenPushSubscriptionModel` in front.
+
+A handler or filter error propagates through the `Mono`, so the caller decides whether to retry the message or route it to the failed-message queue, where the broker has one. Handle `NOT_DELIVERABLE` the same way.
+
+`accept(..)` is for the in-memory event store, which calls it as it writes events. Its `Mono` also completes normally for an event no subscription takes. There's no reactive in-memory event store, so that means a listener on the blocking `InMemoryEventStore` that calls `accept(Iterable<CloudEvent>)` and waits for the `Mono`, such as `events -> pushModel.accept(events).block()`. The `Mono` does nothing until something subscribes to it, so `new InMemoryEventStore(pushModel::accept)` compiles but delivers nothing.
+
+The store calls that listener on the writing thread, after it has stored the events, so write from a thread that is allowed to block. On a Reactor non-blocking thread, such as a WebFlux event loop, `block()` throws, and the write call fails even though the events are already stored. Occurrent ships no reactive `PositionOrderedReader` over the in-memory event store for a reactive `CatchupThenPushSubscriptionModel` in front to replay.
+
+Behind a reactive `CatchupThenPushSubscriptionModel`, a handler that writes an event its own subscription takes does not wait for that event. The model hands the subscription one event at a time, so it cannot apply the new event before the handler returns, and the write returns once the event is queued. The handler gets the events it wrote in the order it wrote them, after it has returned. For a write made during the replay, it gets them once the subscription has gone live. A replay that ends before that writes no catch-up marker, the record that the catch-up finished, so the next replay hands the handler the same history again.
+
+When the handler calls `acceptOrDefer(..)` on the model that feeds it, the model refuses the call for this subscription, whether it has gone live or not. The `Mono` completes with `NOT_DELIVERABLE` and the model never applies the event, because it could only report the event as queued behind the handler, not as applied. Write the event from the handler through `accept(..)` instead, the way the previous paragraph describes.
+
+The model recognizes the handler's call when the handler returns it as part of its own `Mono`, on whichever thread that `Mono` runs, or subscribes to it on the thread it was called on, for example by blocking on it. A call subscribed outside the handler's `Mono`, for example one the handler blocks on from a thread it switched to, isn't recognized, and completes with `DEFERRED` during a replay. Once the subscription is live, that call waits for the event to be applied, which can't happen before the handler returns, so a handler that waits for it never finishes.
+
+If applying an event the handler wrote fails, the write has already returned by then. The subscription then starts failing, and a failed catch-up makes it start failing the same way.
+
+When it starts failing, the subscription:
+
+* deletes its catch-up marker
+* refuses every later event that doesn't come from its handler
+* applies the events it has already taken in, and those its handler writes meanwhile
+* then fails for good
+
+A failed catch-up also refuses the events that other callers fed while the replay ran, and doesn't apply them.
+
+To recover, cancel the subscription and subscribe again. Once the marker is gone, its catch-up replays the history. If deleting the marker still fails after 3 retries, the subscription logs an error naming the subscription id, and you have to delete the marker from the `CheckpointStorage` by hand before subscribing again.
+
+An event that no replay can bring back is lost only when applying it failed.
+
+Feeding `accept(..)` from the write path of a durable event store, such as MongoDB, isn't supported. The model keeps no record of which events a subscription has handled, so the subscription never sees an event when the application crashes after the write has committed but before the handler has run. Use a [durable subscription](/docs/layer-0/reactive-subscription-models/#durable-subscriptions-reactive) there, or a broker listener that calls `acceptOrDefer(CloudEvent)`.
+
+A handler that feeds another `PushSubscriptionModel` from inside its own subscription has to act on the outcome the `Mono` from `acceptOrDefer(..)` completes with, because nothing redelivers an event that the other model refuses. For example, fail with an error on anything but `DELIVERED` or `FILTERED`, so the outer handler fails instead of completing as if the event had been handled. Calling `accept(..)` there is no safer, since its `Mono` also completes normally for an event no subscription takes, and while the model is stopped or the subscription is paused.
+
+As on the blocking side, [a `PushSubscriptionModel` takes one projection](/docs/layer-0/push-subscription/), and registering a second one fails at startup.
+
+The reactive model also takes an optional `PushObserver`, for the same reason as the [blocking model](/docs/layer-0/push-subscription/#observing-pushed-events). The constructor arguments, the six outcomes, and what happens when the filter or the observer itself throws are the same on both stacks.
+
+Six things differ.
+
+* The reactive `acceptOrDefer(CloudEvent)` returns a `Mono<RoutingOutcome>` rather than the `RoutingOutcome` itself, so a broker listener acknowledges the message only when that `Mono` completes with `DELIVERED` or `FILTERED`.
+* Behind a `CatchupThenPushSubscriptionModel` whose replay is still running, the `Mono` that `accept(..)` returns completes only once the event has been applied, where the blocking `accept(..)` reports `DELIVERED` and returns as soon as it has buffered the event. A full buffer or a failed replay fails that `Mono`, and a stopped catch-up completes it with the event dropped, as on the blocking side.
+* A handler that fails with a checked exception is reported `DELIVERED`, like any other exception. Only an `Error` other than `AssertionError` from the handler skips the observer.
+* The observer doesn't always run on the thread that called `accept(..)`. `UNAVAILABLE`, `FILTERED` and a filter that threw are reported on the thread that subscribed to the returned `Mono`. The other outcomes are reported once your handler, or the `CatchupThenPushSubscriptionModel` in front of it, has finished with the event, on whichever thread that happened.
+* An `InterruptedException` from the observer sets the interrupt flag on the thread the observer ran on. A pooled Reactor worker clears that flag before its next task, so the caller may never see it.
+* The `Mono` that `accept(CloudEvent)` returns does nothing until something subscribes to it. Subscribing to the same `Mono` twice observes the event twice, and delivers it twice if the subscription still accepts it.
+
+The same limits apply as on the blocking side. A push subscription only ever sees the live tail, and a broker is not a log, so a new or rebuilt projection can't be backfilled from the queue. Replay history from the event store first (see [EventStore Queries](/docs/layer-0/eventstore-queries/) or the [catch-up subscription](/docs/layer-0/catch-up-subscription/) pattern), then attach the push feed to keep it current.
+
+The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](/docs/layer-0/push-subscription/). Wrap it around the reactive `PushSubscriptionModel` with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`.
+
+It replays the history first, then hands over to the live feed. That switch is the handover. It de-duplicates the overlap by each event's id and source. It also records that the catch-up finished, so a restart skips the replay. Live-resume stays the broker's job.
+
+Delivery is at-least-once, so the projection must tolerate seeing the same event twice. Rebuild the projection if the consumer is offline longer than the broker retains the backlog. The tunables and the handler-concurrency contract are documented on the [blocking one](/docs/layer-0/push-subscription/) and apply the same way here.
+
+`startupMode` behaves the same as on the blocking stack:
+
+* `BACKGROUND` starts the application while the replay runs.
+* `DEFAULT` waits for it.
+* A background replay's progress and any failure are recorded on `PushCatchupStatus`.
+
+A projection on a bean built after startup never waits, see [When Annotations Register](/docs/spring-boot/subscription-annotations/#when-annotations-register).
+
+A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to be applied. Stopping the model itself also interrupts an in-flight catch-up replay, the same as on the blocking stack.
+
+## Life-cycle
+
+Like its [blocking twin](/docs/layer-0/push-subscription/#life-cycle), a reactive `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down, with the same _dropped, not deferred_ contract for whatever is fed to it while stopped or paused, and the same one-way `shutdown()`.

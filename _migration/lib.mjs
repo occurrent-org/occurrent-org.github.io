@@ -17,8 +17,9 @@ export function createSlugger() {
 }
 
 // Code is compared by content only: trailing whitespace, surrounding blank lines and common indentation don't count.
+// The version is written {{site.occurrentversion}} in docs.md and %OCCURRENT_VERSION% on the new site.
 export function normalizeCode(code) {
-    const lines = code.replace(/\r\n/g, "\n").split("\n").map((line) => line.replace(/\s+$/, ""));
+    const lines = code.replace(/\r\n/g, "\n").replaceAll("{{site.occurrentversion}}", "%OCCURRENT_VERSION%").split("\n").map((line) => line.replace(/\s+$/, ""));
     while (lines.length > 0 && lines[0] === "") lines.shift();
     while (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
     const indents = lines.filter((line) => line !== "").map((line) => line.match(/^ */)[0].length);

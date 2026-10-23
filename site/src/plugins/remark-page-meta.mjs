@@ -3,9 +3,9 @@
 // of the page that AI tools read carries it too.
 
 const LAYERS = {
-    0: ["Layer 0: CloudEvents", "/docs/overview/layers/"],
-    1: ["Layer 1: Domain events", "/docs/overview/layers/"],
-    "spring-boot": ["Spring Boot", "/docs/spring-boot/starter/"],
+    0: ["Layer 0: CloudEvents", "/docs/layer-0/"],
+    1: ["Layer 1: Domain events", "/docs/layer-1/"],
+    "spring-boot": ["Spring Boot", "/docs/spring-boot/"],
     3: ["Layer 3: Your own framework", "/docs/layer-3/your-own-framework/"],
 };
 const STACKS = { "plain-java": "Plain Java", "spring-data": "Spring Data", "spring-boot": "Spring Boot" };

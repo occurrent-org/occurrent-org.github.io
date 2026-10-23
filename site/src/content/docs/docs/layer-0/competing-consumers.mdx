@@ -1,0 +1,136 @@
+---
+title: "Competing consumers"
+description: "Run a subscription on several nodes with only one delivering at a time."
+sidebar:
+  order: 14
+layer: "0"
+model: [blocking]
+modules: [occurrent-subscription-competing-consumer-blocking, occurrent-subscription-mongodb-native-blocking-competing-consumer-strategy, occurrent-subscription-mongodb-spring-blocking-competing-consumer-strategy]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+A competing consumer subscription model wraps another subscription model to allow several subscribers to subscribe to the same subscription. One of the subscribes will get a lock of the subscription and receive events from it, the others will be in standby. If a subscriber loses its lock, another subscriber will take over automatically. To achieve distributed locking, the subscription model uses a `org.occurrent.subscription.api.blocking.CompetingConsumerStrategy` to support different algorithms. You can write custom algorithms by implementing this interface yourself. But to use it, first depend on the `CompetingConsumerSubscriptionModel`:
+
+<Dependency artifact="occurrent-subscription-competing-consumer-blocking" />
+
+A `CompetingConsumerSubscriptionModel` takes a `CompetingConsumerStrategy` as second parameter. There are currently two different implementations, both are based on MongoDB. Use the following if you're using the native Java MongoDB driver (i.e. you're _not_ using Spring):
+
+<Dependency artifact="occurrent-subscription-mongodb-native-blocking-competing-consumer-strategy" />
+
+The `CompetingConsumerStrategy` implementation in this module is called `NativeMongoLeaseCompetingConsumerStrategy`, at `org.occurrent.subscription.mongodb.nativedriver.blocking.NativeMongoLeaseCompetingConsumerStrategy` since 0.32.0. It moved out of the `spring.blocking` package it never belonged in, since it's built on the native Java driver and never touched Spring. If you're upgrading, the `org.occurrent.UpgradeToOccurrent_0_32` OpenRewrite recipe rewrites the import, the qualified `Builder` construction, and the `withDefaults(..)` call for you. If you're using Spring, depend on this module instead:
+
+<Dependency artifact="occurrent-subscription-mongodb-spring-blocking-competing-consumer-strategy" />
+
+The `CompetingConsumerStrategy` implementation in this module is called `SpringMongoLeaseCompetingConsumerStrategy` and it's using the `MongoTemplate` from the Spring ecosystem. Both of these strategies are heavily inspired by the awesome work of [Alec Henninger](https://github.com/alechenninger). To understand how these strategies work under the hood, refer to his [blog post](https://www.alechenninger.com/2020/05/building-kafka-like-message-queue-with.html).
+
+Just like several other subscription models, the `CompetingConsumerSubscriptionModel` wraps another subscription model and decorates it with additional functionality, in this case to add competing consumer support to it. Below is an example that uses `NativeMongoLeaseCompetingConsumerStrategy` from module `org.occurrent:occurrent-subscription-mongodb-native-blocking-competing-consumer-strategy` with a [DurableSubscriptionModel](/docs/layer-0/durable-subscriptions/) which in turn wraps the [Native MongoDB](/docs/layer-0/blocking-subscription-models/#blocking-subscription-using-the-native-java-mongodb-driver) subscription model.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    MongoDatabase mongoDatabase = mongoClient.getDatabase("some-database");
+    CheckpointStorage checkpointStorage = new NativeMongoCheckpointStorage(mongoDatabase, "position-storage");
+    SubscriptionModel wrappedSubscriptionModel = new DurableSubscriptionModel(new NativeMongoSubscriptionModel(mongoDatabase, "events", TimeRepresentation.DATE), checkpointStorage);
+
+    // Create the CompetingConsumerSubscriptionModel
+    NativeMongoLeaseCompetingConsumerStrategy competingConsumerStrategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase);
+    CompetingConsumerSubscriptionModel competingConsumerSubscriptionModel = new CompetingConsumerSubscriptionModel(wrappedSubscriptionModel, competingConsumerStrategy);
+     // Now subscribe!
+    competingConsumerSubscriptionModel.subscribe("subscriptionId", type("SomeEvent"));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val mongoDatabase = mongoClient.getDatabase("some-database")
+    val checkpointStorage = NativeMongoCheckpointStorage(mongoDatabase, "position-storage")
+    val wrappedSubscriptionModel = DurableSubscriptionModel(NativeMongoSubscriptionModel(mongoDatabase, "events", TimeRepresentation.DATE), checkpointStorage)
+
+    // Create the CompetingConsumerSubscriptionModel
+    val competingConsumerStrategy = NativeMongoLeaseCompetingConsumerStrategy.withDefaults(mongoDatabase)
+    val competingConsumerSubscriptionModel = CompetingConsumerSubscriptionModel(wrappedSubscriptionModel, competingConsumerStrategy)
+     // Now subscribe!
+    competingConsumerSubscriptionModel.subscribe("subscriptionId", type("SomeEvent"))
+    ```
+  </TabItem>
+</Tabs>
+
+If the above code is executed on multiple nodes/processes, then only _one_ subscriber will receive events.
+
+Since 0.32.0, `CompetingConsumerSubscriptionModel` refuses two calls it used to accept quietly, both scoped to one model instance rather than to the subscription id across the cluster. Running the same subscription id on several nodes is untouched, since that's the whole point of the pattern. Subscribing twice to one subscription id on one instance now throws `DuplicateSubscriptionIdException`, matching what every other subscription model already did, and pausing a subscription this instance never had now throws `UnknownSubscriptionException` instead of doing nothing. Cancelling a subscription that opted out of competing consumption now also frees its subscription id, where the model used to remember it forever.
+
+Pausing a subscription whose consumer is still waiting for the lock now works too, instead of being silently ignored. Before this fix, `pauseSubscription(id)` on a waiting consumer logged the call and returned as if it had succeeded, `isPaused(id)` kept answering `false`, and the consumer started anyway the moment the lock arrived. Pausing a waiting consumer now unregisters it from the strategy, so the lock never arrives while it's paused, and `isPaused(id)` answers `true` for it right away. `resumeSubscription(id)` registers it again as a lock candidate.
+
+```java
+competingConsumerSubscriptionModel.pauseSubscription("orders"); // works even before this node has won the lock
+competingConsumerSubscriptionModel.isPaused("orders"); // true, whether or not the lock ever arrived
+```
+
+`isRunning(id)` doesn't change. It still answers `false` for a consumer that hasn't won the lock, paused or not, which is what a saga's timer poller relies on to stay off a node that isn't delivering.
+
+This also narrows what `SubscriptionModelLifeCycle.pauseSubscription` refuses. It used to describe the refusal as covering a subscription that "is not running, because it is already paused, was never started, or the whole model is stopped." Not currently delivering is no longer, on its own, a reason to refuse. A subscription that has started can be paused even while nothing is coming through it right now.
+
+Note that you can make several tweaks to the `CompetingConsumerStrategy` using the `Builder`, (`new NativeMongoLeaseCompetingConsumerStrategy.Builder()` or `new SpringMongoLeaseCompetingConsumerStrategy.Builder()`). You can, for example, tweak how long the lease time should be for the lock (default is 20 seconds), the name of lease collection in MongoDB, as well as the retry strategy and other things.
+
+To check your own `CompetingConsumerStrategy` against Occurrent's conformance suite, see [Competing Consumer Strategy Conformance](/docs/extending/your-own-subscription-model/#competing-consumer-strategy-conformance).
+
+A released competing consumer no longer reports it still holds the lock. `hasLock` used to answer yes for up to half the lease time after `releaseCompetingConsumer`, which reached `SagaRunner`'s poll directly. `unregisterCompetingConsumer` and `releaseCompetingConsumer` do two different things. Unregistering keeps a consumer out until you register it again, which is what a user-paused subscription needs. Releasing keeps it registered so it may take the lock back on its own, which is what a system-paused one needs.
+
+## Delivering While Holding the Lease
+
+Before `CompetingConsumerSubscriptionModel` hands an event of a competing subscription to the handler, it calls the strategy's `hasLock(subscriptionId, subscriberId)`. While that returns `false`, the event is held back. A `hasLock` that throws counts as `false`.
+
+A held-back event is never dropped. It goes to the handler once `hasLock` returns `true`, or without the lease in the cases the javadoc of `CompetingConsumerSubscriptionModel` lists, such as when the model pauses the subscription after losing its lease. So the same event can reach the handler on two nodes.
+
+With both MongoDB strategies, `hasLock` returns `false` once three quarters of the lease time have passed since the strategy sent the request that last set the lease. With the default lease time of 20 seconds, that is 15 seconds, even when every refresh since has failed.
+
+The strategy measures that time on the node's own clock, while MongoDB expires the lease on the server's clock. After a failover to a primary whose clock is more than a quarter of the lease time ahead, `hasLock` can return `true` after another node has taken the lease.
+
+A `CompetingConsumerStrategy` of your own has its `hasLock` called on every event, so it should answer from what it keeps in memory rather than by asking a database, and answer `false` once the lock could have expired.
+
+If you write the wrapped subscription model yourself, don't hold a lock while it hands an event to the handler. An event that waits for the lease keeps that lock. Every call that needs the lock, `isRunning(id)` among them, then waits until this node holds the lease again or the model lets the event through.
+
+These models hold no such lock:
+
+* `InMemorySubscriptionModel`
+* `NativeMongoSubscriptionModel`
+* `SpringMongoSubscriptionModel`
+* `DurableSubscriptionModel`
+* the blocking `CatchupSubscriptionModel`
+
+With the MongoDB strategies, unregistering and releasing a consumer make at most 5 attempts per MongoDB call, fewer when the configured `RetryStrategy` allows fewer. A lease they don't remove expires on its own after the lease time. A `RetryStrategy` you implement yourself, rather than build with `RetryStrategy.retry()`, runs its own retry loop and isn't capped.
+
+Pausing a subscription or stopping the model while MongoDB can't be reached can wait for as long as a registration keeps trying. Registering a consumer isn't capped, and with the default `RetryStrategy` it tries until MongoDB answers. The strategy uses 16 locks, shared by all its consumers, for registering, unregistering and releasing, so an unregister or a release can wait for a registration that uses the same lock.
+
+## Life-cycle
+
+If the wrapped model isn't running when the `CompetingConsumerSubscriptionModel` is created, such as a `SpringMongoSubscriptionModel` with [`autoStartup(false)`](/docs/layer-0/blocking-subscription-models/#deferring-startup), the competing consumer model is stopped until you call its own `start()`. That call starts the wrapped model too.
+
+Calling `start()` only on the wrapped model runs the subscriptions that opted out of competing consumption. No competing subscription competes for its lease, so every event the wrapped model hands a competing subscription waits. A warning is logged the first time that happens for each such subscription.
+
+Calling `start()` on both models, in either order, registers each competing subscription for its lease. Its events reach the handler once this node holds the lease.
+
+When the `CompetingConsumerStrategy` or the wrapped model throws for a competing subscription, `start(..)` and `resumeSubscription(..)` log the failure as a warning and return. A separate thread then tries the subscription again until it is registered for its lease, with a wait between tries that grows after each failure. Every fifth try that fails is logged as a warning. Once registered, the subscription runs only while this node holds the lease.
+
+`stop()`, `pauseSubscription(..)` and `cancelSubscription(..)` throw such a failure, and `resumeSubscription(..)` throws it when it's an `Error`. `start(..)` throws when the wrapped model, or a subscription that opted out of competing consumption, fails to start, after it has tried to start every subscription.
+
+`isRunning()` says whether the competing consumer model is started. It says nothing about whether this node delivers anything. It returns:
+
+* `true` on a started node that holds no lease.
+* `false` after `stop()`, until the next `start(..)`.
+* `false` after a `start(..)` that threw, until a later one returns without throwing.
+* `false` for good once `shutdown()` has begun.
+
+To find out whether this node delivers a subscription's events, call `isRunning(id)`, which returns the wrapped model's `isRunning(id)`. The `CompetingConsumerSubscriptionModel` has the wrapped model run a competing subscription while this node holds its lease. A `start()` called on the wrapped model alone runs it there without the lease, and `isRunning(id)` then returns `true` while its events wait for `hasLock`.
+
+Pause a competing subscription with `pauseSubscription(..)` on the `CompetingConsumerSubscriptionModel`, which gives up this node's lease so another node can take the subscription over. A pause made directly on the wrapped model lasts only until one of these runs the subscription again while this node holds its lease:
+
+* the competing consumer model's next `start(..)`
+* a grant of the subscription's lease
+* a `resumeSubscription(..)` of the subscription
+
+`shutdown()` shuts the `CompetingConsumerStrategy` down, then the wrapped model, and then makes one attempt to give up each lease, waiting at most 5 seconds for all of them. The MongoDB strategies stop refreshing their leases once they are shut down, so a lease that isn't given up expires after the lease time.
+
+When the wrapped model's own `shutdown()` throws, the competing consumer model's `shutdown()` throws that failure and gives up no lease, since the wrapped model may still deliver. Each event the wrapped model hands over after that waits for `hasLock` again, so this node stops delivering once the strategy stops reporting that this node holds the lease. Once the wrapped model can shut down, call `shutdown()` again, which then tries to give the leases up.

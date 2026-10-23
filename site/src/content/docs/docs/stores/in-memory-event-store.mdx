@@ -4,12 +4,11 @@ description: "An event store for tests and experiments."
 sidebar:
   order: 4
 stack: [plain-java]
-model: [blocking]
 modules: [occurrent-eventstore-inmemory]
 ---
 
-import { Tabs, TabItem } from "@astrojs/starlight/components";
 import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
 
 ## What is it?
 
@@ -28,84 +27,78 @@ Mainly for testing purposes or for integration tests that doesn't require a dura
 Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.inmemory.InMemoryEventStore`. For example:
 
 <Tabs syncKey="lang">
-<TabItem label="Java">
+  <TabItem label="Java">
+    ```java
+    InMemoryEventStore eventStore = new InMemoryEventStore();
+    ```
+  </TabItem>
 
-```java
-InMemoryEventStore eventStore = new InMemoryEventStore();
-```
-
-</TabItem>
-<TabItem label="Kotlin">
-
-```kotlin
-val eventStore = InMemoryEventStore()
-```
-
-</TabItem>
+  <TabItem label="Kotlin">
+    ```kotlin
+    val eventStore = InMemoryEventStore()
+    ```
+  </TabItem>
 </Tabs>
 
 This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering](/docs/layer-0/stream-filtering/) for when and how to use it.
 
-By default this store refuses a query that filters on the event `data` payload. Call `withDataFieldReader(...)` to give it one, see [Filtering on Payload Data](/docs/layer-0/eventstore-queries/).
+By default this store refuses a query that filters on the event `data` payload. Call `withDataFieldReader(...)` to give it one, see [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data).
 
 Now you can start reading and writing events to the EventStore:
 
 <Tabs syncKey="lang">
-<TabItem label="Java">
+  <TabItem label="Java">
+    ```java
+    CloudEvent event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".getBytes(StandardCharsets.UTF_8))
+                        .build();
 
-```java
-CloudEvent event = CloudEventBuilder.v1()
-                    .withId("eventId")
-                    .withSource(URI.create("urn:mydomain"))
-                    .withType("HelloWorld")
-                    .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
-                    .withSubject("subject")
-                    .withDataContentType("application/json")
-                    .withData("{ \"message\" : \"hello\" }".getBytes(StandardCharsets.UTF_8))
-                    .build();
+    // Write
+    eventStore.write("streamId", List.of(event));
 
-// Write                    
-eventStore.write("streamId", List.of(event));
+    // Read
+    EventStream<CloudEvent> eventStream = eventStore.read("streamId");
 
-// Read
-EventStream<CloudEvent> eventStream = eventStore.read("streamId");
+    // Read filtered events when the store supports it
+    if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+        EventStream<CloudEvent> filteredEventStream = filteredEventStore.read(
+                "streamId",
+                StreamReadFilter.type("com.example.NameDefined")
+        );
+    }
+    ```
+  </TabItem>
 
-// Read filtered events when the store supports it
-if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
-    EventStream<CloudEvent> filteredEventStream = filteredEventStore.read(
-            "streamId",
-            StreamReadFilter.type("com.example.NameDefined")
-    );
-}
-```
+  <TabItem label="Kotlin">
+    ```kotlin
+    val event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".toByteArray())
+                        .build()
 
-</TabItem>
-<TabItem label="Kotlin">
+    // Write
+    eventStore.write("streamId", listOf(event))
 
-```kotlin
-val event = CloudEventBuilder.v1()
-                    .withId("eventId")
-                    .withSource(URI.create("urn:mydomain"))
-                    .withType("HelloWorld")
-                    .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
-                    .withSubject("subject")
-                    .withDataContentType("application/json")
-                    .withData("{ \"message\" : \"hello\" }".toByteArray())
-                    .build()
+    // Read
+    val eventStream : EventStream<CloudEvent> = eventStore.read("streamId")
 
-// Write                    
-eventStore.write("streamId", listOf(event))
-
-// Read
-val eventStream : EventStream<CloudEvent> = eventStore.read("streamId")
-
-// Read filtered events when the store supports it
-val filteredEventStore = eventStore as? ReadEventStreamWithFilter
-val filteredEventStream = filteredEventStore?.read(
-    "streamId",
-    StreamReadFilter.type(NameDefined::class.java.name)
-)
-```
-
-</TabItem>
+    // Read filtered events when the store supports it
+    val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+    val filteredEventStream = filteredEventStore?.read(
+        "streamId",
+        StreamReadFilter.type(NameDefined::class.java.name)
+    )
+    ```
+  </TabItem>
 </Tabs>

@@ -1,0 +1,227 @@
+---
+title: "Brokers"
+description: "Forward events to a message broker and consume them back."
+sidebar:
+  order: 6
+model: [blocking]
+modules: [occurrent-broker-api-blocking]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+
+Instead of reading a MongoDB change stream directly, an application can forward stored events to RabbitMQ or Kafka and consume them there. One durable subscription does the forwarding, and each consuming application feeds the broker messages into the same [`PushSubscriptionModel`](/docs/layer-0/push-subscription/) or [`DomainEventFeed`](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents) that already exist for that purpose.
+
+None of this needs Spring Boot. The modules below are plain libraries, and every example in this section wires them together by hand:
+
+```text
+Event Store
+     |
+     | one durable subscription
+     v
+CloudEventForwarder / DomainEventForwarder
+     |
+     v
+CloudEventSink / DomainEventSink
+     |
+     v
+RabbitMQ or Kafka
+     |
+     v
+CloudEventSource / DomainEventSource
+     |
+     v
+PushSubscriptionModel or DomainEventFeed
+     |
+     v
+your projection or saga
+```
+
+A sink publishes events to the broker, and a source consumes messages from it and hands them to your projection or saga. A round trip uses one of each.
+
+Only the source touches the broker's topology. `CloudEventForwarder` and the sinks declare nothing at all, while a RabbitMQ source declares the queue it consumes from and binds that queue to the destinations it derived. A Kafka source creates no topic and only subscribes.
+
+`declareTopology(false)` on a RabbitMQ source turns the queue and binding declarations off, for a deployment where a platform team owns the whole topology.
+
+A replay always reads the event store, through [`CatchupThenPushSubscriptionModel`](/docs/layer-0/push-subscription/) or [`CatchupProjectionFeed`](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents). A broker only has the messages it still retains, not the event store's history, and it can't find an event by its Occurrent position, so it can't support `StartAt` or a replay.
+
+Three modules cover the forwarding, one shared API and one per broker. Add the shared API first. RabbitMQ's and Kafka's own dependencies come with their own subsections below.
+
+Each broker also has a Spring Boot starter, `occurrent-broker-rabbitmq-spring-boot-starter` and `occurrent-broker-kafka-spring-boot-starter`, which you turn on with `@EnableOccurrentRabbitMqBroker` or `@EnableOccurrentKafkaBroker`. The subsections below use the plain libraries, and [With Spring Boot](/docs/spring-boot/brokers/) shows the starters.
+
+<Dependency artifact="occurrent-broker-api-blocking" />
+
+## Which level to use
+
+You can forward at two levels, and they differ in what is sent to the broker.
+
+At the CloudEvent level the stored `CloudEvent` goes to the broker exactly as it was read. [`CloudEventForwarder`](/docs/stores/brokers/#forwarding-events-to-a-broker) publishes it and a [`PushSubscriptionModel`](/docs/layer-0/push-subscription/) consumes it.
+
+At the domain level `DomainEventForwarder` decodes each event with your `CloudEventConverter` first and hands the domain event to a `DomainEventSink<E>` you wrote, which publishes it in whatever format that sink uses.
+
+Use the CloudEvent level unless you have a reason not to. It converts nothing, and it keeps the id, the `source` attribute, the subject and the time the store recorded. Both the CloudEvent-level and the domain-level source read what it publishes, so your projection can still receive domain events. The domain level is for a publisher that has to send your own format to the broker.
+
+Either way, the Occurrent extensions travel as message headers, `streamid`, `streamversion`, `position`, `appendid` and `dcbtags` where the event has them. [`EventMetadata`](/docs/layer-1/projections/#event-metadata) on the consuming side is rebuilt from those headers.
+
+A sink that puts them in the body instead gives the consumer an empty `EventMetadata`. `getStreamId()` and `getStreamVersion()` then throw, so a projection that reads them fails that delivery like any other failing handler, and the source's `DeliveryFailurePolicy` decides what happens to the message. `getPosition()` and `getAppendId()` return `null` instead.
+
+## Forwarding events to a broker
+
+`CloudEventForwarder` runs one durable subscription out of the event store and hands each event to a `CloudEventSink`, the small interface that does the publishing:
+
+```java
+CloudEventForwarder forwarder = new CloudEventForwarder(durableSubscriptionModel, sink);
+forwarder.forward("order-status-forwarder");
+```
+
+`DomainEventForwarder<E>` does the same, decoding each event once with your `CloudEventConverter<E>` before handing the domain event to a `DomainEventSink<E>`.
+
+Publication is at-least-once. `DurableSubscriptionModel` saves its checkpoint only after the sink's `publish` returns, so a sink that throws keeps the checkpoint where it was and the event is published again on the next run.
+
+`forward(id)` and `forward(id, filter)` read the checkpoint on every start, restart included. The two overloads that take a `StartAt` start where you tell them instead of resuming from the checkpoint.
+
+The guarantee only applies when `publish` returns after the broker has confirmed the message. A sink that hands the event to a thread pool and returns straight away lets the checkpoint move past an event nobody delivered.
+
+Do not pair `DomainEventForwarder` with `RabbitMqDomainEventSink` or `KafkaDomainEventSink`, the two shipped domain sinks described under [RabbitMQ](/docs/stores/rabbitmq-and-kafka/) and [Kafka](/docs/stores/rabbitmq-and-kafka/#kafka). Those sinks convert a domain event straight to a `CloudEvent` and delegate to a `CloudEventSink`.
+
+That pairing decodes every stored `CloudEvent` into a domain event and then encodes it straight back. The `CloudEvent` it builds keeps the id, source, subject and time the store recorded only if your `CloudEventConverter` happens to produce the same ones.
+
+Forward stored events with `CloudEventForwarder` and a `CloudEventSink` instead, which converts nothing. `DomainEventForwarder` is for a `DomainEventSink<E>` you implement yourself, one that publishes domain events through its own converter.
+
+## Bringing your own publisher
+
+If you already have a publisher wrapper, one that picks an exchange and routing key or a topic from your own domain events, keep it. Implement `CloudEventSink` or `DomainEventSink<E>`, hand it to `CloudEventForwarder` or `DomainEventForwarder<E>` from `occurrent-broker-api-blocking`, and skip the transport module entirely:
+
+```java
+public interface CloudEventSink {
+    void publish(CloudEvent cloudEvent);
+    default void publish(Iterable<CloudEvent> cloudEvents) { ... }
+}
+```
+
+Your `CloudEventSink` picks the destination itself while it publishes. It needs no `DestinationResolver`, the interface the shipped sinks use for that, described under [Destinations and bindings](/docs/stores/brokers/#destinations-and-bindings).
+
+A `DomainEventSink<E>` has two methods to implement, `publish(E)` and `publish(EventMetadata, E)`. `DomainEventForwarder` calls the second with the `EventMetadata` of the stored event, so write that metadata onto the message there if your consumers read the stream id, version or position.
+
+Nothing else in this section changes when you do this. The forwarder, the checkpoint, and the at-least-once guarantee described under [What's guaranteed](/docs/stores/rabbitmq-and-kafka/#whats-guaranteed) all work the same regardless of whose `CloudEventSink` is on the other end.
+
+## Destinations and bindings
+
+`EventDestination` describes where an event goes, and each broker implements it as its own record, `RabbitMqDestination` or `KafkaDestination`. A `DestinationResolver<D extends EventDestination>` works out the destination a publisher sends an event to, and the destinations a consumer has to bind to for the events it wants:
+
+```java
+D destinationFor(CloudEvent cloudEvent);
+Optional<Set<D>> destinationsFor(Filter filter);
+default Optional<Set<D>> destinationsFor(SubscriptionFilter subscriptionFilter);
+D catchAllDestination();
+```
+
+`destinationFor(cloudEvent)` is the publishing side. A sink calls it for every event it publishes, and every part of the destination it gets back is filled in.
+
+`destinationsFor(filter)` is the consuming side. It returns the destinations a consumer has to bind to so that it receives the events a `Filter` describes. This is the overload you implement.
+
+An empty `Optional` from it means the resolver could not narrow the filter, not that no destination matches. In that case the caller binds `catchAllDestination()`, instead of listening to nothing.
+
+`destinationsFor(subscriptionFilter)` is a default method you do not implement. It hands the `Filter` inside an `AgnosticSubscriptionFilter` or a `StreamSubscriptionFilter` to the method above, and returns an empty `Optional` for every other `SubscriptionFilter`. That covers a `DcbSubscriptionFilter`, which holds DCB criteria rather than a `Filter`, and any `SubscriptionFilter` of your own, which is a type this interface knows nothing about.
+
+`catchAllDestination()` is the destination that receives every event the resolver could route, so a consumer bound to it never misses one.
+
+`RabbitMqTopicExchangeDestinationResolver` and `KafkaTopicPerTypeDestinationResolver` derive both from the CloudEvent type through your `CloudEventTypeMapper`, the same mapping your application already uses to convert between a stored event and its domain class. The publisher and the consumer then read the same mapping, instead of two hand-written strings that nothing checks against each other.
+
+On RabbitMQ that is one topic exchange, with the routing key derived from the type and the queue bound to the routing keys the consumer asked for:
+
+```java
+CloudEventTypeMapper<OrderEvent> typeMapper = ReflectionCloudEventTypeMapper.simple(OrderEvent.class);
+RabbitMqTopicExchangeDestinationResolver resolver =
+        new RabbitMqTopicExchangeDestinationResolver("orders-exchange", typeMapper);
+
+// Publishing: the sink asks the resolver where each event goes.
+RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, resolver).build();
+
+// Consuming: bind the queue to the two types this projection handles.
+RabbitMqDomainEventSource<OrderEvent> source =
+        RabbitMqDomainEventSource.builder(rabbitConnection, feed, "order-status-queue")
+                .resolver(resolver)
+                .bindingFilter(Filter.type(Condition.in(
+                        typeMapper.getCloudEventType(OrderPlaced.class),
+                        typeMapper.getCloudEventType(OrderShipped.class))))
+                .build();
+```
+
+An `OrderPlaced` publishes to `orders-exchange` with routing key `OrderPlaced`, and the queue is bound to `OrderPlaced` and `OrderShipped`. Remove the `bindingFilter(...)` line, or pass a filter the resolver cannot narrow such as `Filter.streamId("order-1")`, and the queue is bound with routing key `#` instead, which is what `catchAllDestination()` returns.
+
+Kafka does the same with topics. `KafkaSharedTopicDestinationResolver`, the default, publishes everything to one topic, so a binding has nothing to narrow there. This example uses the per-type resolver instead:
+
+```java
+KafkaTopicPerTypeDestinationResolver resolver =
+        new KafkaTopicPerTypeDestinationResolver("orders.", typeMapper);
+
+KafkaCloudEventSink sink = KafkaCloudEventSink.builder(producerConfig, resolver).build();
+
+KafkaDomainEventSource<OrderEvent> source =
+        KafkaDomainEventSource.builder(consumerConfig, feed)
+                .resolver(resolver)
+                .bindingFilter(Filter.type(typeMapper.getCloudEventType(OrderShipped.class)))
+                .build();
+```
+
+An `OrderShipped` publishes to `orders.OrderShipped`, and the consumer subscribes to that one topic. Remove the `bindingFilter(...)` line and it subscribes to `catchAllDestination()` instead, which for this resolver is a pattern matching every topic under the `orders.` prefix.
+
+Pass `bindings(Set)` to a source builder when a resolver can't express the bindings you want. The source then binds the queue to exactly those destinations, or on Kafka subscribes to exactly those topics, instead of deriving them from a resolver.
+
+An empty set fails `build()` with an `IllegalStateException`, because a source bound to nothing would receive no events while still looking healthy. Kafka always refuses it, and RabbitMQ refuses it unless `declareTopology(false)` is set, which declares no bindings at all.
+
+A narrower binding only changes which messages the broker delivers. It never changes what your handler receives. A routing key or a topic name can only express an event type, so the broker can't see a stream id, a data field or a time range. `SubscriptionFilterMatcher` still decides what your handler sees once the message arrives.
+
+A binding you derive this way has to stay at least as inclusive as the subscription's own filter. A narrower one stops an event from reaching a matcher that would have accepted it, and your projection or saga never receives that event.
+
+At the CloudEvent level the source has no way to read the filter your subscription was registered with, since `PushSubscriptionModel` exposes neither it nor its matcher. Pass the same filter to the source's `bindingFilter(...)` yourself if you want the narrowing.
+
+At the domain level `DomainEventFeed` checks each event against the filter its projection registered with, in `acceptOrDeferCloudEvent(..)`. Its `acceptAndWait(metadata, event)` and `acceptOrDefer(metadata, event)` deliver every event they're given without that check.
+
+The domain source filters nothing itself. It hands every message to `acceptOrDeferCloudEvent(..)`, so the feed checks each one however coarse the binding is.
+
+## Consuming from a broker
+
+A source is the consuming half of the diagram above. It consumes from a queue or a topic, rebuilds each message into a `CloudEvent`, and hands that to the [`PushSubscriptionModel`](/docs/layer-0/push-subscription/) or [`DomainEventFeed`](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents) the application already has:
+
+```java
+RabbitMqDomainEventSource<OrderEvent> source =
+        RabbitMqDomainEventSource.builder(rabbitConnection, feed, "order-status-queue")
+                .resolver(resolver)
+                .build();
+```
+
+Building a source starts its background work right away. A RabbitMQ source starts a poll that consumes from the queue only while the subscription is running, and a Kafka source starts its poll loop and pauses fetching while the subscription isn't running. Either way, keep the reference and close it when the application shuts down.
+
+`RabbitMqCloudEventSource` and `KafkaCloudEventSource` hand the rebuilt `CloudEvent` straight to a `PushSubscriptionModel`, so a subscription registered there receives the same `CloudEvent` it would have received from a change stream.
+
+`RabbitMqDomainEventSource<E>` and `KafkaDomainEventSource<E>` hand it to a `DomainEventFeed<E>` instead, which decodes it with your `CloudEventConverter<E>` and delivers a domain event. A projection registered there receives an `OrderPlaced` rather than a `CloudEvent`.
+
+A domain source stops for good when `acceptOrDeferCloudEvent(..)` throws [`UnreadableLiveFilterException`](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents), without applying its `DeliveryFailurePolicy`. It never acknowledges that message, and on Kafka never commits its offset, so the broker still has it once you fix the registration.
+
+So pick the source that matches the consumer you already have. Both sources read the same message, so a `CloudEventForwarder` publishing through a `CloudEventSink` feeds either one. The [runnable example](/docs/stores/rabbitmq-and-kafka/#a-runnable-example) below consumes it both ways.
+
+A source acts on the `RoutingOutcome` that `acceptOrDefer(..)` returns for each message. `outcome.mayAcknowledge()` is true for `DELIVERED` and `FILTERED` and false for the other four. `outcome.disposition()` sorts the six outcomes into four dispositions, so a source you write yourself switches on four values rather than six:
+
+| Disposition | Outcomes | What to do with the message |
+| :- | :- | :- |
+| `ACKNOWLEDGE` | `DELIVERED`, `FILTERED` | Acknowledge it. |
+| `HOLD` | `DEFERRED`, `UNAVAILABLE` | Don't acknowledge it, and [hand it back to the broker](/docs/stores/brokers/#handing-a-message-back-to-the-broker) so it's delivered again. Don't run it through your own retry or parking policy, because nothing about the message is broken. |
+| `FAIL` | `NOT_DELIVERABLE` | Your own failure policy decides what happens to it. |
+| `STOP` | `REFUSED` | Stop consuming rather than redelivering it, because offering it again gets the same answer. |
+
+[Observing pushed events](/docs/layer-0/push-subscription/#observing-pushed-events) says when each outcome is returned.
+
+A running replay finishes by itself, so redelivering a message held for it eventually delivers it. A stopped model, a paused subscription and a stopped catch-up all wait for someone to start them again. Until then, a source that only redelivers a held message keeps getting the same answer.
+
+Both brokers ship both sources as plain classes you construct yourself, with no Spring Boot involved. [RabbitMQ](/docs/stores/rabbitmq-and-kafka/) and [Kafka](/docs/stores/rabbitmq-and-kafka/#kafka) below show the wiring, the configuration each one requires, and how each one acknowledges a message.
+
+### Handing a message back to the broker
+
+A message that came back `HOLD`, or that failed and should be tried again, hasn't been applied. It has to reach your listener again, and nothing may acknowledge it, or commit past it, until it's applied.
+
+On RabbitMQ, call `basicNack` or `basicReject` with requeue. Leaving the message unacknowledged isn't enough. RabbitMQ doesn't deliver it again while the channel stays open, and it counts against the channel's prefetch, the number of unacknowledged messages RabbitMQ sends a consumer before it stops sending more.
+
+On Kafka, a committed offset is where the consumer group resumes in that partition, so committing a later record also commits past this record. Turn auto-commit off with `enable.auto.commit=false`. Before you process or commit any later record in that partition, seek the consumer back to this record and poll again from there.
+
+Occurrent's four sources already do this. `RabbitMqCloudEventSource` and `RabbitMqDomainEventSource` requeue with `basicNack`. `KafkaCloudEventSource` and `KafkaDomainEventSource` refuse to start with auto-commit on, seek back, and leave the rest of that partition's records for a later poll. [RabbitMQ](/docs/stores/rabbitmq-and-kafka/) and [Kafka](/docs/stores/rabbitmq-and-kafka/#kafka) below have the details.

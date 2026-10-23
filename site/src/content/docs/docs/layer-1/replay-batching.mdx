@@ -1,0 +1,122 @@
+---
+title: "Replay batching"
+description: "Write a read model in batches while replaying history."
+sidebar:
+  order: 13
+layer: "1"
+---
+
+Without batching, a catch-up replay costs one store read and one store write per event. `CatchupProjectionFeed`, and a `DomainEventFeed` built on it (see [Feeding domain events instead of CloudEvents](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents)), buffer replayed events per view instance instead and write them in batches. A history of N events over K view instances then costs about 2K store round trips rather than 2N, and about two per batch when the repository also implements the bulk operations described below. Batching is on by default.
+
+Batching only reaches a projection fed that way. `ProjectionRunner`, `DcbProjectionRunner`, and the default `@Projection(source = Source.EVENT_STORE)` path register the projection on a `SubscriptionModel` instead, and so does `@Projection(source = Source.PUSH)` bound to a `PushSubscriptionModel` rather than a `DomainEventFeed`. All of those still pay one read and one write per replayed event, because the subscription model owns that catch-up and doesn't yet tell the view where a replay begins or ends.
+
+`Projections.materializedView` (blocking) and `Projections.reactiveUpdateWithMetadata` (reactor), the two builders `CatchupProjectionFeed` and `DomainEventFeed` use internally, take a `MaterializedViewOptions` with a `batchSize`, the number of buffered events, summed across every view instance rather than counted per instance, that triggers a flush. The default is 1000. The example below tunes it down to 200:
+
+```java
+MaterializedView<OrderEvent> view = Projections.materializedView(
+        orderStatusProjection(), repository, RetryStrategy.none(), new MaterializedViewOptions(200));
+
+CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
+        "order-status", view, Filter.all(), eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage);
+```
+
+Pass `new MaterializedViewOptions(1)` for a batch size of one. That reads, applies, and saves each event one at a time, the same as before this feature existed, and is the way out if the behaviour below surprises you.
+
+## The read model during a replay
+
+Outside a replay, the read model is always up to date. Each event is applied by reading the current state, applying the event and writing the state back.
+
+During a replay with batching, the read model lags behind:
+
+* A view instance with buffered events isn't updated until its batch is written.
+* Instances are written one after another, so writes to different instances don't happen in event order.
+* Anything that watches the read model's storage directly, such as a change stream or an audit trail of writes, sees fewer and larger writes than there were events.
+
+Within one view instance, events are still applied in the order they arrived.
+
+The projection DSL has never promised an up-to-date read model during a replay, only a correct one once the replay finishes, and batching keeps that promise.
+
+## Batching in a view you build yourself
+
+`Projections.materializedView` and `Projections.reactiveUpdateWithMetadata` batch a replay for you. A `MaterializedView` you build yourself doesn't, whether you build it with `MaterializedView.create(...)` or with the view DSL's `materialized(mongoOperations, ...)` Kotlin helper (see [Materializing with Spring](/docs/layer-1/views/#materializing-with-spring)). When you hand such a view to `CatchupProjectionFeed.create(id, view, filter, ...)`, it's written once per replayed event.
+
+To batch it, implement `ReplayAware` on the view. The feed then tells it when a replay starts and ends:
+
+```java
+public interface ReplayAware {
+    void replayStarted();
+    void replayCompleted();
+    void replayAbandoned();
+}
+```
+
+Start buffering in `replayStarted()`, write the buffer in `replayCompleted()`, and drop it in `replayAbandoned()`. The feed records the catch-up as finished right after `replayCompleted()` returns, so write everything before it returns. For example:
+
+```java
+class OrderStatusView implements MaterializedView<OrderEvent>, ReplayAware {
+    private final ViewStateRepository<OrderStatus, String> repository;
+    private final Map<String, OrderStatus> buffer = new LinkedHashMap<>();
+    private boolean replaying;
+
+    OrderStatusView(ViewStateRepository<OrderStatus, String> repository) {
+        this.repository = repository;
+    }
+
+    @Override
+    public void update(OrderEvent event) {
+        String id = event.orderId();
+        OrderStatus current = buffer.containsKey(id)
+                ? buffer.get(id)
+                : repository.findById(id).orElse(OrderStatus.initial());
+        OrderStatus updated = current.apply(event);
+        if (replaying) {
+            buffer.put(id, updated);
+        } else {
+            repository.save(id, updated);
+        }
+    }
+
+    @Override
+    public void replayStarted() {
+        replaying = true;
+    }
+
+    @Override
+    public void replayCompleted() {
+        repository.saveAll(buffer);
+        buffer.clear();
+        replaying = false;
+    }
+
+    @Override
+    public void replayAbandoned() {
+        buffer.clear();
+        replaying = false;
+    }
+}
+```
+
+On the reactor stack the interface is `ReactiveReplayAware`, in `org.occurrent.dsl.projection.reactor`. Its `replayCompleted()` returns a `Mono<Void>`, so the buffered write can run asynchronously, and the feed records the catch-up as finished once that `Mono` completes. The other two methods return nothing, the same as on the blocking stack.
+
+## Partial failure
+
+A batch write is not atomic across view instances. When it fails partway, some instances are durable and some are not, the same as a plain loop over `save` failing partway would leave. That's safe because of how the rest of the behaviour constrains it:
+
+* Nothing stays buffered when the catch-up marker is recorded. The flush is ordered before the marker, so a stored instance is never behind what the marker claims.
+* A failed write fails the whole catch-up, the same as a failed write always has outside a replay. The marker is not recorded, and the next start replays the whole history again.
+* A stopped replay discards its buffer instead of writing it. `replayAbandoned()` runs and drops whatever was buffered, because a stopped catch-up already writes no marker and goes live for nothing, so a partial write would only store state the next replay recomputes anyway.
+* Retrying a lost optimistic-locking update stays scoped to one view instance at a time. Pass a `retryStrategy` other than `RetryStrategy.none()` to `Projections.materializedView`/`reactiveUpdateWithMetadata` and a flush falls back to reading and writing one instance at a time, retrying only the one that lost the race, instead of the bulk `findAllById`/`saveAll` round trip. A repository that overrides `saveAll` to issue one bulk database call reports no per-instance outcome, so there's nothing inside it for a retry to target.
+
+None of this widens the replay's existing at-least-once contract. A failed or stopped catch-up already left the view partially advanced and replayed the same events again next time. Batching only narrows how much can be re-replayed if it fails, durability that used to be per event never spans more than one batch now.
+
+## Batching with MongoDB
+
+Occurrent's MongoDB `ViewStateRepository` implementations read and write a whole batch in one round trip each, with one `_id in (...)` query for the read and one unordered bulk write for the save. That covers:
+
+* the one behind `materialized(mongoOperations, ...)`, which uses `MongoOperations`
+* the one behind `materialized(crudRepository, ...)`, which uses a Spring Data `CrudRepository`
+* the store the `@Projection` annotation uses when you declare no store bean
+
+They do this by overriding `findAllById` and `saveAll`. It only applies with the default `RetryStrategy.none()`. With a retry strategy, a batch is read and written one view instance at a time, as described above.
+
+You don't need an extra MongoDB index for this. Both the read and the write look documents up by `_id`, which every MongoDB collection already has an index on.

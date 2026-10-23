@@ -1,0 +1,251 @@
+---
+title: "Projections"
+description: "Keep a read model up to date with the Projection DSL."
+sidebar:
+  order: 12
+layer: "1"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+A read model is the read side's counterpart to a decider. A [decider](/docs/overview/deciders/) applies events to state and decides new events. A projection applies events to state that you read. Occurrent already gives you a [`View`](/docs/layer-1/views/) for the pure fold, but a `View` on its own doesn't know which events feed it, which view instance an event updates, or where its state is stored. The projection DSL couples those together, so a feature describes its read model right next to its fold, the same way [`DcbDecider`](/docs/layer-1/dcb-with-domain-events/#coupling-a-decider-to-a-boundary) couples a decider with its boundary and tags on the write side.
+
+A `Projection<S, E, ID>` is a `View` plus either an `id` function (which view instance an event updates) or, for a single-instance read model, no `id` at all (see [Single-instance projections](/docs/layer-1/projections/#single-instance-projections) below), plus the event types the fold handles. You build one with a type-safe handler builder, registering a fold per event type:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Projection<Integer, CourseEvent, String> enrolledStudents =
+            Projection.<Integer, CourseEvent, String>builder(0)
+                    .id(CourseEvent::courseId)
+                    .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                    .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val enrolledStudents = projection<Int, CourseEvent, String>(initialState = 0) {
+        id { event -> event.courseId }
+        on<StudentEnrolled> { count, _ -> count + 1 }
+        on<StudentUnenrolled> { count, _ -> count - 1 }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The builder both assembles the `View` and records the event types you registered handlers for, so the subscription that feeds the projection is filtered to those events. There's no separate list of subscribed types to keep in sync with the fold. [Deriving the Event Filter](/docs/layer-1/deriving-the-event-filter/) describes how those types become the filter. The fold returns the state unchanged for any event type without a handler, so pointing a projection at a broader stream is safe for the fold itself.
+
+That safety has a limit though. Every event the filter admits is still converted to a domain event before the fold ever sees it, and one the converter can't turn into your event type fails that delivery instead of being ignored. A subscription that keeps redelivering a failing event holds up everything queued behind it, so a broader stream is only safe while it stays inside what the converter can convert.
+
+When you need to select on more than the event type, for example a subject, a source, or a time range, set an explicit `filter(...)` on the builder.
+
+When the state has no natural starting value, leave the initial state out. `Projection.<CourseSummary, CourseEvent, String>builder()` in Java and `projection<CourseSummary, CourseEvent, String> { }` in Kotlin then start with a `null` state, so its type is nullable, `@Nullable CourseSummary` in Java and `CourseSummary?` in Kotlin.
+
+The single-instance builders below have the same no-argument form, `singletonBuilder()` and `singletonProjection { }`, and so does a snapshot view, `SnapshotView.builder()` and `snapshotView { }`.
+
+## Single-instance projections
+
+Whether a projection needs an `id` comes down to how many views it maintains. A leaderboard built from every player's events is one view over the whole stream, so it is single-instance and needs no `id`. A per-player profile is one view per player, keyed by player id, so it needs an `id` to pick out which profile each event updates. Rule of thumb: a single view over all events is single-instance and takes no `id`, one view per subject is keyed and takes an `id`.
+
+A single-instance projection updates one slot rather than one per key, so it has no per-event key to derive and no `id` function to write. Build it with `singletonBuilder(...)` instead of `builder(...)` in Java, or use the top-level `singletonProjection` in Kotlin. Contrast with the keyed `enrolledStudents` above, one instance per `courseId`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Projection<Integer, CourseEvent, String> totalEnrolledStudents =
+            Projection.<Integer, CourseEvent>singletonBuilder(0)
+                    .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                    .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val totalEnrolledStudents = singletonProjection<Int, CourseEvent>(initialState = 0) {
+        on<StudentEnrolled> { count, _ -> count + 1 }
+        on<StudentUnenrolled> { count, _ -> count - 1 }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The framework keys the single stored slot by the projection's own runtime identity, the subscription id passed to `project(...)`, or the `@Projection` id, so on a document store the state's `@Id` must equal that identity, the same constraint as the keyed case. The DCB counterpart, `dcbSingletonProjection`, pairs the same singleton fold with a DCB read boundary. See the `registered-account-count` example under [the `@Projection` annotation](/docs/spring-boot/projection-annotation/).
+
+## Maintaining a stored read model
+
+Hand the projection to a subscription runner and it does both halves of the work, starting the subscription and keeping the stored read model up to date as events arrive. Supply a `ViewStateRepository` (or a `MaterializedView`, or a Spring `MongoOperations` for the built-in Mongo view store):
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    ProjectionRunner.stream(subscriptionModel, cloudEventConverter)
+            .project("enrolled-students", enrolledStudents, repository);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    streamSubscriptions(subscriptionModel, cloudEventConverter) {
+        project("enrolled-students", enrolledStudents, repository)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The runner comes in the same three flavours as the [subscription DSL](/docs/layer-1/subscribing-to-domain-events/), so `project` is not tied to stream events. `ProjectionRunner.stream(...)` and the Kotlin `streamSubscriptions { }` above stay scoped to stream events, excluding anything a DCB append wrote. `ProjectionRunner.agnostic(...)` and `subscriptions { }` are capability-neutral: on a store that has both capabilities they feed the projection stream-written and DCB-appended events together, selected by the projection's own event types alone. Use the neutral pair when the read model just wants the events, whichever write model produced them, and the stream pair when it must stay on stream events.
+
+DCB has its own pair rather than an option on these, because a `DcbProjection` is scoped by tags rather than by event type. `DcbProjectionRunner` and the Kotlin `dcbSubscriptions { }` take a `DcbProjection` and subscribe to its `DcbCriteria`, covered under [DCB projections](/docs/layer-1/projections/#dcb-projections).
+
+`project` derives the subscription filter from the projection's handlers, loads the current state for the event's `id`, applies the event, and saves the result.
+
+## Event metadata
+
+A fold and the `id` function can also see the event's metadata, its stream id and version, the global position, and any CloudEvent extension, through additional overloads. This is the same [`EventMetadata`](/docs/spring-boot/subscription-annotations/#event-metadata) a plain subscription already hands a subscriber, so a projection reads exactly what a subscriber would see. Use it to key a view instance by something other than its payload, for example the stream id:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Projection<Integer, CourseEvent, String> enrolledStudentsByStream =
+            Projection.<Integer, CourseEvent, String>builder(0)
+                    .id((metadata, event) -> metadata.getStreamId())
+                    .on(StudentEnrolled.class,   (count, metadata, event) -> count + 1)
+                    .on(StudentUnenrolled.class, (count, metadata, event) -> count - 1)
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val enrolledStudentsByStream = projection<Int, CourseEvent, String>(initialState = 0) {
+        id { metadata, _ -> metadata.streamId }
+        on<StudentEnrolled>   { count, _, _ -> count + 1 }
+        on<StudentUnenrolled> { count, _, _ -> count - 1 }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Every event-only `on(...)` and `id(...)` keeps working unchanged, plain code never has to opt in to metadata. A `DcbProjection` gets the same fold and `id` overloads, and `DcbProjectionRunner` builds the metadata from the delivered event the same way the stream runner does, so a DCB fold can also read the position, or wrap the metadata with `DcbEventMetadata.from(metadata)` for the event's tags.
+
+The [on-demand](/docs/layer-1/projections/#reading-on-demand) query path has no originating CloudEvent, so it applies events with `EventMetadata.empty()`: reading the stream id or version throws, and `getPosition()` (`.position` in Kotlin) is `null`. That path genuinely has no metadata to give. A live domain-event feed is different: the application can supply real metadata itself with `acceptAndWait(metadata, event)` on `DomainEventFeed` and `CatchupProjectionFeed` (see [Feeding domain events instead of CloudEvents](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents)). A projection keyed by metadata is therefore no longer limited to a subscription runner, only the on-demand query still has no metadata to key on.
+
+## DCB projections
+
+On a DCB store, a projection can read only the events that carry certain tags, instead of every event of a type. A `DcbProjection` is a `Projection` together with a `DcbCriteria`, which says which tags to read.
+
+Take the question "is this username already claimed?". The projection below reads only the events tagged with that one username, so its whole state is a single true or false. That's why it's a singleton projection, with no `id` function:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    DcbProjection<Boolean, AccountEvent, String> isUsernameClaimed(String username) {
+        Projection<Boolean, AccountEvent, String> view =
+                Projection.<Boolean, AccountEvent>singletonBuilder(false)
+                        .on(AccountRegistered.class, (state, event) -> true)
+                        .on(AccountClosed.class,     (state, event) -> false)
+                        .on(UsernameChanged.class,   (state, event) -> event.newUsername().equals(username))
+                        .build();
+        return new DcbProjection<>(view, DcbCriteria.tags(Tag.parse("username:" + username)));
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    fun isUsernameClaimed(username: String) =
+        dcbSingletonProjection<Boolean, AccountEvent>(initialState = false) {
+            tags("username:$username")
+            on<AccountRegistered> { _, _ -> true }
+            on<AccountClosed>     { _, _ -> false }
+            on<UsernameChanged>   { _, event -> event.newUsername == username }
+        }
+    ```
+  </TabItem>
+</Tabs>
+
+Feed it with a DCB subscription the same way you feed a stream projection: `dcbSubscriptions(dcbSubscriptionModel, cloudEventConverter) { project("...", isUsernameClaimed(username), repository) }`.
+
+A `DcbProjection` rejects a wrapped `Projection` that has its own explicit `filter()`, because that filter would otherwise be silently ignored. A `DcbProjection` reads through its `DcbCriteria`, not the wrapped projection's filter.
+
+## Reading on demand
+
+Not every read needs a stored read model. You can also build the state when you need it, by applying the projection to the events in the event store. Nothing is stored, so there's nothing to keep in sync, and the result includes every event stored when you ask:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    boolean claimed = Projections.project(isUsernameClaimed("alice"), dcbQueries);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val claimed: Boolean = dcbQueries.project(isUsernameClaimed("alice"))
+    ```
+  </TabItem>
+</Tabs>
+
+Reading on demand fits when:
+
+* the result must include the latest writes, for example an order page shown right after the order was placed, before an asynchronous read model has caught up
+* the answer depends on few events, such as those of one order or one username, so reading them on every call is cheap
+* the answer is rarely asked for, for example in an admin page or a support script, so keeping a stored read model up to date isn't worth it
+
+Every call reads the events again. For an answer that many requests ask for, or one that depends on many events, a stored read model is cheaper.
+
+The same projection works both ways. Subscribe it to keep a stored read model up to date, or run it on demand. The plain, non-DCB `DomainEventQueries` has the same `project` method.
+
+In Java, the on-demand fold is also a static entry point, `Projections.project(projection, queries)`, the counterpart to the Kotlin `project` extension above:
+
+```java
+int total = Projections.project(totalEnrolledStudents, domainEventQueries);
+```
+
+It's only valid for a single-instance (singleton) projection, since combining every instance of a keyed projection into one blended state on demand would be nonsense; use `Projections.project(projection, queries, instanceId)` to scope a keyed projection to one instance instead. `Projections.project(dcbProjection, dcbQueries)` is the DCB counterpart to both; a DCB projection's criteria already scopes the read to one instance, so there's no keyed/singleton distinction to make.
+
+## Read-your-writes
+
+Register the projection on a `SynchronousSubscriptionModel` and pass the same model to the application service. The application service then updates the read model before `execute(...)` returns, so a read right after the write sees it:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    SynchronousSubscriptionModel synchronous = new SynchronousSubscriptionModel();
+    ProjectionRunner.stream(synchronous, cloudEventConverter)
+            .project("enrolled-students", enrolledStudents, repository);
+
+    ApplicationService<CourseEvent> applicationService =
+            GenericApplicationService.builder(eventStore, cloudEventConverter)
+                    .synchronousSubscriptions(synchronous)
+                    .build();
+
+    applicationService.execute(courseId, events -> enrollStudent(events, studentId));
+    // The enrolled-students read model already includes the new student here
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val synchronous = SynchronousSubscriptionModel()
+    streamSubscriptions(synchronous, cloudEventConverter) {
+        project("enrolled-students", enrolledStudents, repository)
+    }
+
+    val applicationService = GenericApplicationService.builder(eventStore, cloudEventConverter)
+        .synchronousSubscriptions(synchronous)
+        .build()
+
+    applicationService.execute(courseId) { events -> enrollStudent(events, studentId) }
+    // The enrolled-students read model already includes the new student here
+    ```
+  </TabItem>
+</Tabs>
+
+Add a `transactionExecutor(...)` to the builder to update the read model in the same transaction as the write, as [Synchronous Subscriptions](/docs/layer-1/synchronous-subscriptions/) describes. Each write then takes a little longer, so use this when a command needs to see its own effect at once.
+
+## Reactor
+
+Everything above has a reactor counterpart in `org.occurrent.dsl.projection.reactor` with the same shape. The push callbacks return `Mono<Void>`, the on-demand `project` returns `Mono<S>`, and you supply either a reactive update function for a reactive store or a blocking view store that the runner bridges onto a bounded-elastic scheduler.

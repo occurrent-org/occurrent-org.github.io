@@ -1,0 +1,196 @@
+---
+title: "EventStore queries"
+description: "Query events across streams, including filtering on payload data."
+sidebar:
+  order: 4
+layer: "0"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+Since Occurrent builds on-top of existing databases it's ok, given that you know what you're doing\*, to use the strengths of these databases. One such strength is that databases typically have good querying support. Occurrent exposes this with the `EventStoreQueries` interface that an EventStore implementation may implement to expose querying capabilities. For example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    OffsetDateTime lastTwoHours = OffsetDateTime.now().minusHours(2);
+    // Query the database for all events the last two hours that have "subject" equal to "123" and sort these in descending order
+    Stream<CloudEvent> events = eventStore.query(subject("123").and(time(gte(lastTwoHours))), SortBy.time(DESCENDING));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val lastTwoHours = OffsetDateTime.now().minusHours(2);
+    // Query the database for all events the last two hours that have "subject" equal to "123" and sort these in descending order
+    val events : Stream<CloudEvent> = eventStore.query(subject("123").and(time(gte(lastTwoHours))), SortBy.time(DESCENDING))
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+\*There's a trade-off when it's appropriate to query the database vs creating materialized views/projections and you should most likely create indexes to allow for fast queries.
+:::
+
+The `subject` and `time` methods are statically imported from `org.occurrent.filter.Filter` and `gte` is statically imported from `org.occurrent.condition.Condition`.
+
+`EventStoreQueries` is not bound to a particular stream, rather you can query _any_ stream (or multiple streams at the same time). It also provides the ability to get an "all" stream:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Return all events in an event store sorted by descending order
+    Stream<CloudEvent> events = eventStore.all(SortBy.time(DESCENDING));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Return all events in an event store sorted by descending order
+    val events : Stream<CloudEvent> = eventStore.all(SortBy.time(DESCENDING))
+    ```
+  </TabItem>
+</Tabs>
+
+The `EventStoreQueries` interface also supports skip and limit capabilities which allows for pagination:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Skip 42, limit 1024
+    Stream<CloudEvent> events = eventStore.all(42, 1024);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Skip 42, limit 1024
+    val events : Stream<CloudEvent> = eventStore.all(42, 1024)
+    ```
+  </TabItem>
+</Tabs>
+
+To get started with an event store refer to [Choosing An EventStore](/docs/stores/choosing-an-event-store/).
+
+## Filtering on Payload Data
+
+`Filter.data(name, condition)` filters on a field inside an event's `data` payload. It's statically imported from `org.occurrent.filter.Filter`, next to `subject`, `type` and `time`, and resolves to `filter("data." + name, condition)`, so it composes with `.and()` and `.or()` like any other `Filter`. It works the same way whether you're querying an `EventStore` or filtering a subscription:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Stream<CloudEvent> events = eventStore.query(data("amount", gt(100)));
+
+    subscriptionModel.subscribe("large-orders", filter(data("amount", gt(100))), System.out::println);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val events : Stream<CloudEvent> = eventStore.query(data("amount", gt(100)))
+
+    subscriptionModel.subscribe("large-orders", filter(data("amount", gt(100)))) { println(it) }
+    ```
+  </TabItem>
+</Tabs>
+
+The path is a dotted path, the same one MongoDB resolves, and nothing more. There are no wildcards and no array-index predicates, because MongoDB can't answer those either. `Filter.data("person.city", eq("Malmo"))` reaches into a nested object, and a field holding an array matches when any element satisfies the condition, so `Filter.data("tags", eq("red"))` matches a payload holding `{"tags": ["red", "blue"]}`.
+
+A payload value keeps its type. `Filter.data("amount", eq("42"))` does not match a stored `42`, because MongoDB doesn't either. Anything the path can't resolve, an absent field, a path that continues past a value with no fields of its own, or a payload whose root isn't a JSON object, just doesn't match. None of that throws, because a single malformed event must not break a query or a subscription over the whole store.
+
+Two numbers compare by value regardless of their Java type, on every operator `Filter` exposes, not only the range ones. `Filter.data("amount", eq(42))` matches a stored value that Jackson decoded as a `Long`, the same way `gt`, `lt`, `ne` and `in` already did. A comparison between genuinely different types, a number against a string say, matches nothing rather than failing, which is what MongoDB does. This applies to numeric CloudEvent attributes and extensions too, not only to `data` payload fields.
+
+## Plugging in a `DataFieldReader`
+
+On MongoDB, a `data.` condition resolves server-side, so there's nothing further to configure. Everywhere else, a store or subscription model that matches a payload in its own process needs to parse it first, and Occurrent has no opinion on which JSON library you use for that. Instead it asks for an `org.occurrent.inmemory.filtermatching.DataFieldReader`:
+
+```java
+public interface DataFieldReader {
+    Optional<Object> read(CloudEvent cloudEvent, String path);
+
+    static DataFieldReader refusing() { ... }
+}
+```
+
+Without one, `Filter.data(...)` refuses rather than silently matching nothing, and the refusal names the artifact to add. Occurrent ships a Jackson-backed implementation, `JacksonDataFieldReader`, in `occurrent-common-inmemory-filter-matching-jackson`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    InMemoryEventStore eventStore = new InMemoryEventStore().withDataFieldReader(new JacksonDataFieldReader());
+
+    InMemorySubscriptionModel subscriptionModel = new InMemorySubscriptionModel(new JacksonDataFieldReader());
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val eventStore = InMemoryEventStore().withDataFieldReader(JacksonDataFieldReader())
+
+    val subscriptionModel = InMemorySubscriptionModel(JacksonDataFieldReader())
+    ```
+  </TabItem>
+</Tabs>
+
+Which components need a reader, and which don't, comes down to whether they match a payload themselves or trust something else to have already matched it:
+
+* **`InMemoryEventStore` and `InMemorySubscriptionModel`** match entirely in memory, so both need a reader to answer a `data` filter at all. Without one, they refuse exactly as they did before this feature existed.
+* **Synchronous and push subscriptions** (`SynchronousSubscriptionModel`, `PushSubscriptionModel`) also match entirely in memory, regardless of which store or broker feeds them, so both take a `DataFieldReader` as a constructor argument the same way `InMemorySubscriptionModel` does.
+* **A catch-up subscription model needs nothing.** It wraps a store that already applied the filter server-side to deliver the event in the first place, and on the live tail it only re-checks attributes and extensions, trusting the store for a payload condition. If you're writing your own subscription model wrapper and want the same trust, `FilterMatcher.matcherIgnoringPayloadConditions(filter)` builds that predicate for you.
+
+If you write a subscription model of your own, a catch-up wrapper assumes the model it wraps already applied a payload condition. If your model ignores one instead, the catch-up wrapper now over-delivers rather than throwing, since it has no store of its own to ask.
+
+### Writing your own reader
+
+You only need one if Jackson is not on your classpath. The rules a reader must follow, so its answers match what MongoDB would say:
+
+* The path is a dotted path without the leading `data.`, the same one MongoDB resolves. `Filter.data("person.city", ..)` arrives as `person.city`.
+* Return the value as a plain Java value. A `String`, a `Number`, a `Boolean`, or a `List` when the field holds an array. Never as text. A payload holding `{"amount": 42}` answers with a number, because `Filter.data("amount", eq("42"))` does not match on MongoDB and must not match here either.
+* Return the whole `List` for an array rather than deciding the match yourself. The matcher asks whether any element satisfies the condition, the way MongoDB does, and it needs the elements to do that.
+* Return `Optional.empty()` when the path reaches nothing. An absent field, a payload that is not a JSON object, or a path that continues past a value with no fields.
+
+A minimal reader for events whose payload is already a `Map`, the shape a test often builds, shows the whole contract:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public final class MapDataFieldReader implements DataFieldReader {
+        @Override
+        public Optional<Object> read(CloudEvent event, String path) {
+            if (!(event.getData() instanceof PojoCloudEventData<?> pojo) || !(pojo.getValue() instanceof Map<?, ?> payload)) {
+                return Optional.empty();
+            }
+            Object current = payload;
+            for (String field : path.split("\\.")) {
+                if (!(current instanceof Map<?, ?> map)) {
+                    return Optional.empty();
+                }
+                current = map.get(field);
+            }
+            return Optional.ofNullable(current);
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    class MapDataFieldReader : DataFieldReader {
+        override fun read(event: CloudEvent, path: String): Optional<Any> {
+            val payload = ((event.data as? PojoCloudEventData<*>)?.value as? Map<*, *>) ?: return Optional.empty()
+            var current: Any? = payload
+            for (field in path.split(".")) {
+                current = (current as? Map<*, *>)?.get(field) ?: return Optional.empty()
+            }
+            return Optional.ofNullable(current)
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The shipped Jackson reader already resolves `Map` payloads without parsing, so in practice this example earns its keep as a picture of the contract rather than as code you need. The interface also has `readAll(cloudEvent, paths)` for a filter with several `data` conditions. Its default loops over `read`, so ignore it until resolving every path in one pass over the payload is a measured win.
+
+## With Spring Boot
+
+Add `occurrent-common-inmemory-filter-matching-jackson` to the classpath and the [Spring Boot starter](/docs/spring-boot/starter/) (both the blocking one and the [reactive](/docs/spring-boot/starter/#reactive-spring-boot-starter) one) contributes a `DataFieldReader` bean backed by `JacksonDataFieldReader`. The auto-configured `SynchronousSubscriptionModel` bean picks it up automatically, so a `data` filter on a [synchronous subscription](/docs/layer-1/synchronous-subscriptions/) works once the artifact is on the classpath. Define your own `DataFieldReader` bean instead to replace it. Without either, that same filter still refuses, naming the artifact to add. A hand-built `PushSubscriptionModel` isn't managed by the starter, so pass the reader to its constructor yourself if you need one there too.

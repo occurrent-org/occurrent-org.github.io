@@ -1,0 +1,114 @@
+---
+title: "ApplicationService"
+description: "Load a stream as domain events, call your domain function, and write the new events back."
+sidebar:
+  order: 3
+layer: "1"
+modules: [occurrent-application-service-blocking]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+Occurrent provides a generic application service that is a good starting point for most use cases. First add the module as a dependency to your project:
+
+<Dependency artifact="occurrent-application-service-blocking" />
+
+This module provides an interface, `org.occurrent.application.service.blocking.ApplicationService`, and a default implementation, `org.occurrent.application.service.blocking.generic.GenericApplicationService`. The `GenericApplicationService` takes an `EventStore` and a `org.occurrent.application.converter.CloudEventConverter` implementation as parameters. The latter is used to convert domain events to and from cloud events when loaded/written to the event store. There's a default implementation that you _may_ decide to use called, `org.occurrent.application.converter.implementation.GenericCloudEventConverter` available in the `org.occurrent:occurrent-cloudevent-converter-generic` module. You can see an example in the [next](/docs/layer-1/application-service/#using-the-application-service) section.
+
+As of version 0.11.0, the `GenericApplicationService` also takes a [RetryStrategy](/docs/stores/retry/) as an optional third parameter.\
+By default, the retry strategy uses exponential backoff starting with 100 ms and progressively go up to max 2 seconds wait time between each retry, if a `WriteConditionNotFulfilledException` is caught (see [write condition](/docs/layer-0/write-conditions/) docs). It will, again by default, only retry 5 times before giving up, rethrowing the original exception. You can override the default strategy by calling `new GenericApplicationService(eventStore, cloudEventConverter, retryStrategy)`. Use `new GenericApplicationService(eventStore, cloudEventConverter, RetryStrategy.none())` to disable retry. This is also useful if you want to use another retry library.
+
+That retry runs wherever `execute` runs, so if you wrap the call in your own `@Transactional` it retries inside your transaction, where it cannot succeed. See [Retry and Transactions](/docs/stores/retry/#retry-and-transactions).
+
+## Using the Application Service
+
+Now you can instantiate the (blocking) `GenericApplicationService`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    EventStore eventStore = ..
+    CloudEventConverter<DomainEvent> cloudEventConverter = ..
+    ApplicationService<DomainEvent> applicationService = new GenericApplicationService<>(eventStore, cloudEventConverter);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val eventStore : EventStore = ..
+    val cloudEventConverter : CloudEventConverter<DomainEvent> = ..
+    val applicationService : ApplicationService<DomainEvent> = GenericApplicationService(eventStore, cloudEventConverter)
+    ```
+  </TabItem>
+</Tabs>
+
+You're now ready to use the generic application service in your application.
+
+:::note
+If you're using [Deciders](/docs/overview/deciders/) then refer to the docs [here](/docs/overview/deciders/#using-an-applicationservice-with-deciders).
+:::
+
+As an example let's say you have a domain model with a method defined like this:
+
+```java
+public class WordGuessingGame {
+    public static List<DomainEvent> guessWord(List<DomainEvent> events, String guess) {
+        // Implementation
+    }    
+}
+```
+
+You can call it using the application service:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    applicationService.execute(gameId) { events ->
+        WordGuessingGame.guessWord(events, guess)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+For more control over a call, for example to read only some of the events in the stream or to run a side effect after the write, pass `ExecuteOptions`. The next sections describe both.
+
+## Stream Filtering and Execute Options
+
+`org.occurrent.application.service.blocking.ExecuteOptions` configures a single `execute` call. It says which events to read before your domain function runs, which [synchronous side effects](/docs/layer-1/application-service-side-effects/) to run after a successful write, or both:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    WriteResult result = applicationService.execute(
+            gameId,
+            ExecuteOptions.<DomainEvent>options()
+                    .filter(ExecuteFilter.type(GameWasStarted.class)),
+            events -> WordGuessingGame.guessWord(events, guess)
+    );
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val result = applicationService.execute(
+        gameId,
+        filter(ExecuteFilters.type<GameWasStarted>())
+    ) { events ->
+        WordGuessingGame.guessWord(events, guess)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The typed filter resolves the event class to its cloud event type using the application service's configured type mapper, so it keeps working even if you map event types to custom names. You can still pass a raw `StreamReadFilter` to `filter(...)` when you want to filter on an explicit type string or on other attributes.
+
+<a id="when-not-to-use-filtering" />Filtering is a read optimization, not a correctness feature. Don't filter away events that are needed to enforce invariants, rebuild state correctly, or make valid domain decisions. If the command depends on the whole stream, read the whole stream.
+
+For which event stores support filtered reads, the filtering semantics, and examples that use the `EventStore` directly, see [Stream Filtering](/docs/layer-0/stream-filtering/).

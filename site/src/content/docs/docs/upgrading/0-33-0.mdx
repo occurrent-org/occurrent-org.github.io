@@ -1,0 +1,16 @@
+---
+title: "Upgrading to 0.33.0"
+description: "What changes in 0.33.0."
+sidebar:
+  order: 2
+---
+
+The `org.occurrent.UpgradeToOccurrent_0_33` recipe makes the mechanical changes for you. Run it before editing anything by hand.
+
+Two changes break compilation. `CheckpointStorage`, blocking and reactor both, gained a conditional write, so an implementation you wrote yourself has two more members to answer, the three-argument `save` and `writeVersion`. Code that only calls the storage keeps compiling, because the two-argument `save` stays as a default that delegates to the new one. The recipe stubs the two members on a Java implementation, each marked with a review comment, while a Kotlin implementation adds them by hand. And a saga timer's name is now a `TimerName` rather than a `String`, so constructing `SagaTimeout`, `StartTimeout`, `StartTimeoutAt` or `CancelTimeout` from a string name, or reading `timerName()` into a `String`, stops compiling. The recipe rewrites every construction it can prove and marks the rest.
+
+Five subscription-capability interfaces are also renamed. `ReplayAwareSubscriptionModel` becomes `ReplayAwareSubscriptions` and `IntrospectableSubscriptionModel` becomes `IntrospectableSubscriptions`, on both stacks, and the blocking `DelegatingSubscriptionModel` becomes `SubscriptionModelWrapper` together with its two methods. Their static lookup method goes from `of` to `findIn`. None of the five ever extended `SubscriptionModel`, which is the relationship the old names claimed. The recipe rewrites these too.
+
+A few behavior changes affect already-running code, with no compiler error to point at them. A saga that declares a sealed event type now receives the concrete events stored under its permitted subtypes, which the saga DSL in 0.32.0 silently missed. Checkpoint writes are fenced whenever a competing-consumer strategy is configured, so a write from a node whose lease has moved to another node is refused instead of overwriting the new holder's checkpoint, and a competing consumer that regains its lease resumes from the stored checkpoint instead of the position it had read before losing it. `ManualStartSubscriptionModel` and `ReactorDurableSubscriptionModel` now record a subscription's first-run start position with a single conditional write, so two nodes registering the same subscription for the first time can no longer both write with the later one silently winning. And the deprecated `join`'s reaction now reads the same events a condition branch's reaction reads, instead of everything the instance has kept.
+
+See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.33.0.md) for the full details and the steps the recipe cannot make for you.

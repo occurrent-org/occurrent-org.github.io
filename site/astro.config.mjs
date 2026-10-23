@@ -3,6 +3,7 @@ import starlight from "@astrojs/starlight";
 import starlightLinksValidator from "starlight-links-validator";
 import starlightLlmActions from "starlight-llm-actions";
 import remarkPageMeta from "./src/plugins/remark-page-meta.mjs";
+import remarkVersion from "./src/plugins/remark-version.mjs";
 
 // The sidebar is the layer model. Each group lists the pages in its directory, ordered by sidebar.order.
 const groups = [
@@ -22,7 +23,7 @@ export default defineConfig({
     site: "https://occurrent.org",
     // The landing page moves over from Jekyll at the cutover. Until then the root goes straight to the docs.
     redirects: { "/": "/docs/overview/introduction/" },
-    markdown: { remarkPlugins: [remarkPageMeta] },
+    markdown: { remarkPlugins: [remarkVersion, remarkPageMeta] },
     integrations: [
         starlight({
             title: "Occurrent",

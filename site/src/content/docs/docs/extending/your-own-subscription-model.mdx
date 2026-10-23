@@ -1,0 +1,180 @@
+---
+title: "Testing your own subscription model"
+description: "Check a subscription model of your own against the conformance tests."
+sidebar:
+  order: 2
+modules: [occurrent-tck-subscription-reactor]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+
+## Subscription Model Conformance
+
+The `occurrent-tck-subscription-blocking` artifact also holds the suites for a subscription model, so if you write your own you can have Occurrent check it against the same contract its five models are held to. `SubscriptionModelConformance` covers delivery and filtering, the whole life cycle, and cancelling. `IntrospectableSubscriptionsConformance` covers `subscriptionIds()`, for a model that can list its subscriptions. `InProcessDeliveryConformance` is for a model that calls the handler on the publishing thread, the way the synchronous and push models do.
+
+You supply a `SubscriptionModelFixture`. Because a subscription model has no single way of being fed an event (a MongoDB model watches a change stream, an in-process one is handed the event directly), the fixture is what publishes:
+
+```java
+class MySubscriptionModelTest extends SubscriptionModelConformance {
+
+    @Override
+    protected SubscriptionModelFixture createFixture() {
+        return new MySubscriptionModelFixture();
+    }
+}
+```
+
+The fixture also declares five things the API cannot be asked:
+
+* whether a paused subscription's events are held for it or dropped
+* whether a throwing handler is retried or the exception reaches whoever published the event
+* whether the model accepts more than one subscription at a time
+* which of the four ways of saying where a subscription starts it accepts
+* whether a subscription with a brand-new id first receives the whole history
+
+Both answers to each are asserted, so declaring one is a promise rather than a way out of a test.
+
+A model that doesn't replay the history to a new subscription can also declare `howFarBackANewSubscriptionMayStart()`. That is how long before `subscribe(..)` an event can have been published and still reach a new subscription that starts at the present. It defaults to zero.
+
+A model that starts a little earlier, rather than risk skipping an event written right after `subscribe(..)` returns, declares how much earlier. Wherever the suite asserts that an earlier event doesn't arrive, it then waits that long, plus half a second, between publishing and subscribing.
+
+You also say how long the suites are allowed to wait for something to arrive. `deliveryTimeout()` defaults to ten seconds, which is what every model shipping with Occurrent runs on, so a model that has to reach a broker before it can deliver widens it rather than having no way to pass:
+
+```java
+class MySubscriptionModelFixture implements SubscriptionModelFixture {
+
+    @Override
+    public Duration deliveryTimeout() {
+        return Duration.ofSeconds(30);
+    }
+
+    // the rest of the fixture
+}
+```
+
+Nothing caps that number, but raising it has a consequence. Each suite carries a `@Timeout` sized for the ten second default, and the longest test in `SubscriptionModelConformance` waits twelve times in a row, so a 30 second budget gives that one test a worst case of six minutes. Put a matching `@Timeout` on your own test class and JUnit uses yours instead of the suite's:
+
+```java
+@Timeout(400)
+class MySubscriptionModelTest extends SubscriptionModelConformance {
+    // ...
+}
+```
+
+One thing to know if you pause a subscription and resume it later. Both MongoDB models carry on from the position they had read to, so an event written while the subscription was paused still arrives once it resumes. The price is that the same event can arrive twice, because a model that resumes from the last position it stored, rather than from just after it, hands that event over a second time. A handler has to cope with that. `stop()` on the model pauses every subscription it holds, so a `stop()` followed by a `start()` is the same situation.
+
+If a `CompetingConsumerSubscriptionModel` wraps your model, implement `SubscriptionModel.subscribePaused(..)`. The competing consumer model uses it to make a competing subscription in your model without starting it, and resumes it there once this node holds the lease.
+
+The default `subscribePaused(..)` throws `UnsupportedOperationException`. The competing consumer model then calls `subscribe(..)` once this node wins the lease, so a subscription made while the competing consumer model is stopped can deliver before its `start()`. `SubscriptionModelConformance` accepts both a model that holds such a subscription paused until it's resumed and one that refuses it with `UnsupportedOperationException`.
+
+The TCK carries the same version number as the rest of Occurrent, and a minor release may add suites and tighten what the existing ones assert. Upgrading can therefore turn a green build red. That is the suite doing what it is for, and there are two things to do about it, fix the implementation or stay on the Occurrent version you were on. Holding the TCK back on its own is not a third option, because each artifact is compiled against the runtime API of its own version.
+
+Your fixture keeps compiling either way. A new fixture member always arrives with a `default`, and where a default value would be a lie it arrives as a `default` that throws and names itself, so a minor upgrade never breaks compilation. Removing a member or a whole suite waits for a major release.
+
+There is no way to turn off one group of tests while you fix something. Declining a contract means not extending its suite, which anyone reading your test sources can see, and nothing inside the suites can skip.
+
+## Competing Consumer Strategy Conformance
+
+If you write your own `CompetingConsumerStrategy`, the same `occurrent-tck-subscription-blocking` artifact used for [checkpoint storage and subscription model conformance](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage) also holds `CompetingConsumerStrategyConformance`. Extend it and supply a `CompetingConsumerStrategyFixture`:
+
+```java
+class MyCompetingConsumerStrategyTest extends CompetingConsumerStrategyConformance {
+
+    @Override
+    protected CompetingConsumerStrategyFixture createFixture() {
+        return new MyCompetingConsumerStrategyFixture();
+    }
+}
+```
+
+The fixture supplies two things that nothing on the interface can:
+
+* A `newCompetingConsumerStrategy()` factory that hands back a rival strategy contending over the _same_ storage as the one under test. The suite needs a rival to register against, and in places a third instance that outlives a rival it deliberately shuts down. Your implementation must therefore allow several strategies over one shared storage, since nothing on `CompetingConsumerStrategy` lets one instance reach another.
+* `timeToConverge()`, the longest the suite waits for the strategy's own coordination to settle who holds a lock when nothing told it directly. This is a bound rather than a delay. The suite stops waiting the moment the condition holds, so a generous value costs a passing run nothing. Only a run that was going to fail anyway waits the full time.
+
+The suite takes no position on _how_ a strategy coordinates. Nothing in it knows a lease exists, waits one out, or asserts when one expires. Occurrent's own two MongoDB-backed strategies assert that timing separately, in deterministic tests against the MongoDB support class with a clock the test moves itself.
+
+The suite asserts one property instead, which a lease is one way of providing. A holder that stops coordinating (the way a crashed instance would, without calling `release` or `unregister`) loses the lock to a rival within `timeToConverge()`, rather than holding it forever.
+
+It also asserts the contract both ways Occurrent uses it:
+
+* `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock. It also calls `hasLock(subscriptionId, subscriberId)` before it hands each event to the handler.
+* `SagaRunner` registers a consumer, never adds a listener, and calls `hasLock` on every poll instead.
+
+A strategy that reports lock changes only through its listener, or that only answers correctly when `hasLock` is called directly, fails half of what the suite checks.
+
+## The Reactive Bridge
+
+Occurrent's own reactive subscription models, and any you write yourself, are checked against a bridge module built on top of the blocking suites rather than a second copy of them. `BlockingSubscriptionOverReactive`, in `occurrent-tck-subscription-reactor`, wraps a reactor `SubscriptionModel` (plus `IntrospectableSubscriptions`, and optionally `CheckpointAwareSubscriptionModel`) as a blocking one. Every blocking conformance suite (`SubscriptionModelConformance`, `IntrospectableSubscriptionsConformance`, `CheckpointAwareSubscriptionModelConformance`) then runs against a reactor model unchanged. The same warning applies as for the [event-store bridge](/docs/extending/your-own-event-store/#the-reactive-bridge), and it must not run outside a test for the same reason.
+
+A bridge that blocks on a result cannot see what happens before that block, so `ReactiveSubscriptionModelConformance` covers what is left. It asserts that the model actually subscribes to the `Mono<Void>` an action returns rather than assembling and dropping it. A handler written the idiomatic way, `ce -> repository.save(ce)`, silently does nothing under a model that gets this wrong. It asserts that an action whose `Mono` errors fails through the model's own error path instead of reaching an unrelated thread or terminating the whole model. And it asserts that `Subscription#waitUntilStarted()` answers more than once, and still after an earlier, abandoned wait was disposed of.
+
+To wire an out-of-tree reactor model into both suites, supply a blocking fixture that wraps it in the bridge, and a reactive-only fixture that hands it over directly:
+
+```java
+class MySubscriptionModelFixture implements SubscriptionModelFixture {
+
+    private final MySubscriptionModel model = new MySubscriptionModel();
+
+    @Override
+    public SubscriptionModel subscriptionModel() {
+        return BlockingSubscriptionOverReactive.of(model);
+    }
+
+    @Override
+    public void publish(List<CloudEvent> events) {
+        // however the model is fed, e.g. a change stream write or an in-process dispatch
+    }
+
+    @Override
+    public boolean deliversEventsPublishedWhilePaused() {
+        return false;
+    }
+
+    @Override
+    public boolean retriesAFailingHandler() {
+        return false;
+    }
+}
+
+class MySubscriptionModelConformanceTest extends SubscriptionModelConformance {
+
+    @Override
+    protected SubscriptionModelFixture createFixture() {
+        return new MySubscriptionModelFixture();
+    }
+}
+
+class MyReactiveSubscriptionModelFixture implements ReactiveSubscriptionModelFixture {
+
+    private final MySubscriptionModel model = new MySubscriptionModel();
+
+    @Override
+    public SubscriptionModel subscriptionModel() {
+        return model;
+    }
+
+    @Override
+    public void publish(List<CloudEvent> events) {
+        // the same feed as above, handed to the model directly rather than through the blocking bridge
+    }
+}
+
+class MyReactiveSubscriptionModelConformanceTest extends ReactiveSubscriptionModelConformance {
+
+    @Override
+    protected ReactiveSubscriptionModelFixture createFixture() {
+        return new MyReactiveSubscriptionModelFixture();
+    }
+}
+```
+
+`BlockingSubscriptionOverReactive.of(...)` needs a model that implements both the reactor `SubscriptionModel` and `IntrospectableSubscriptions`. Every reactive model shipping with Occurrent is both, and an out-of-tree one is likely to be too. Use `BlockingSubscriptionOverReactive.ofCheckpointAware(...)` instead when the model also implements `CheckpointAwareSubscriptionModel`, to additionally run `CheckpointAwareSubscriptionModelConformance` against it.
+
+A single dependency covers both suites, since `occurrent-tck-subscription-reactor` depends on `occurrent-tck-subscription-blocking` itself:
+
+<Dependency artifact="occurrent-tck-subscription-reactor" scope="test" />
+
+`ReactiveSubscriptionModelFixture.deliveryTimeout()` plays the same role as the blocking fixture's, the budget one delivery wait gets, but its default is twenty seconds rather than ten, because the suites run the reactive model through the blocking bridge and the extra hop deserves slack. Override it on your fixture when your infrastructure needs more.
+
+The reactor `IntrospectableSubscriptions`, in `occurrent-subscription-api-reactor`, is not only a bridge precondition. It gives the reactive stack the same `subscriptionIds()` the [blocking stack has](/docs/layer-0/blocking-subscriptions/), every id a model holds, running or paused, and `ReactorMongoSubscriptionModel`, `ReactorDurableSubscriptionModel`, `CatchupThenPushSubscriptionModel` and the reactive push and synchronous models all implement it, so a test or an admin endpoint can name the ids that exist rather than repeating the one it was given.

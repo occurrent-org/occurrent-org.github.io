@@ -1,6 +1,27 @@
 # Docs migration checks
 
-The docs are moving from the single page `pages/docs/docs.md` to a multi-page site. These scripts make sure nothing on today's page gets lost on the way. The directory starts with an underscore so Jekyll leaves it out of the site.
+The docs are moving from the single page `pages/docs/docs.md` to the multi-page site in `site/`. These scripts moved the content and make sure nothing on today's page got lost on the way. The directory starts with an underscore so Jekyll leaves it out of the site.
+
+The content has moved. Write new docs in `site/`. `docs.md` stays until the new site goes live, and CI fails if it gets something the new site lacks, so a change to `docs.md` needs the same change in `site/`.
+
+## How the content moved
+
+`convert.mjs` made the pages in `site/src/content/docs/docs/` from `docs.md`. `pages.mjs` lists every page with the lines of `docs.md` it is made from. A section moves to the page whose range holds its heading, and to the shorter range when two do. For each page the converter:
+
+* inlines the included macros, and turns the Java/Kotlin snippets into `<Tabs syncKey="lang">` and the dependency snippets into `<Dependency />` (or into tabs with the exact text, if one differs from what the component renders)
+* writes the version as `%OCCURRENT_VERSION%`, which the site fills in from `_config.yml`
+* turns `<div class="comment">` into a `:::note` aside and `<div class="notification">` into `:::caution`
+* drops the section's first heading, since the page title replaces it, and moves the other headings up so the page starts at h2
+* rewrites links to old anchors into links to the new pages, and writes `move-map.json`
+
+It goes through HTML on the way, so that kramdown's inline HTML becomes plain Markdown.
+
+The pages have been edited since, so don't run it again over them. It is kept to show how the pages came about, and to convert a held docs branch that changed `docs.md`: run it with `--dry-run` to check that it still converts, or run it in a scratch copy and carry the changed sections over by hand. Pages in `HAND_PORTED` in `convert.mjs` were written by hand and are never overwritten.
+
+```bash
+(cd _migration && npm ci)
+node _migration/convert.mjs
+```
 
 ## What they check
 
@@ -24,18 +45,19 @@ Run `node _migration/inventory.mjs` for the totals, or add `--out inventory.json
 * every dependency's `artifactId` is in the new site's sources
 * no section has lost more than 10% of its words
 
-`move-map.json` also drives the redirects, so an old link like `/documentation#saga-dsl` keeps working.
+`move-map.json` will also drive the redirects, so an old link like `/documentation#saga-dsl` keeps working.
 
 ## Running them
 
 ```bash
+(cd _migration && npm ci)
 node --test '_migration/test/*.test.mjs'
 bundle exec jekyll build -d _site
 node _migration/check-against-jekyll.mjs _site/documentation.html
 (cd site && npm ci && npm run build)
-node _migration/verify.mjs --report
+node _migration/verify.mjs
 ```
 
-`verify.mjs` reads the new site's sources from `site/src/content/docs` and the built pages from `site/dist`. A page's title has the id `_top`, so an old anchor for a whole section that became a page maps to `/docs/<group>/<page>/#_top`.
+`verify.mjs` reads the new site's sources from `site/src/content/docs` and the built pages from `site/dist`. An old anchor for a section that became a whole page maps to the page itself, with no `#`. Add `--report` to list every problem without failing.
 
-CI runs all of this on every pull request. `verify.mjs` runs with `--report` until the content has moved to the new site, because until then every anchor is reported as missing. Once the content is in, CI drops `--report` and a gap fails the build.
+CI runs all of this on every pull request, and a gap fails the build.

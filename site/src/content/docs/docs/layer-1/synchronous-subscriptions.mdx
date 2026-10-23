@@ -1,0 +1,105 @@
+---
+title: "Synchronous subscriptions"
+description: "Update a read model in the same transaction as the write."
+sidebar:
+  order: 5
+layer: "1"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+The subscriptions described so far are asynchronous, except the [push subscription](/docs/layer-0/push-subscription/), which runs on the thread that hands it the event. The others run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
+
+Sometimes you want the opposite. A synchronous subscription runs on the writer thread, before `execute` returns, so a projection is updated in the same call that produced the events, and (when a transaction is available) in the same transaction as the write. You declare it once, decoupled from the call site, exactly the way you declare an asynchronous subscription, but the application service invokes it inline on every matching write instead of off a change stream.
+
+This mirrors the split Axon draws between a Subscribing Event Processor, which runs in the publishing thread inside the publish transaction and can roll it back, and a Tracking Event Processor, which runs on its own thread with a token store for replay. The synchronous-versus-asynchronous choice belongs to the subscription, not to the command, so there is no per-`execute` flag.
+
+Use a synchronous subscription when the reaction must be visible the moment `execute` returns, or must commit atomically with the write. Keep using an asynchronous [subscription](/docs/layer-0/subscriptions/) for anything that should run cluster-wide, replay from history, or survive a crash. Note also that this is a different tool from a [synchronous side effect](/docs/layer-1/application-service-side-effects/#synchronous-side-effects). A side effect is a per-call closure passed at the call site through `ExecuteOptions.sideEffect(...)`, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does.
+
+## Semantics
+
+* **Single writer, local only.** A synchronous subscription reacts only to events written through the local application-service instance, on that writer's thread. It does not see events written by another instance or through a different path. For cluster-wide reaction, use an asynchronous subscription.
+* **No replay or catch-up.** There is no checkpoint, resume, or catch-up. A synchronous subscription reacts only to the events handed to it here and now.
+* **Enriched events.** The handler receives the just-written events as the store recorded them, carrying `streamVersion` and the global `position`, so `EventMetadata` is fully populated and filters work on every attribute.
+* **No free lunch.** Enabling synchronous subscriptions adds one read per event-producing write, to recover the global `position` for the handler. You pay it only while at least one synchronous subscription is registered. An application that declares none does exactly what it did before, with no extra read.
+* **Reentrancy and latency.** The handler runs on the writer thread, inside the transaction when there is one, so a handler that calls `execute` again re-enters on the same thread, and a slow handler directly increases write latency and lock-hold time. Keep synchronous handlers small, and do not let one issue a command that re-triggers itself.
+
+## Life-cycle
+
+Like every other subscription model, a `SynchronousSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. What makes that sharper here than on an asynchronous subscription is what stopping it actually costs.
+
+An asynchronous subscription reads a change stream or replays history, so pausing it only withholds delivery. The events stay in the event store, and resuming, or a catch-up, picks them up later. A synchronous subscription has no feed to fall behind on. It is a direct call on the writer's thread, so pausing or stopping it means an event written while it's paused is never handed to that handler at all. There is nothing holding it back to defer, and resuming does not replay what was missed.
+
+That's sharpest for a projection meant to update in the same transaction as the write. **The write still succeeds, the projection just doesn't run.** An application that stops its subscriptions and keeps accepting writes gets exactly that gap, and gets it silently. It's documented rather than prevented, because failing the write to protect the projection would break the reason a synchronous subscription exists in the first place.
+
+That same property is what makes the [subscription life cycle](/docs/testing/integration-testing/#using-the-subscription-life-cycle) worth reaching for in a test. Pausing a synchronous subscription, unlike an asynchronous one, guarantees the handler never sees the event you're about to write, rather than merely deferring it until you resume.
+
+`shutdown()` is one-way. Once a `SynchronousSubscriptionModel` is shut down, there's no `start()` back to a working state.
+
+## The transaction model
+
+By default a synchronous subscription is best-effort. The handler runs before `execute` returns, but the write has already committed, so a handler that throws does not roll it back. The events stay, and `execute` still surfaces the exception. This is the deliberate trade for running in the write path with no transaction.
+
+To make the write and the handlers commit or roll back together, configure a `TransactionExecutor` (`org.occurrent.application.service.TransactionExecutor`, in the `occurrent-application-service-common` module) on the application service. It defaults to `TransactionExecutor.noTransaction()`, a pass-through. Two real executors ship:
+
+* **Spring.** The [Spring Boot Starter](/docs/spring-boot/starter/) wires a `SpringTransactionExecutor` (backed by `TransactionTemplate`, or `TransactionalOperator` on the reactive starter) by default, so a `@SynchronousSubscription` handler that writes to the same MongoDB commits atomically with the event write, without a call-site `@Transactional`.
+* **Native, no Spring.** `NativeMongoTransactionExecutor` (module `occurrent-application-service-transaction-mongodb-native`) opens a MongoDB `ClientSession` and transaction that the native event store's write joins, giving a no-Spring application the same atomic guarantee.
+
+A handler's own `@Transactional` composes with this. On the same datastore it joins the write's transaction, so the two are atomic. On a different datastore it opens its own transaction, which commits independently and is never atomic with the event write, because there is no distributed transaction. For a handler's `@Transactional` to take effect at all, the annotation processor invokes the handler through its Spring proxy rather than the raw target.
+
+The executor also owns the transaction it opens, which makes it the place a write conflict gets retried. See [Retry and Transactions](/docs/stores/retry/#retry-and-transactions).
+
+Best-effort against transactional, side by side:
+
+| | With a `TransactionExecutor` (for example Spring) | `noTransaction()` (best-effort default) |
+| - | - | - |
+| Handler runs | before commit, in the write transaction | after the store already committed |
+| Handler throws | write and handler roll back together | events stay committed, `execute` still throws |
+| Crash mid-way | nothing committed, safe | the reaction can be lost, with no replay |
+| Guarantee | atomic, exactly-once with the write | synchronous, at-most-once, no rollback |
+
+If handler side effects matter, prefer a `TransactionExecutor`. The best-effort default is a footgun, because an `execute` exception then means the write may already have succeeded.
+
+## Without Spring
+
+Register handlers on a `SynchronousSubscriptionModel` through the ordinary [Subscription DSL](/docs/layer-1/subscribing-to-domain-events/), then hand that model to the application-service builder. The blocking model is in `occurrent-subscription-synchronous-blocking`, and its reactive twin in `occurrent-subscription-synchronous-reactor`.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    SynchronousSubscriptionModel synchronous = new SynchronousSubscriptionModel();
+
+    // Declare the handlers once, through the same Subscriptions DSL used for async subscriptions.
+    Subscriptions<DomainEvent> subscriptions = new Subscriptions<>(synchronous, cloudEventConverter);
+    subscriptions.subscribe("ongoing-games", GameStarted.class, event -> someDatabase.registerOngoing(event));
+
+    // Drive them from the application service, atomically via a ClientSession-backed executor.
+    ApplicationService<DomainEvent> applicationService =
+            GenericApplicationService.builder(eventStore, cloudEventConverter)
+                    .synchronousSubscriptions(synchronous)
+                    .transactionExecutor(new NativeMongoTransactionExecutor(mongoClient)) // optional, defaults to noTransaction()
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val synchronous = SynchronousSubscriptionModel()
+
+    // Declare the handlers once, through the same Subscriptions DSL used for async subscriptions.
+    subscriptions(synchronous, cloudEventConverter) {
+        subscribe<GameStarted>("ongoing-games") { event -> someDatabase.registerOngoing(event) }
+    }
+
+    // Drive them from the application service, atomically via a ClientSession-backed executor.
+    val applicationService = GenericApplicationService.builder(eventStore, cloudEventConverter)
+        .synchronousSubscriptions(synchronous)
+        .transactionExecutor(NativeMongoTransactionExecutor(mongoClient)) // optional, defaults to noTransaction()
+        .build()
+    ```
+  </TabItem>
+</Tabs>
+
+Leave the `transactionExecutor(...)` call off to run best-effort with no transaction. The same builder and DSL exist on the reactive stack (a `ReactiveTransactionExecutor` and the reactive `SynchronousSubscriptionModel`) and on the DCB application services.
+
+Because it matches entirely in memory, `new SynchronousSubscriptionModel()` refuses a subscription filter on the event `data` payload. Pass a `DataFieldReader` to its constructor to give it one, see [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data).

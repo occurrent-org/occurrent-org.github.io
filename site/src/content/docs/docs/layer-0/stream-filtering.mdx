@@ -1,0 +1,77 @@
+---
+title: "Stream filtering"
+description: "Read only part of a stream."
+sidebar:
+  order: 6
+layer: "0"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+`org.occurrent.eventstore.api.StreamReadFilter` is an EventStore read capability for cases where a command or use case only depends on a subset of the events in a stream. It is useful when you want to avoid reading and deserializing events that are irrelevant for a specific decision.
+
+Filtering is a read optimization, not a correctness feature. Do not filter away events that are needed to enforce invariants, rebuild state correctly, or make valid domain decisions.
+
+`StreamReadFilter` is intentionally scoped to stream reads and validates reserved stream fields such as `streamid` and `streamversion`.
+
+Filtered stream reads are exposed via optional capability interfaces:
+
+* `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`
+* `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`
+
+The following event stores support filtered stream reads:
+
+* `InMemoryEventStore`
+* `MongoEventStore`
+* `SpringMongoEventStore`
+* `ReactorMongoEventStore`
+
+A blocking example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+        EventStream<CloudEvent> eventStream = filteredEventStore.read(
+                "streamId",
+                StreamReadFilter.type("com.acme.NameDefined")
+        );
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+    val eventStream = filteredEventStore?.read(
+        "streamId",
+        StreamReadFilter.type(NameDefined::class.java.name)
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+A reactor example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    if (eventStore instanceof org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter filteredEventStore) {
+        Mono<EventStream<CloudEvent>> eventStream = filteredEventStore.read(
+                "streamId",
+                StreamReadFilter.type("com.acme.NameDefined")
+        );
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val filteredEventStore = eventStore as? org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter
+    val eventStream = filteredEventStore?.read(
+        "streamId",
+        StreamReadFilter.type(NameDefined::class.java.name)
+    )
+    ```
+  </TabItem>
+</Tabs>

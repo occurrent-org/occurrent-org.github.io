@@ -1,0 +1,201 @@
+---
+title: "EventStore"
+description: "Read and write event streams as CloudEvents."
+sidebar:
+  order: 2
+layer: "0"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+The event store is a place where you store events. Events are immutable pieces of data describing state changes for a particular _stream_. A stream is a collection of events that are related, typically but not limited to, a particular entity. For example a stream may include all events for a particular instance of a game or an order.
+
+Occurrent provides an interface, `EventStore`, that allows to read and write events from the database. The `EventStore` interface is actually composed of various smaller interfaces since not all databases supports all aspects provided by the `EventStore` interface. Here's an example that writes a cloud event to the event store and read it back:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    CloudEvent event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".getBytes(StandardCharsets.UTF_8))
+                        .build();
+
+    // Write
+    eventStore.write("streamId", List.of(event));
+
+    // Read
+    EventStream<CloudEvent> eventStream = eventStore.read("streamId");
+
+    // Read filtered events when the store supports it
+    if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+        EventStream<CloudEvent> filteredEventStream = filteredEventStore.read(
+                "streamId",
+                StreamReadFilter.type("com.example.NameDefined")
+        );
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".toByteArray())
+                        .build()
+
+    // Write
+    eventStore.write("streamId", listOf(event))
+
+    // Read
+    val eventStream : EventStream<CloudEvent> = eventStore.read("streamId")
+
+    // Read filtered events when the store supports it
+    val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+    val filteredEventStream = filteredEventStore?.read(
+        "streamId",
+        StreamReadFilter.type(NameDefined::class.java.name)
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+Note that when reading the events, the `EventStore` won't simply return a `Stream` of `CloudEvent`'s, instead it returns a wrapper called `EventStream`.
+
+## EventStream
+
+The `EventStream` contains the `CloudEvent`'s for a stream and the version of the stream. The version can be used to guarantee that only one thread/process is allowed to write to the stream at the same time, i.e. optimistic locking. This can be achieved by including the version in a [write condition](/docs/layer-0/write-conditions/).
+
+Note that reading a stream that doesn't exist (e.g. `eventStore.read("non-existing-id")` will return an instance of `EventStream` with an empty stream of events and `0` as version number. The reason for this is that you can use the same "application service" (a fancy word for a piece of code that loads events from the event store, applies them to the domain model and writes the new events returned to the event store) for both entity creation and subsequent use cases. For example consider this simple domain model:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class WordGuessingGame {
+    	public static List<CloudEvent> startNewGame(String gameId, String wordToGuess) {
+    		...
+    	}
+
+    	public static List<CloudEvent> guessWord(List<CloudEvent> eventStream, String word) {
+    		...
+    	}
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Note that the functions might as well be placed directly in a package
+     object WordGuessingGame {
+        fun startNewGame(gameId : String, wordToGuess : String) : List<CloudEvent> = ...
+
+        fun guessWord(eventStream : List<CloudEvent>, word : String) : List<CloudEvent> = ...
+     }
+    ```
+  </TabItem>
+</Tabs>
+
+Then we could write a generic application service that takes a higher-order function `(List<CloudEvent>) -> List<CloudEvent>`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class ApplicationService {
+
+        private final EventStore eventStore;
+
+        public ApplicationService(EventStore eventStore) {
+            this.eventStore = eventStore;
+        }
+
+        public void execute(String streamId, Function<List<CloudEvent>, List<CloudEvent>> functionThatCallsDomainModel) {
+            // Read all events from the event store for a particular stream
+            EventStream<CloudEvent> eventStream = eventStore.read(streamId);
+
+            // Invoke the domain model
+            List<CloudEvent> newEvents = functionThatCallsDomainModel.apply(eventStream.eventList());
+
+            // Persist the new events
+            eventStore.write(streamId, eventStream.version(), newEvents);
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    class ApplicationService constructor (val eventStore : EventStore) {
+
+        fun execute(streamId : String, functionThatCallsDomainModel : (List<CloudEvent>) -> List<CloudEvent>) {
+            // Read all events from the event store for a particular stream
+            val  eventStream : EventStream<CloudEvent> = eventStore.read(streamId)
+
+             // Invoke the domain model
+            val newEvents = functionThatCallsDomainModel(eventStream.eventList())
+
+            // Persist the new events
+            eventStore.write(streamId, eventStream.version(), newEvents)
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+Note that typically the domain model, WordGuessingGame in this example, would not return CloudEvents but rather a list of a custom data structure, domain events, that would then be _converted_ to CloudEvents. This is not shown in this example above for brevity.
+:::
+
+You could then call the application service like this regardless of you're starting a new game or not:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Here we imagine that we have received the data required to start a new game, e.g. from a REST endpoint.
+    String gameId = ...
+    String wordToGuess = ...;
+
+    // Then we invoke the application service to start a game:
+    applicationService.execute(gameId, __ -> WordGuessingGame.startNewGame(gameId, wordToGuess));
+
+    // Later a player guess a word:
+    String gameId = ...
+    String guess = ...;
+
+    // We thus invoke the application service again to guess the word:
+    applicationService.execute(gameId, events -> WordGuessingGame.guessWord(events, guess));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Here we imagine that we have received the data required to start a new game, e.g. from a REST endpoint.
+    val gameId : String = ...
+    val wordToGuess : String = ...;
+
+    // Then we invoke the application service to start a game:
+    applicationService.execute(gameId) {
+        WordGuessingGame.startNewGame(gameId, wordToGuess)
+    }
+
+    // Later a player guess a word:
+    val gameId : String = ...
+    val guess : String = ...;
+
+    // We thus invoke the application service again to guess the word:
+    applicationService.execute(gameId) { events ->
+        WordGuessingGame.guessWord(events, guess)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Writing application services like this is both powerful and simple (once you get used to it). There's less need for explicit commands and command handlers (the application service is a kind of command handler). You can also use other functional techniques such as partial application to make the code look, arguably, even nicer. It's also easy to compose several calls to the domain model into one by using standard functional composition techniques. For example in this case you might consider both starting a game and let the player make her first guess from a single request to the REST API. No need to change the domain model to do this, just use function composition.

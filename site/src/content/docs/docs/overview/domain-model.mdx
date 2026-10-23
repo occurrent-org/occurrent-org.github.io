@@ -1,0 +1,8 @@
+---
+title: "Your domain model"
+description: "How to shape your domain model so it plugs into the ApplicationService."
+sidebar:
+  order: 6
+---
+
+Occurrent needs nothing from your domain model. Commands, events and state are your own types, and a domain function is a plain function from the events so far to the new events. This chapter shows how to shape that model so it plugs into the [application service](/docs/layer-1/application-service/), either with plain functions or with a [decider](/docs/overview/deciders/).

@@ -1,0 +1,98 @@
+---
+title: "Brokers with Spring Boot"
+description: "Forward to and consume from RabbitMQ or Kafka with the broker starters."
+sidebar:
+  order: 7
+layer: "spring-boot"
+stack: [spring-boot]
+---
+
+`occurrent-broker-rabbitmq-spring-boot-starter` builds the sink and the sources from properties. Turn it on with `@EnableOccurrentRabbitMqBroker` and declare the `com.rabbitmq.client.Connection` it uses:
+
+```java
+@SpringBootApplication
+@EnableOccurrentRabbitMqBroker
+public class Application {
+
+    @Bean
+    Connection rabbitMqConnection() throws IOException, TimeoutException {
+        ConnectionFactory connectionFactory = new ConnectionFactory();
+        connectionFactory.setUri("amqp://guest:guest@localhost:5672");
+        return connectionFactory.newConnection();
+    }
+}
+```
+
+```properties
+occurrent.broker.rabbitmq.exchange=orders-exchange
+```
+
+The starter never creates the `Connection`. `spring-boot-starter-amqp` doesn't supply one either, because it registers a Spring AMQP `ConnectionFactory`, which is a different type. Without a `Connection` bean the starter registers nothing and logs a `WARN` naming the missing bean.
+
+Each source is built from a factory the starter registers, one queue per projection or saga:
+
+```java
+@Bean(destroyMethod = "close")
+RabbitMqDomainEventSource<OrderEvent> orderStatusSource(RabbitMqDomainEventSourceFactory sources,
+                                                        DomainEventFeed<OrderEvent> ordersFeed) {
+    return sources.forQueue("order-status-queue", ordersFeed).build();
+}
+```
+
+`forQueue(..)` returns the same builder as `RabbitMqDomainEventSource.builder(..)`, with the connection, the resolver and every `source.*` property below already applied. You can still override any of them before `build()`.
+
+The factory doesn't register the source as a Spring bean, so nothing closes it for you. Declaring it as a `@Bean` with `destroyMethod = "close"`, as above, has Spring close it at shutdown.
+
+`RabbitMqCloudEventSourceFactory.forQueue(queue, pushModel)` is the CloudEvent-level factory. It also sets `readinessSource(..)` for you.
+
+When `pushModel` feeds a `@Projection` or `@Saga` with `source = PUSH`, the `RabbitMqCloudEventSource` that `forQueue(..)` builds checks whether that projection's or saga's catch-up is ready. Otherwise it treats the model as always ready.
+
+With `declare-topology` left on, a source needs the resolver to know which routing keys to bind. The starter's resolver is a `RabbitMqTopicExchangeDestinationResolver` on `occurrent.broker.rabbitmq.exchange`, and it needs a `CloudEventTypeMapper` bean, which the MongoDB starter supplies.
+
+The same resolver backs the `CloudEventSink` bean, a `RabbitMqCloudEventSink`. The sink is built the first time something injects it, so an application that only consumes, with `declare-topology` off, needs no `exchange`. A source opens no channel until you build it, so an application that only publishes just never calls `forQueue(..)`. With a `CloudEventConverter` bean there's also a `RabbitMqDomainEventSink`.
+
+Your own `CloudEventSink` or `DestinationResolver` bean replaces the starter's.
+
+| Property under `occurrent.broker.rabbitmq` | Default | Sets |
+| - | - | - |
+| `exchange` | none | The topic exchange the sink publishes to and the sources bind to |
+| `sink.acknowledgement-timeout` | `5s` | How long the sink waits for a publisher confirm |
+| `sink.retry.initial`, `.max`, `.multiplier` | `100ms`, `2s`, `2.0` | The backoff between publish retries |
+| `source.poll-interval` | `1s` | `pollInterval(..)` |
+| `source.prefetch-count` | `1` | `prefetchCount(..)` |
+| `source.close-timeout` | `30s` | `closeTimeout(..)` |
+| `source.declare-topology` | `true` | `declareTopology(..)` |
+| `source.on-delivery-failure` | `REDELIVER` | `onDeliveryFailure(..)` |
+| `source.parking-destination.exchange`, `.routing-key` | none | `parkingDestination(..)`, where `PARK` publishes |
+| `source.retry.initial`, `.max`, `.multiplier`, `.max-attempts` | `100ms`, `2s`, `2.0`, `10` | How `build()` retries opening its channel and declaring the queue |
+
+`occurrent-broker-kafka-spring-boot-starter` needs no client bean. Turn it on with `@EnableOccurrentKafkaBroker` and set the bootstrap servers:
+
+```properties
+occurrent.broker.kafka.bootstrap-servers=localhost:9092
+occurrent.broker.kafka.topic=orders
+```
+
+`topic` gives the sink a `KafkaSharedTopicDestinationResolver` on that topic. The factories are `KafkaDomainEventSourceFactory.forGroup(groupId, feed)` and `KafkaCloudEventSourceFactory.forGroup(groupId, pushModel)`, used the same way as the RabbitMQ ones.
+
+The sink is built the first time something injects it, and a source opens no consumer until you build it. So an application that only publishes never calls `forGroup(..)`, and one that only consumes never injects the sink. A source still needs `topic` to know which topic to read, unless you pass `bindings(..)` to its builder.
+
+`forGroup(..)` sets `group.id` to the group you pass and `enable.auto.commit` to `false`. Any other Kafka client setting goes under `producer.additional-properties` or `consumer.additional-properties`, for example `occurrent.broker.kafka.consumer.additional-properties.max.poll.records=100`.
+
+A `group.id` under `consumer.additional-properties` is ignored.
+
+The sink and the sources check these settings the same way as when you build them yourself. The sink refuses an `acks` weaker than `all`, and a source refuses to start if `enable.auto.commit` is turned on.
+
+| Property under `occurrent.broker.kafka` | Default | Sets |
+| - | - | - |
+| `bootstrap-servers` | none | The brokers, comma-separated or as a YAML list. The starter does nothing without it |
+| `topic` | none | The one topic the sink publishes to |
+| `producer.additional-properties` | none | Extra producer config for the sink |
+| `consumer.additional-properties` | none | Extra consumer config for every source |
+| `sink.acknowledgement-timeout` | `5s` | How long the sink waits for the broker to acknowledge |
+| `sink.retry.initial`, `.max`, `.multiplier` | `100ms`, `2s`, `2.0` | The backoff between publish retries |
+| `source.poll-timeout` | `1s` | `pollTimeout(..)` |
+| `source.close-timeout` | `30s` | `closeTimeout(..)` |
+| `source.on-delivery-failure` | `REDELIVER` | `onDeliveryFailure(..)` |
+| `source.parking-destination.topic` | none | `parkingDestination(..)`, where `PARK` publishes |
+| `source.commit-retry.initial`, `.max`, `.multiplier` | `100ms`, `2s`, `2.0` | The backoff between offset commit retries |

@@ -1,0 +1,50 @@
+---
+title: "What the starter configures"
+description: "The beans the starter creates, its transactions, DataFieldReader and StreamIdResolver."
+sidebar:
+  order: 2
+layer: "spring-boot"
+stack: [spring-boot]
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+Annotate a handler method with `@SynchronousSubscription` (`org.occurrent.annotation.SynchronousSubscription`). It is the synchronous counterpart of [`@Subscription`](/docs/spring-boot/subscription-annotations/) and carries only an `id` and optional `eventTypes`, none of the asynchronous-only attributes (`startAt`, `resumeBehavior`, `startupMode`), which have no meaning for at-write-time dispatch.
+
+The starter's auto-configured `SynchronousSubscriptionModel` bean is wired with a `DataFieldReader` automatically when `occurrent-common-inmemory-filter-matching-jackson` is on the classpath, so a `@SynchronousSubscription` handler filtering on `Filter.data(...)` works without extra configuration. See [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data).
+
+The starter's auto-configured `SynchronousSubscriptionModel` bean is wired with a `DataFieldReader` automatically when `occurrent-common-inmemory-filter-matching-jackson` is on the classpath, so a `@SynchronousSubscription` handler filtering on `Filter.data(...)` works without extra configuration. See [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data).
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @Component
+    public class OngoingGamesProjection {
+
+        // Runs on the writer thread, before execute() returns. With the starter's default
+        // transaction executor, it commits atomically with the event write.
+        @SynchronousSubscription(id = "ongoing-games")
+        public void on(GameStarted event) {
+            someDatabase.registerOngoing(event);
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @Component
+    class OngoingGamesProjection(private val someDatabase: Database) {
+
+        // Runs on the writer thread, before execute() returns. With the starter's default
+        // transaction executor, it commits atomically with the event write.
+        @SynchronousSubscription(id = "ongoing-games")
+        fun on(event: GameStarted) {
+            someDatabase.registerOngoing(event)
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Because the starter wires a Spring-backed `TransactionExecutor` by default, the handler above already commits atomically with the event write. Add `@Transactional` to the method to compose your own transaction on top. On the same MongoDB it joins the write's transaction, and on a different datastore it commits independently.

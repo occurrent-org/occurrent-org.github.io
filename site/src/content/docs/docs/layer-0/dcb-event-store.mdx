@@ -1,0 +1,205 @@
+---
+title: "DCB event store"
+description: "Dynamic Consistency Boundary: tags, criteria and the DCB event store."
+sidebar:
+  order: 21
+layer: "0"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+Most invariants live inside a single entity: an order cannot ship twice, an account cannot go negative. Occurrent's stream event store handles those well, because a stream is exactly the boundary the invariant needs.
+
+Some invariants do not respect a single stream. Take a course-enrollment system: a student can enroll in a course only if the course still has a free seat, and only if the student has not already reached the maximum number of courses they are allowed to take at once. The first half of that rule lives on the course. The second half lives on the student. Classic domain-driven design pushes you toward picking one aggregate to own the rule, inventing a saga, or accepting eventual consistency to bridge the two. Dynamic Consistency Boundary (DCB) removes the need for any of that. It lets a single decision read events from both the course and the student, and append its result under one atomic, conditional write that is guarded against both invariants at once.
+
+DCB is not a different storage model bolted onto Occurrent. It is a capability layered on the same CloudEvent storage you already use for streams, not a new store and not a new event format. A DCB event is a normal CloudEvent. What makes it a DCB event is two extensions the store stamps on it: `dcbtags`, a canonical encoding of the event's DCB tags, and `position`, the same shared global sequence position extension that stream reads use once stream position is enabled. Because the position is shared, stream consumers and subscriptions still see a DCB event, and a store can freely mix stream-written and DCB-written events, reading either with whichever vocabulary fits the decision at hand.
+
+## Enabling DCB
+
+An event store advertises which of its APIs are switched on through a set of `EventStoreCapability` values, `STREAM`, `DCB`, or both. The default is `STREAM` only, so an existing application that has never heard of DCB keeps behaving exactly as before, with no new indexes and no new guards added underneath it. Turning DCB on is a deliberate opt-in on the store's configuration (for example `EventStoreConfig.Builder.eventStoreCapabilities(...)` on the MongoDB stores), and a store can enable both `STREAM` and `DCB` at once if an application wants to keep using streams for some entities and DCB for others.
+
+## Tags and Criteria
+
+A `Tag` is an opaque string. Build the common `key:value` form with `Tag.of("course", courseId)`, or a value-less marker tag with `Tag.of("premium")`. `Tag.parse` reads a tag back from its string form, and `canonical()` returns it. Tags are how you scope events to a consistency boundary without threading a stream id through the model.
+
+A `DcbCriteria` describes which events belong to a boundary. Build one alternative with `DcbCriteria.type(...)`, `DcbCriteria.types(...)`, or `DcbCriteria.tags(...)`, then refine it fluently. Inside one alternative, types are matched any-of and tags are matched all-of, so `DcbCriteria.type("StudentEnrolledInCourse").tags(course, student)` reads as "this type, and both of these tags together". `excludingTypes` removes matching events whose type is in that set. Several alternatives are OR'd together with `DcbCriteria.anyOf(...)`, and `DcbCriteria.tagsAnyOf(...)` is a shortcut for OR-ing several single-tag alternatives.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Tag course = Tag.of("course", courseId);
+    Tag student = Tag.of("student", studentId);
+
+    // One alternative: this type, and both tags together (all-of)
+    DcbCriterion enrollment = DcbCriteria.type("StudentEnrolledInCourse").tags(course, student);
+
+    // Two alternatives OR'd together: the course's own events, or the student's own events
+    DcbCriteria boundary = DcbCriteria.anyOf(
+            DcbCriteria.type("CourseDefined").tags(course),
+            DcbCriteria.type("StudentRegistered").tags(student)
+    );
+
+    // Shortcut for OR-ing single-tag alternatives
+    DcbCriteria eitherEntity = DcbCriteria.tagsAnyOf(course, student);
+
+    // Course events, but never a cancellation
+    DcbCriterion activeCourse = DcbCriteria.type("CourseDefined").excludingTypes("CourseCancelled");
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val course = Tag.of("course", courseId)
+    val student = Tag.of("student", studentId)
+
+    // One alternative: this type, and both tags together (all-of)
+    val enrollment = DcbCriteria.type("StudentEnrolledInCourse").tags(course, student)
+
+    // Two alternatives OR'd together: the course's own events, or the student's own events
+    val boundary = DcbCriteria.anyOf(
+        DcbCriteria.type("CourseDefined").tags(course),
+        DcbCriteria.type("StudentRegistered").tags(student)
+    )
+
+    // Shortcut for OR-ing single-tag alternatives
+    val eitherEntity = DcbCriteria.tagsAnyOf(course, student)
+
+    // Course events, but never a cancellation
+    val activeCourse = DcbCriteria.type("CourseDefined").excludingTypes("CourseCancelled")
+    ```
+  </TabItem>
+</Tabs>
+
+The type names above are strings, which is convenient but unchecked. If you would rather build criteria from your event classes, a `DcbCriteriaBuilder` maps each class to its CloudEvent type name for you. Construct one from a `CloudEventConverter` (or a `CloudEventTypeMapper`), then call `type(...)`, `types(...)`, `tags(...)`, `tagsAnyOf(...)`, `anyOf(...)`, or `all()` on it with event classes in place of the type strings. It produces the same `DcbCriteria`, only spelled with `Class` references, and it is what the DCB DSL uses under the hood through its `criteria()` helper.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // A DcbCriteriaBuilder maps event classes to their CloudEvent type names
+    DcbCriteriaBuilder<DomainEvent> c = new DcbCriteriaBuilder<>(cloudEventConverter);
+
+    DcbCriterion enrollment = c.type(StudentEnrolledInCourse.class).tags(course, student);
+    DcbCriteria boundary = c.anyOf(
+            c.type(CourseDefined.class).tags(course),
+            c.type(StudentRegistered.class).tags(student)
+    );
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // DcbSubscriptions and DcbDomainEventQueries hand you a converter-bound builder via criteria()
+    val c = dcbDomainEventQueries.criteria()
+
+    val enrollment = c.type<StudentEnrolledInCourse>().tags(course, student)
+    val boundary = c.anyOf(
+        c.type<CourseDefined>().tags(course),
+        c.type<StudentRegistered>().tags(student)
+    )
+
+    // Multiple types in one alternative (any-of), reified or via KClass
+    val enrollmentOrUnenrollment = c.types<StudentEnrolledInCourse, StudentUnenrolledFromCourse>()
+    val enrollmentOrUnenrollmentByClass = c.types(StudentEnrolledInCourse::class, StudentUnenrolledFromCourse::class)
+
+    // Seed the builder with a shared boundary, then add query-specific types.
+    // This refines the boundary's tags with these types, it does not OR across alternatives.
+    val studentBoundary: DcbCriterion = DcbCriteria.tags(student)
+    val studentEnrollmentEvents = dcbDomainEventQueries.criteria(studentBoundary).types<StudentEnrolledInCourse, StudentUnenrolledFromCourse>()
+    ```
+  </TabItem>
+</Tabs>
+
+## The DCB Event Store
+
+`DcbEventStore` is the low-level API. `read(criteria)` returns a `DcbEventStream`, `exists(criteria)` and `count(criteria)` answer cheaper yes-or-no and how-many questions over the same criteria, and `append(events)` or `append(events, condition)` writes DCB-tagged CloudEvents.
+
+The read-decide-append cycle is how you use it directly, without an application service. Read the events for your boundary. The returned `DcbEventStream` carries both the events and a `DcbConsistencyToken`. Decide the new events from what you read, then append them under a `DcbAppendCondition.failIfEventsMatch(criteria, consistencyToken)`. That condition fails the append with a `DcbAppendConditionNotFulfilledException` if anything matching your boundary was committed after your read, and that exception is your signal to retry the whole cycle. To fail on any concurrent append at all, rather than one matching a specific boundary, use `DcbAppendCondition.wholeStoreLock()` (or `wholeStoreLock(consistencyToken)`). It is the intent-revealing form of `failIfEventsMatch(DcbCriteria.all())` and is the recommended way to express a whole-store lock.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId));
+
+    DcbEventStream stream = eventStore.read(boundary);
+    List<CloudEvent> currentEvents = stream.events();
+
+    // Decide the new events from what is currently true for this boundary
+    List<CloudEvent> newEvents = decideEnrollment(currentEvents, courseId, studentId);
+
+    DcbAppendCondition condition = DcbAppendCondition.failIfEventsMatch(boundary, stream.consistencyToken());
+    try {
+        DcbAppendResult result = eventStore.append(newEvents, condition);
+    } catch (DcbAppendConditionNotFulfilledException e) {
+        // Something matching the boundary was committed after the read, retry the cycle
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId))
+
+    val stream = eventStore.read(boundary)
+    val currentEvents = stream.events()
+
+    // Decide the new events from what is currently true for this boundary
+    val newEvents = decideEnrollment(currentEvents, courseId, studentId)
+
+    val condition = DcbAppendCondition.failIfEventsMatch(boundary, stream.consistencyToken())
+    try {
+        val result = eventStore.append(newEvents, condition)
+    } catch (e: DcbAppendConditionNotFulfilledException) {
+        // Something matching the boundary was committed after the read, retry the cycle
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+### Reading part of a boundary
+
+`read`, `exists` and `count` each take an optional `DcbReadOptions` with a position window. A read can also select part of the matching events with a `direction`, `skip` and `limit`. `exists` and `count` use the criteria and position window, but ignore those three selection options.
+
+The position window is what a catch-up or a resumed subscription uses. `DcbReadOptions.afterPosition(p)` reads only what was appended after DCB sequence position `p`, `upToPosition(p)` stops at `p` inclusive, and `between(after, upTo)` does both. Without options you get `fromBeginning()`, everything up to the store's DCB head at read time.
+
+Direction decides which end of the match selection starts from. `FORWARD` starts with the oldest matching event, while `BACKWARD` starts with the newest. The store skips from that end and then applies the limit. `DcbReadOptions.fromBeginning().backwards().limit(1)` reads the single newest event in a boundary, while adding `skip(4)` reads the fifth newest. This is how a gapless sequence finds its last entry without working through the whole boundary.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("invoice-sequence", "2026"));
+
+    // The newest matching event, without reading the rest
+    DcbEventStream last = eventStore.read(boundary, DcbReadOptions.fromBeginning().backwards().limit(1));
+
+    // Ten events after the five newest matches, inside a position window
+    DcbReadOptions options = DcbReadOptions.afterPosition(1000).backwards().skip(5).limit(10);
+    DcbEventStream recent = eventStore.read(boundary, options);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val boundary = DcbCriteria.tagsAnyOf(Tag.of("invoice-sequence", "2026"))
+
+    // The newest matching event, without reading the rest
+    val last = eventStore.read(boundary, DcbReadOptions.fromBeginning().backwards().limit(1))
+
+    // Ten events after the five newest matches, inside a position window
+    val options = DcbReadOptions.afterPosition(1000).backwards().skip(5).limit(10)
+    val recent = eventStore.read(boundary, options)
+    ```
+  </TabItem>
+</Tabs>
+
+Three things about these options are easy to get wrong, so they are worth stating plainly.
+
+**Direction never changes the order you get back.** A `DcbEventStream` always lists events ascending by DCB position. `BACKWARD` decides which end `skip` and `limit` start from. Read 10 events backwards and you get the 10 newest, still oldest-first.
+
+**Skip happens before limit.** `backwards().skip(4).limit(1)` skips the four newest matches and returns the fifth newest. A large MongoDB skip can be expensive, so use position windows for catch-up and large scans.
+
+**Direction, skip and limit do not affect the consistency token.** The token reflects every event matching the criteria at read time, not the handful you asked for. A read using `fromBeginning().backwards().limit(1)` followed by a `failIfEventsMatch(boundary, token)` append still fails if anything else landed in that boundary, including events the read never returned.
+
+## Notes
+
+* Existing historical stream events are not automatically DCB-readable. A DCB read matches on the `dcbtags` extension, and a stream-written event never carries one, so history written before DCB was enabled needs its own tag metadata and a `position` backfill before a DCB query can see it.
+* Enabling a capability can create indexes and other support structures on startup. Turning on `DCB` (or `STREAM`) for the first time on an existing store may add what that capability needs, so plan for that the same way you would for any other startup migration.

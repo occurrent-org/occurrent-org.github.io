@@ -1,0 +1,38 @@
+---
+// The "star us on GitHub" box from the top of the old docs page.
+---
+
+<div class="star-us not-content">
+    <span id="starUsLong">If you like Occurrent, please consider starring us on GitHub:</span>
+    <span id="starUsShort">Like Occurrent? Star us on GitHub:</span>
+    <iframe
+        id="starFrame"
+        title="Star Occurrent on GitHub"
+        src="https://ghbtns.com/github-btn.html?user=johanhaleby&repo=occurrent&type=star&count=true&size=large"
+        frameborder="0"
+        scrolling="0"
+        width="150"
+        height="30"></iframe>
+</div>
+
+<style>
+    .star-us {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.75rem;
+        margin-block: 1.5rem;
+    }
+    #starUsShort {
+        display: none;
+        font-weight: 600;
+    }
+    @media (max-width: 700px) {
+        #starUsLong {
+            display: none;
+        }
+        #starUsShort {
+            display: inline;
+        }
+    }
+</style>

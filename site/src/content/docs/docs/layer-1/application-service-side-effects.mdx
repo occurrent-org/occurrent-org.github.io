@@ -1,0 +1,176 @@
+---
+title: "ApplicationService side effects"
+description: "Synchronous and transactional side effects, and the Kotlin extensions."
+sidebar:
+  order: 4
+layer: "1"
+modules: [occurrent-application-service-blocking]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+<a id="synchronous-side-effects" /><a id="application-service-examples" />The `GenericApplicationService` can run side effects after the events returned from your domain function have been written to the event store. This is useful when you need to update a view _synchronously_ after a successful write. To run side effects asynchronously, use a [subscription](/docs/layer-0/subscriptions/) instead.
+
+As an example, say you want to register a game as ongoing when it's started. The code that does it may look like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class RegisterOngoingGame {
+        private final DatabaseApi someDatabaseApi;
+
+        public RegisterOngoingGame(DatabaseApi someDatabaseApi) {
+            this.someDatabaseApi = someDatabaseApi;
+        }
+
+        public void registerGameAsOngoingWhenGameWasStarted(GameWasStarted event) {
+            // Add the id of the game started event to a set to handle duplicates and idempotency.
+            someDatabaseApi.addToSet("ongoingGames", Map.of("gameId", event.gameId(), "date", event.getDate()));
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    class RegisterOngoingGame(private val someDatabaseApi : DatabaseApi) {
+        fun registerGameAsOngoingWhenGameWasStarted(event : GameWasStarted) {
+            // Add the id of the game started event to a set to handle duplicates and idempotency.
+            someDatabaseApi.addToSet("ongoingGames", Map.of("gameId", event.gameId(), "date", event.getDate()));
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Pass it as a side effect in `ExecuteOptions`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    RegisterOngoingGame registerOngoingGame = ..
+    applicationService.execute(
+            gameId,
+            ExecuteOptions.<DomainEvent>options()
+                    .sideEffect(newEvents -> newEvents
+                            .filter(event -> event instanceof GameWasStarted)
+                            .findFirst()
+                            .map(GameWasStarted.class::cast)
+                            .ifPresent(registerOngoingGame::registerGameAsOngoingWhenGameWasStarted)),
+            events -> WordGuessingGame.guessWord(events, guess)
+    );
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val registerOngoingGame : RegisterOngoingGame = ..
+    applicationService.execute(
+        gameId,
+        sideEffect { event: GameWasStarted ->
+            registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event)
+        }
+    ) { events ->
+        WordGuessingGame.guessWord(events, guess)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+`registerGameAsOngoingWhenGameWasStarted` is now called after the events returned from `WordGuessingGame.guessWord(..)` are written to the event store. You can combine `filter(...)` and `sideEffect(...)` on the same options object.
+
+A side effect is not the same as a [synchronous subscription](/docs/layer-1/synchronous-subscriptions/). A side effect is a closure you pass at each call site, whereas a synchronous subscription is declared once and reacts to every matching write, the same way an asynchronous subscription does. Use a synchronous subscription when the reaction should be declared once and decoupled from the call, or should commit atomically with the write through a `TransactionExecutor`.
+
+The older `SideEffect.executeSideEffect(...)` helper (formerly `PolicySideEffect.executePolicy(...)`) still works, but `ExecuteOptions.sideEffect(...)` replaces it in new code.
+
+## Application Service Transactional Side-Effects
+
+In the example above, writing the events to the event store and executing synchronous side effects is not an atomic operation. If your app crashes after one side effect has run, but before the rest of the work completes, you will need to handle idempotency. But if your side effects write data to the same database as the event store, you can make use of transactions to write everything atomically. This is very easy if you're using a [Spring EventStore](/docs/stores/mongodb-event-stores/#eventstore-with-spring-mongotemplate-blocking). What you need to do is to wrap the `ApplicationService` provided by Occurrent in your own application service, something like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @Service
+    public class CustomApplicationServiceImpl {
+    	private final GenericApplicationService<DomainEvent> occurrentApplicationService;
+
+    	public CustomApplicationService(GenericApplicationService<DomainEvent> occurrentApplicationService) {
+    		this.occurrentApplicationService = occurrentApplicationService;
+    	}
+
+    	@Transactional
+        public WriteResult execute(String gameId,
+                                   ExecuteOptions<DomainEvent> executeOptions,
+                                   Function<List<DomainEvent>, List<DomainEvent>> functionThatCallsDomainModel) {
+    		return occurrentApplicationService.execute(gameId, executeOptions, functionThatCallsDomainModel);
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @Service
+    class CustomApplicationServiceImpl(private val occurrentApplicationService: GenericApplicationService<DomainEvent>) {
+
+        @Transactional
+        fun execute(
+            gameId: String,
+            executeOptions: ExecuteOptions<DomainEvent>,
+            functionThatCallsDomainModel: Function<List<DomainEvent>, List<DomainEvent>>
+        ): WriteResult {
+            return occurrentApplicationService.execute(gameId, executeOptions, functionThatCallsDomainModel)
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Given that you've defined a `MongoTransactionManager` in your Spring Boot configuration (and use this when creating your [event store instance](/docs/stores/mongodb-event-stores/#eventstore-with-spring-mongotemplate-blocking)) the side effects and events are written atomically in the same transaction!
+
+## Application Service Kotlin Extensions
+
+<a id="kotlin-helper-functions" />If you're using [Kotlin](https://kotlinlang.org/), the domain function you pass to `execute` is a `(List<E>) -> List<E>` lambda that binds directly to the Java `execute(..., Function<List<E>, List<E>>)` member:
+
+```kotlin
+applicationService.execute(gameId) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+The application service module also has Kotlin extensions for building `ExecuteOptions`:
+
+<Dependency artifact="occurrent-application-service-blocking" />
+
+* `options()` starts an `ExecuteOptions` chain explicitly.
+* `filter(...)` starts directly with a `StreamReadFilter` or `ExecuteFilter`.
+* `sideEffect(...)` configures a synchronous side effect that is called once per matching event.
+* `sideEffectOnList(...)` configures a side effect that gets all matching events in one `List`.
+* `ExecuteFilters.type(...)`, `ExecuteFilters.includeTypes(...)` and `ExecuteFilters.excludeTypes(...)` build typed filters from domain event classes.
+
+For example:
+
+```kotlin
+applicationService.execute(
+    gameId,
+    options().filter(ExecuteFilters.type<GameWasStarted>()).sideEffect(
+        { event: GameWasStarted -> registerOngoingGame.registerGameAsOngoingWhenGameWasStarted(event) }
+    )
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+```kotlin
+applicationService.execute(
+    gameId,
+    options().sideEffectOnList { startedGames: List<GameWasStarted> ->
+        registerOngoingGame.registerAll(startedGames)
+    }
+) { events ->
+    WordGuessingGame.guessWord(events, guess)
+}
+```
+
+It's called `sideEffectOnList` rather than `sideEffect` because `ExecuteOptions` already has a Java `sideEffect(Consumer<List<E>>)` method, and a Kotlin extension with the same name would be shadowed by it. In Java, call that `sideEffect(...)` method directly with the whole list.

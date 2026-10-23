@@ -1,0 +1,176 @@
+---
+title: "Write conditions"
+description: "Make a write succeed only when the stream is in the state you expect."
+sidebar:
+  order: 3
+layer: "0"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+A "write condition" can be used to specify conditional writes to the event store. Typically, the purpose of this would be to achieve [optimistic concurrency control](https://en.wikipedia.org/wiki/Optimistic_concurrency_control) (optimistic locking) of an event stream.
+
+For example, imagine you have an `Account` to which you can deposit and withdraw money. A business rule says that it's not allowed to have a negative balance on an account. Now imagine an account that is shared between two persons and contains 20 EUR. Person "A" wants to withdraw 15 EUR and person "B" wants to withdraw 10 EUR. If they try to do this, an error message should be presented to one of them since the account balance would be negative. But what happens if both persons try to withdraw the money at the same time? Let's have a look:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Person A at _time 1_
+    EventStream<CloudEvent> eventStream = eventStore.read("account1"); // A
+
+    // "withdraw" is a pure function in the Account domain model which takes a List
+    //  of all current events and the amount to withdraw, and returns new events.
+    // In this case, a "MoneyWasWithdrawn" event is returned,  since 15 EUR is OK to withdraw.
+    List<CloudEvent> events = Account.withdraw(eventStream.eventList(), Money.of(15, EUR));
+
+    // We write the new events to the event store
+    eventStore.write("account1", events);
+
+    // Now in a different thread let's imagine Person B at _time 1_
+    EventStream<CloudEvent> eventStream = eventStore.read("account1"); // B
+
+    // Again we want to withdraw money, and the system will think this is OK,
+    // since event streams for A and B has not yet recorded that the balance is negative.
+    List<CloudEvent> events = Account.withdraw(eventStream.eventList(), Money.of(10, EUR));
+
+    // We write the new events to the event store without any problems! 😱
+    // But this shouldn't work since it would violate the business rule!
+    eventStore.write("account1", events);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Person A at _time 1_
+    val eventStream = eventStore.read("account1") // A
+
+    // "withdraw" is a pure function in the Account domain model which takes a List
+    //  of all current events and the amount to withdraw. It returns a list of
+    // new events, in this case only a "MoneyWasWithdrawn" event,  since 15 EUR is OK to withdraw.
+    val events = Account.withdraw(eventStream.eventList(), Money.of(15, EUR))
+
+    // We write the new events to the event store
+    eventStore.write("account1", events)
+
+    // Now in a different thread let's imagine Person B at _time 1_
+    val eventStream = eventStore.read("account1") // B
+
+    // Again we want to withdraw money, and the system will think this is OK,
+    // since the Account thinks that 10 EUR will have a balance of 10 EUR after
+    // the withdrawal.
+    val events = Account.withdraw(eventStream.eventList(), Money.of(10, EUR))
+
+    // We write the new events to the event store without any problems! 😱
+    // But this shouldn't work since it would violate the business rule!
+    eventStore.write("account1", events)
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+Note that typically the domain model, Account in this example, would not return CloudEvents but rather a list of a custom data structure, domain events, that would then be _converted_ to CloudEvents. This is not shown in the example above for brevity, look at the [command](/docs/overview/commands/) section for a more real-life example.
+:::
+
+To avoid the problem above we want to make use of conditional writes. Let's see how:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Person A at _time 1_
+    EventStream<CloudEvent> eventStream = eventStore.read("account1"); // A
+    long currentVersion = eventStream.version();
+
+    // Withdraw money
+    List<CloudEvent> events = Account.withdraw(eventStream.eventList(), Money.of(15, EUR));
+
+    // We write the new events to the event store with a write condition that implies
+    // that the version of the event stream must be A.
+    eventStore.write("account1", currentVersion, events);
+
+    // Now in a different thread let's imagine Person B at _time 1_
+    EventStream<CloudEvent> eventStream = eventStore.read("account1"); // A
+    long currentVersion = eventStream.version();
+
+    // Again we want to withdraw money, and the system will think this is OK,
+    // since event streams for A and B has not yet recorded that the balance is negative.
+    List<CloudEvent> events = Account.withdraw(eventStream.eventList(), Money.of(10, EUR));
+
+    // We write the new events to the event store with a write condition that implies
+    // that the version of the event stream must be B. But now Occurrent will throw
+    // a "org.occurrent.eventstore.api.WriteConditionNotFulfilledException" since, in this
+    // case A was slightly faster, and the version of the event stream no longer match!
+    // The entire operation should be retried for person B and when "Account.withdraw(..)"
+    // is called again it could throw a "CannotWithdrawSinceBalanceWouldBeNegative" exception.
+    eventStore.write("account1", currentVersion, events);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Person A at _time 1_
+    val eventStream = eventStore.read("account1") // A
+    val currentVersion = eventStream.version()
+
+    // Withdraw money
+    val events = Account.withdraw(eventStream.eventList(), Money.of(15, EUR));
+
+    // We write the new events to the event store with a write condition that implies
+    // that the version of the event stream must be A.
+    eventStore.write("account1", currentVersion, events)
+
+    // Now in a different thread let's imagine Person B at _time 1_
+    val eventStream = eventStore.read("account1"); // A
+    val currentVersion = eventStream.version()
+
+    // Again we want to withdraw money, and the system will think this is OK,
+    // since event streams for A and B has not yet recorded that the balance is negative.
+    val events = Account.withdraw(eventStream.eventList(), Money.of(10, EUR))
+
+    // We write the new events to the event store with a write condition that implies
+    // that the version of the event stream must be B. But now Occurrent will throw
+    // a "org.occurrent.eventstore.api.WriteConditionNotFulfilledException" since, in this
+    // case A was slightly faster, and the version of the event stream no longer match!
+    // The entire operation should be retried for person B and when "Account.withdraw(..)"
+    // is called again it could throw a "CannotWithdrawSinceBalanceWouldBeNegative" exception.
+    eventStore.write("account1", currentVersion, events)
+    ```
+  </TabItem>
+</Tabs>
+
+What you've seen above is a simple, but widely used, form of write condition. Actually, doing `eventStore.write("streamId", version, events)` is just a shortcut for:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    eventStore.write("streamId", WriteCondition.streamVersionEq(version), events);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    eventStore.write("streamId", WriteCondition.streamVersionEq(version), events)
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+WriteCondition can be imported from "org.occurrent.eventstore.api.WriteCondition".
+:::
+
+But you can compose a more advanced write condition using a `Condition`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    eventStore.write("streamId", WriteCondition.streamVersion(and(lt(10), ne(5))), events);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    eventStore.write("streamId", WriteCondition.streamVersion(and(lt(10), ne(5))), events)
+    ```
+  </TabItem>
+</Tabs>
+
+where `lt`, `ne` and `and` is statically imported from `org.occurrent.condition.Condition`.

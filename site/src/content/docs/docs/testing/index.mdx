@@ -1,0 +1,10 @@
+---
+title: "About testing"
+description: "How to test sagas and projections, and what to test at each level."
+sidebar:
+  order: 0
+---
+
+A saga and a projection are pure data transformed by pure functions, so most of what you want to assert needs no store, no subscription, no Docker and no waiting. That is the first level, and it should carry nearly all of your coverage. The second level runs the real executor over an in-memory event store, and one test at that level is usually enough to prove the wiring.
+
+Everything below uses JUnit Jupiter and AssertJ. The API used is the same on JUnit 5 and 6, so the snippets work on either.

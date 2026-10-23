@@ -19,10 +19,14 @@ jobs:
         with:
           node-version: 24
           cache: npm
-          cache-dependency-path: site/package-lock.json
+          cache-dependency-path: |
+            site/package-lock.json
+            _migration/package-lock.json
 
       - name: Test the migration scripts
-        run: node --test '_migration/test/*.test.mjs'
+        run: |
+          (cd _migration && npm ci)
+          node --test '_migration/test/*.test.mjs'
 
       - uses: ruby/setup-ruby@v1
         with:
@@ -41,5 +45,5 @@ jobs:
           npm ci
           npm run build
 
-      - name: Report what the new site still lacks
-        run: node _migration/verify.mjs --report
+      - name: Check that the new site has everything on today's docs page
+        run: node _migration/verify.mjs

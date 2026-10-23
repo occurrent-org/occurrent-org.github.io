@@ -111,3 +111,4 @@ vendor/bundle/
 site/node_modules/
 site/dist/
 site/.astro/
+_migration/node_modules/

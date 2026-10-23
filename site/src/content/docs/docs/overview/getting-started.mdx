@@ -1,0 +1,51 @@
+---
+title: "Getting started"
+description: "Write and read your first events with an event store, a converter and the ApplicationService, without Spring Boot."
+sidebar:
+  order: 3
+stack: [plain-java]
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+:::caution
+Occurrent %OCCURRENT_VERSION% requires **Java 21** or later (earlier versions required Java 17).
+:::
+
+Most applications start at [layer 1](/docs/overview/layers/), where your code works with your own domain events. In code, it looks like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Your domain is a pure function from past events to new events, with no dependency on Occurrent.
+    List<GameEvent> handle(List<GameEvent> history, GameCommand command) { ... }
+
+    // Occurrent's application service loads the stream, runs your function, and appends the new events under optimistic concurrency.
+    ApplicationService<GameEvent> applicationService = new GenericApplicationService<>(eventStore, cloudEventConverter);
+    applicationService.execute(gameId, history -> handle(history, command));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Your domain is a pure function from past events to new events, with no dependency on Occurrent.
+    fun handle(history: List<GameEvent>, command: GameCommand): List<GameEvent> { ... }
+
+    // Occurrent's application service loads the stream, runs your function, and appends the new events under optimistic concurrency.
+    val applicationService = GenericApplicationService(eventStore, cloudEventConverter)
+    applicationService.execute(gameId) { history -> handle(history, command) }
+    ```
+  </TabItem>
+</Tabs>
+
+These are the steps to get there:
+
+1. **Pick an event store.** Use [MongoDB](/docs/stores/choosing-an-event-store/#mongodb) in production and the [in-memory event store](/docs/stores/in-memory-event-store/) for tests and experiments. See [Choosing an EventStore](/docs/stores/choosing-an-event-store/).
+2. **Pick a [CloudEventConverter](/docs/layer-1/cloudevent-conversion/).** It maps your domain events to CloudEvents and back. The [Jackson converter](/docs/layer-1/cloudevent-conversion/#jackson-3) is a good default. Configure how it names event types before you go to production, since the type ends up in every stored event.
+3. **Create an [ApplicationService](/docs/layer-1/application-service/)** and call your domain functions through it, as in the example above.
+4. **React to events.** Pick a [subscription model](/docs/layer-0/subscriptions/) for your store, and a [checkpoint storage](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage) if a subscriber should continue where it left off after a restart. Then use [Subscriptions](/docs/layer-1/subscribing-to-domain-events/), [projections](/docs/layer-1/projections/) or [sagas](/docs/layer-1/sagas/) to work with domain events.
+5. **Query events** with [DomainEventQueries](/docs/layer-1/querying-domain-events/) when you need to.
+
+With Spring Boot and MongoDB, the [Spring Boot starter](/docs/spring-boot/starter/) sets all of this up for you, and gives you `ApplicationService`, `Subscriptions` and `DomainEventQueries` beans to inject. There's also a [reactive starter](/docs/spring-boot/starter/#reactive-spring-boot-starter).
+
+You can always drop down to [layer 0](/docs/layer-0/) and use the event store and subscriptions with CloudEvents directly. It's worth reading about [CloudEvents](/docs/layer-0/cloudevents/) and their [specification](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md) either way, because that is how your events are stored.

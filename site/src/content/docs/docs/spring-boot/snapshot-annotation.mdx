@@ -1,0 +1,44 @@
+---
+title: "@Snapshot"
+description: "Declare a maintained snapshot with an annotation."
+sidebar:
+  order: 6
+layer: "spring-boot"
+stack: [spring-boot]
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+You can declare a maintained snapshot with `@Snapshot` on both the blocking and reactor stacks. A factory method returning a `SnapshotView` is registered as a managed subscription that keeps one snapshot per stream up to date, exactly like `@Projection`, including catch-up from history and durable resume. A factory returning a `DcbSnapshotView` instead maintains one snapshot per DCB boundary. Resolve the store with `store = SomeStore.class` or `storeName`, or leave both unset for a zero-config MongoDB store (`SpringMongoSnapshotStore` on the blocking stack, `ReactiveSpringMongoSnapshotStore` on the reactor stack). `everyNEvents` throttles how often the maintained snapshot is written, and `mode` selects `ASYNC` (catch-up then live) or `SYNCHRONOUS` (updated on the write path for read-your-writes).
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @Snapshot(id = "account-state", everyNEvents = 100)
+    public SnapshotView<AccountState, AccountEvent> accountSnapshot() {
+        return SnapshotView.<AccountState, AccountEvent>builder(AccountState.EMPTY)
+                .schemaVersion(1)
+                .on(MoneyDeposited.class, (state, e) -> state.add(e.amount()))
+                .on(MoneyWithdrawn.class, (state, e) -> state.subtract(e.amount()))
+                .build();
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @Snapshot(id = "account-state", everyNEvents = 100)
+    fun accountSnapshot(): SnapshotView<AccountState, AccountEvent> = snapshotView(AccountState.EMPTY) {
+        schemaVersion(1)
+        on<MoneyDeposited> { state, e -> state.add(e.amount) }
+        on<MoneyWithdrawn> { state, e -> state.subtract(e.amount) }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The subscription that keeps the snapshot up to date is filtered to the event types the `SnapshotView` registers handlers for, derived as described in [Deriving the Event Filter](/docs/layer-1/deriving-the-event-filter/). If the `SnapshotView` registers a handler for a type listed as refused in that section, Spring Boot startup fails.
+
+:::note
+The declarative `@Snapshot` annotation works on both the blocking and reactor stacks, for stream and DCB. The application services and the `SnapshotViews` facade described in the other sections are the programmatic path when you would rather not use the annotation.
+:::

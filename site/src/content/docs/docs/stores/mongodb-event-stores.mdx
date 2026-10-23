@@ -1,0 +1,385 @@
+---
+title: "MongoDB event stores"
+description: "The native driver, Spring MongoTemplate and ReactiveMongoTemplate event stores."
+sidebar:
+  order: 3
+modules: [occurrent-eventstore-mongodb-native, occurrent-eventstore-mongodb-spring-blocking, occurrent-eventstore-mongodb-spring-reactor]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+There are three different MongoDB EventStore implementations to choose from:
+
+* [Native Driver](/docs/stores/mongodb-event-stores/#eventstore-with-mongodb-native-driver)
+* [Spring (Blocking)](/docs/stores/mongodb-event-stores/#eventstore-with-spring-mongotemplate-blocking)
+* [Spring (Reactive)](/docs/stores/mongodb-event-stores/#eventstore-with-spring-reactivemongotemplate-reactive)
+
+## EventStore with MongoDB Native Driver
+
+## What is it?
+
+An EventStore implementation that uses the "native" Java MongoDB synchronous driver (see [website](https://docs.mongodb.com/drivers/java)) to read and write [CloudEvents](https://cloudevents.io/) to MongoDB.
+
+## When to use?
+
+Use when you don't need Spring support and want to use MongoDB as the underlying datastore.
+
+## Dependencies
+
+<Dependency artifact="occurrent-eventstore-mongodb-native" />
+
+## Getting Started
+
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.nativedriver.MongoEventStore`. It takes four arguments, a [MongoClient](https://mongodb.github.io/mongo-java-driver/3.12/javadoc/com/mongodb/client/MongoClient.html), the "database" and "event collection "that the EventStore will use to store events as well as an `org.occurrent.eventstore.mongodb.nativedriver.EventStoreConfig`.
+
+For example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    MongoClient mongoClient = MongoClients.create("mongodb://localhost:27017");
+    // How the CloudEvent "time" property will be serialized in MongoDB! !!Important!!
+    EventStoreConfig config = new EventStoreConfig(TimeRepresentation.RFC_3339_STRING);
+    String mongoDatabase = "database";
+    String mongoEventCollection = "events";
+
+    MongoEventStore eventStore = new MongoEventStore(mongoClient, mongoDatabase, mongoEventCollection, config);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val mongoClient = MongoClients.create("mongodb://localhost:27017")
+    // How the CloudEvent "time" property will be serialized in MongoDB! !!Important!!
+    val config = EventStoreConfig(TimeRepresentation.RFC_3339_STRING)
+    val mongoDatabase = "database"
+    val mongoEventCollection = "events"
+
+    val eventStore = MongoEventStore(mongoClient, mongoDatabase, mongoEventCollection, config)
+    ```
+  </TabItem>
+</Tabs>
+
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering](/docs/layer-0/stream-filtering/) for when and how to use it.
+
+Now you can start reading and writing events to the EventStore:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    CloudEvent event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".getBytes(StandardCharsets.UTF_8))
+                        .build();
+
+    // Write
+    eventStore.write("streamId", List.of(event));
+
+    // Read
+    EventStream<CloudEvent> eventStream = eventStore.read("streamId");
+
+    // Read filtered events when the store supports it
+    if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+        EventStream<CloudEvent> filteredEventStream = filteredEventStore.read(
+                "streamId",
+                StreamReadFilter.type("com.example.NameDefined")
+        );
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".toByteArray())
+                        .build()
+
+    // Write
+    eventStore.write("streamId", listOf(event))
+
+    // Read
+    val eventStream : EventStream<CloudEvent> = eventStore.read("streamId")
+
+    // Read filtered events when the store supports it
+    val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+    val filteredEventStream = filteredEventStore?.read(
+        "streamId",
+        StreamReadFilter.type(NameDefined::class.java.name)
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+## Examples
+
+| Name | Description |
+| :- | :- |
+| [Number Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/number-guessing-game/mongodb/native) | A simple game implemented using a pure domain model and stores events in MongoDB using `MongoEventStore`. It also generates integration events and publishes these to RabbitMQ. |
+| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/uno/mongodb/native) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Stores events in MongoDB using `MongoEventStore`. |
+
+## EventStore with Spring MongoTemplate (Blocking)
+
+## What is it?
+
+An implementation that uses Spring's [MongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/MongoTemplate.html) to read and write events to/from MongoDB.
+
+## When to use?
+
+If you're already using Spring and you don't need reactive support then this is a good choice. You can make use of the `@Transactional` annotation to write events and views in the same transaction (but make sure you understand what you're doing before attempting this).
+
+## Dependencies
+
+<Dependency artifact="occurrent-eventstore-mongodb-spring-blocking" />
+
+## Getting Started
+
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.blocking.SpringMongoEventStore`. It takes two arguments, a [MongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/MongoTemplate.html) and an `org.occurrent.eventstore.mongodb.spring.blocking.EventStoreConfig`.
+
+For example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    MongoClient mongoClient = MongoClients.create("mongodb://localhost:27017");
+    MongoTransactionManager mongoTransactionManager = new MongoTransactionManager(new SimpleMongoClientDatabaseFactory(mongoClient, "database"));
+
+    MongoTemplate mongoTemplate = new MongoTemplate(mongoClient, "database");
+    EventStoreConfig eventStoreConfig = new EventStoreConfig.Builder()
+                                                             // The collection where all events will be stored
+                                                            .eventStoreCollectionName("events")
+                                                            .transactionConfig(mongoTransactionManager)
+                                                            // How the CloudEvent "time" property will be serialized in MongoDB! !!Important!!
+                                                            .timeRepresentation(TimeRepresentation.RFC_3339_STRING)
+                                                            .build();
+
+    SpringMongoEventStore eventStore = new SpringMongoEventStore(mongoTemplate, eventStoreConfig);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val mongoClient = MongoClients.create("mongodb://localhost:27017")
+    val mongoTransactionManager = MongoTransactionManager(SimpleMongoClientDatabaseFactory(mongoClient, "database"))
+
+    val mongoTemplate = MongoTemplate(mongoClient, "database")
+    val eventStoreConfig = EventStoreConfig.Builder()
+                                            // The collection where all events will be stored
+                                           .eventStoreCollectionName("events")
+                                           .transactionConfig(mongoTransactionManager)
+                                            // How the CloudEvent "time" property will be serialized in MongoDB! !!Important!!
+                                           .timeRepresentation(TimeRepresentation.RFC_3339_STRING)
+                                           .build()
+
+    val eventStore = SpringMongoEventStore(mongoTemplate, eventStoreConfig)
+    ```
+  </TabItem>
+</Tabs>
+
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering](/docs/layer-0/stream-filtering/) for when and how to use it.
+
+Now you can start reading and writing events to the EventStore:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    CloudEvent event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".getBytes(StandardCharsets.UTF_8))
+                        .build();
+
+    // Write
+    eventStore.write("streamId", List.of(event));
+
+    // Read
+    EventStream<CloudEvent> eventStream = eventStore.read("streamId");
+
+    // Read filtered events when the store supports it
+    if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+        EventStream<CloudEvent> filteredEventStream = filteredEventStore.read(
+                "streamId",
+                StreamReadFilter.type("com.example.NameDefined")
+        );
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".toByteArray())
+                        .build()
+
+    // Write
+    eventStore.write("streamId", listOf(event))
+
+    // Read
+    val eventStream : EventStream<CloudEvent> = eventStore.read("streamId")
+
+    // Read filtered events when the store supports it
+    val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+    val filteredEventStream = filteredEventStore?.read(
+        "streamId",
+        StreamReadFilter.type(NameDefined::class.java.name)
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+## Examples
+
+| Name | Description |
+| :- | :- |
+| [Number Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/number-guessing-game/mongodb/spring/blocking) | A simple game implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. It also generates integration events and publishes these to RabbitMQ. |
+| [Word Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/word-guessing-game/mongodb/spring/blocking) | Similar to the "Number Guessing Game" but more advanced, leveraging several Occurrent features such as CQRS, queries, and transactional projections. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. |
+| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/uno/mongodb/spring/blocking) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. |
+| [Subscription View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/projection/spring-subscription-based-mongodb-projections/src/main/java/org/occurrent/example/eventstore/mongodb/spring/subscriptionprojections) | An example showing how to create a subscription that listens to certain events stored in the EventStore and updates a view/projection from these events. |
+| [Transactional View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/projection/spring-transactional-projection-mongodb/src/main/java/org/occurrent/example/eventstore/mongodb/spring/transactional) | An example showing how to combine writing events to the `SpringMongoEventStore` and update a view transactionally using the `@Transactional` annotation. |
+| [Custom Aggregation View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
+
+## EventStore with Spring ReactiveMongoTemplate (Reactive)
+
+## What is it?
+
+An implementation that uses Spring's [ReactiveMongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/ReactiveMongoTemplate.html) to read and write events to/from MongoDB.
+
+## When to use?
+
+If you're already using Spring and want to use the reactive driver ([project reactor](https://projectreactor.io/)) then this is a good choice. It uses the `ReactiveMongoTemplate` to write events to MongoDB. You can make use of the `@Transactional` annotation to write events and views in the same tx (but make sure that you understand what you're doing before attempting this).
+
+## Dependencies
+
+<Dependency artifact="occurrent-eventstore-mongodb-spring-reactor" />
+
+## Getting Started
+
+Once you've imported the dependencies you create a new instance of `org.occurrent.eventstore.mongodb.spring.reactor.ReactorMongoEventStore`. It takes two arguments, a [ReactiveMongoTemplate](https://docs.spring.io/spring-data/mongodb/docs/current/api/org/springframework/data/mongodb/core/ReactiveMongoTemplate.html) and an `org.occurrent.eventstore.mongodb.spring.reactor.EventStoreConfig`.
+
+For example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    MongoClient mongoClient = MongoClients.create("mongodb://localhost:27017");
+    MongoTransactionManager mongoTransactionManager = new MongoTransactionManager(new SimpleMongoClientDatabaseFactory(mongoClient, "database"));
+
+    MongoTemplate mongoTemplate = new MongoTemplate(mongoClient, "database");
+    EventStoreConfig eventStoreConfig = new EventStoreConfig.Builder()
+                                                             // The collection where all events will be stored
+                                                            .eventStoreCollectionName("events")
+                                                            .transactionConfig(mongoTransactionManager)
+                                                            // How the CloudEvent "time" property will be serialized in MongoDB! !!Important!!
+                                                            .timeRepresentation(TimeRepresentation.RFC_3339_STRING)
+                                                            .build();
+
+    ReactorMongoEventStore eventStore = new ReactorMongoEventStore(mongoTemplate, eventStoreConfig);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val mongoClient = MongoClients.create("mongodb://localhost:27017")
+    val mongoTransactionManager = MongoTransactionManager(SimpleMongoClientDatabaseFactory(mongoClient, "database"))
+
+    val mongoTemplate = MongoTemplate(mongoClient, "database")
+    val eventStoreConfig = EventStoreConfig.Builder()
+                                            // The collection where all events will be stored
+                                           .eventStoreCollectionName("events")
+                                           .transactionConfig(mongoTransactionManager)
+                                            // How the CloudEvent "time" property will be serialized in MongoDB! !!Important!!
+                                           .timeRepresentation(TimeRepresentation.RFC_3339_STRING)
+                                           .build()
+
+    val eventStore = ReactorMongoEventStore(mongoTemplate, eventStoreConfig)
+    ```
+  </TabItem>
+</Tabs>
+
+This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`. See [Stream Filtering](/docs/layer-0/stream-filtering/) for when and how to use it.
+
+Now you can start reading and writing events to the EventStore:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    CloudEvent event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".getBytes(StandardCharsets.UTF_8))
+                        .build();
+
+    // Write
+    Mono<Void> mono = eventStore.write("streamId", Flux.just(event));
+
+    // Read
+    Mono<EventStream<CloudEvent>> eventStream = eventStore.read("streamId");
+
+    // Read filtered events when the store supports it
+    if (eventStore instanceof ReadEventStreamWithFilter filteredEventStore) {
+        Mono<EventStream<CloudEvent>> filteredEventStream = filteredEventStore.read(
+                "streamId",
+                StreamReadFilter.type("com.example.NameDefined")
+        );
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val event = CloudEventBuilder.v1()
+                        .withId("eventId")
+                        .withSource(URI.create("urn:mydomain"))
+                        .withType("HelloWorld")
+                        .withTime(LocalDateTime.now().atOffset(ZoneOffset.UTC))
+                        .withSubject("subject")
+                        .withDataContentType("application/json")
+                        .withData("{ \"message\" : \"hello\" }".toByteArray())
+                        .build()
+
+    // Write
+    val mono = eventStore.write("streamId", Flux.just(event))
+
+    // Read
+    val eventStream : Mono<EventStream<CloudEvent>> = eventStore.read("streamId")
+
+    // Read filtered events when the store supports it
+    val filteredEventStore = eventStore as? ReadEventStreamWithFilter
+    val filteredEventStream = filteredEventStore?.read(
+        "streamId",
+        StreamReadFilter.type(NameDefined::class.java.name)
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+## Examples
+
+| Name | Description |
+| :- | :- |
+| [Custom Aggregation View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query a MongoDB event store using custom MongoDB aggregations. It uses the blocking `SpringMongoEventStore`. There is no reactive version of this example. |

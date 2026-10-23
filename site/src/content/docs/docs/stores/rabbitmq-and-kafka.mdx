@@ -1,0 +1,212 @@
+---
+title: "RabbitMQ and Kafka"
+description: "The RabbitMQ and Kafka transports, and what they guarantee."
+sidebar:
+  order: 7
+model: [blocking]
+modules: [occurrent-broker-rabbitmq-blocking, occurrent-broker-kafka-blocking]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+
+<Dependency artifact="occurrent-broker-rabbitmq-blocking" />
+
+`RabbitMqDestination` has an exchange, a routing key and headers. `RabbitMqTopicExchangeDestinationResolver` publishes to one topic exchange and derives the routing key from the CloudEvent type:
+
+```java
+RabbitMqTopicExchangeDestinationResolver resolver =
+        new RabbitMqTopicExchangeDestinationResolver("orders-exchange", typeMapper);
+RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, resolver).build();
+```
+
+Occurrent never declares an exchange. `orders-exchange` has to exist before anything publishes to it, so you create it, or whoever owns your broker topology does.
+
+`RabbitMqCloudEventSink` publishes with publisher confirms and `mandatory = true`, waiting up to `acknowledgementTimeout(Duration)` (five seconds by default) for the broker to confirm.
+
+A confirm alone only proves the broker took the message, not that a queue was bound to receive it. So the sink also watches for `basic.return`, and treats a returned message as a failed publish even though a confirm follows it.
+
+Every CloudEvent attribute, the Occurrent extensions included, becomes a message header under a `cloudEvents_` prefix, since there's no official CloudEvents binding for AMQP 0-9-1 to reuse. `datacontenttype` is the one exception, written to `BasicProperties.contentType` instead.
+
+An application header using the `cloudEvents_` prefix is refused when the destination is built, so it can't collide with that mapping.
+
+`RabbitMqCloudEventSource` is the consuming half. It holds the `PushSubscriptionModel` itself, not only its `accept(..)` methods, so it can read the model's lifecycle and acknowledge correctly.
+
+```java
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing());
+RabbitMqCloudEventSource source = RabbitMqCloudEventSource.builder(rabbitConnection, pushModel, "order-status-queue")
+        .resolver(resolver)
+        .build();
+```
+
+Build the source before delivery to its model or feed starts. Delivery starts with the first subscription on the `PushSubscriptionModel`, made directly or through a `CatchupThenPushSubscriptionModel`, or with a call to `catchUp(id)`, `catchUpAll()` or `goLive(id)` on the `DomainEventFeed`.
+
+`build()` declares the queue and its bindings, and RabbitMQ delivers a message only to the queues bound when it's published, so an event published before they exist never reaches the source. With `declareTopology(false)`, whoever owns the topology has to create them before delivery starts.
+
+Behind a `CatchupThenPushSubscriptionModel`, also pass `readinessSource(catchupThenPush::isReadyForLiveDelivery)` to the builder. The source then stops pulling messages while the replay runs. That only saves round trips to the broker, because a message that arrives before the catch-up has reached live delivery is reported `DEFERRED` and never acknowledged either way.
+
+The source calls `acceptOrDefer(...)` rather than `accept(...)`. It routes the event the same way, but tells the model that the broker can send the event again later, so the model can refuse the event instead of holding on to it.
+
+`acceptOrDefer(...)` returns a refusal as an outcome, `REFUSED` or `NOT_DELIVERABLE`, and throws only when the subscription's filter or handler throws. The source decides what to do with a message from the returned `RoutingOutcome` alone.
+
+The source handles each outcome as the table under [Consuming from a broker](/docs/stores/brokers/#consuming-from-a-broker) says. What it does with an exception from `acceptOrDefer(...)` is described below.
+
+It holds a `DEFERRED` or `UNAVAILABLE` message unacknowledged, and its poll hands it back to RabbitMQ with `basicNack` and requeue, at most once per poll interval, one second by default. RabbitMQ then delivers it again. It stops consuming for good on `REFUSED`.
+
+Its configured `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeException` or `AssertionError` thrown out of `acceptOrDefer(...)`, and a message that can't be rebuilt into a `CloudEvent`. Any other `Error`, or a checked exception, stops the source for good and closes its channel, which puts the message back on the queue.
+
+`onDeliveryFailure(DeliveryFailurePolicy)` picks that policy. `REDELIVER` is the default. It never acknowledges the original, and hands it back with `basicNack` and requeue on the next poll, the same pace as a held message. `PARK` needs a `parkingDestination(RabbitMqDestination)`. If you choose `PARK` without one, the source refuses to start.
+
+Parking publishes the message to that destination and waits for its own publisher confirm. The source acknowledges the original only once that confirm arrives, the same order as for an ordinary delivery. So a message is acknowledged in exactly three cases, `DELIVERED`, `FILTERED`, and a confirmed park.
+
+A failed park hands the original message back to RabbitMQ with `basicNack` and requeue instead of acknowledging it, so it's redelivered rather than lost.
+
+The source parks a message itself rather than through RabbitMQ's own dead-lettering, where a rejected message is moved to another exchange. `basicNack(requeue = false)` with no dead-letter exchange configured throws the message away, and with one the broker republishes it without confirms.
+
+A single RabbitMQ queue preserves the order events were published in, so a projection that handles one stream in order needs nothing further here.
+
+Each source handles its deliveries on a thread of its own, one at a time and in the order the broker sent them.
+
+The RabbitMQ client calls every consumer on a connection from one pool of threads, so each source moves a delivery onto its own thread before handling it. A handler waiting on a database that is down then holds up only its own source, never another source built on the same `Connection`.
+
+`close()` waits up to `closeTimeout(Duration)`, thirty seconds by default, for a delivery already being handled. A delivery it didn't finish was never acknowledged, so closing the channel puts it back on the queue and RabbitMQ delivers it again.
+
+`build()` retries opening its channel and declaring the queue, the bindings and the QoS, backing off from 100ms to 2 seconds over ten attempts, so a broker that is still starting doesn't fail your application's startup. `retryStrategy(RetryStrategy)` on the builder replaces that backoff, and your strategy then also decides which failures are retried.
+
+It never creates or reconnects the `Connection` you gave it. A source keeps consuming after that connection recovers automatically, and a delivery that was being handled when it dropped is delivered again. On a `Connection` with automatic recovery turned off, the source stops instead.
+
+`RabbitMqDomainEventSource<E>` and `RabbitMqDomainEventSink<E>` are the domain-level counterparts. The source is built with `RabbitMqDomainEventSource.builder(connection, feed, queue)`, and the sink with `RabbitMqDomainEventSink.using(cloudEventSink, cloudEventConverter)`.
+
+## Kafka
+
+<Dependency artifact="occurrent-broker-kafka-blocking" />
+
+`KafkaDestination` has a topic, a nullable message key and headers. `KafkaSharedTopicDestinationResolver` is the shipped default. It publishes every event to one topic you name, and keys by the event's `streamid` extension when it has one, `null` otherwise:
+
+```java
+KafkaSharedTopicDestinationResolver resolver = new KafkaSharedTopicDestinationResolver("orders");
+```
+
+Kafka only orders messages within one partition, so keying by stream id is what puts one stream's events on the same partition and in the same order they were published.
+
+That guarantee assumes the topic's partition count is fixed before you start producing to it and stays there. Kafka picks the partition from the key and the topic's current partition count. So adding partitions later moves an existing stream id to a different partition, and that can silently break ordering for any stream that still has events in flight at that moment.
+
+`KafkaTopicPerTypeDestinationResolver` is the opt-in alternative, one topic per CloudEvent type instead of one shared topic.
+
+It keeps one stream's events of the same type in order, but not across types. Two events of the same stream with different types go to two different topics, so they were never on the same partition. Choose it when you want to set retention or scale consumers separately for each event type, and either each stream only has events of one type or you can live with that weaker ordering.
+
+`KafkaCloudEventSink` requires `acks=all` in its producer config. It sets `acks=all` for you when it's missing, and refuses to build when it's set to anything weaker. With a weaker setting the sink would wait, succeed, and let `CloudEventForwarder` move its checkpoint past an event that no broker had stored durably:
+
+```java
+producerConfig.put(ProducerConfig.ACKS_CONFIG, "all");
+KafkaCloudEventSink sink = KafkaCloudEventSink.builder(producerConfig, resolver).build();
+```
+
+`KafkaCloudEventSource` requires `enable.auto.commit=false` in its consumer config and refuses to start otherwise, because its own offset commits only mean something if the Kafka client isn't also committing offsets on a timer. It also refuses to start without a non-blank `group.id`, because its committed offsets are stored under it:
+
+```java
+consumerConfig.put(ConsumerConfig.GROUP_ID_CONFIG, "order-status");
+consumerConfig.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+KafkaCloudEventSource source = KafkaCloudEventSource.builder(consumerConfig, pushModel)
+        .resolver(resolver)
+        .build();
+```
+
+`auto.offset.reset` defaults to `earliest` when your consumer config doesn't set it, so a partition the group has no committed offset for, or whose committed offset the topic no longer holds, starts at the oldest record the topic still holds. A new group then doesn't miss a record published while it joins, and a group whose committed offsets expired or were deleted reads every record the topic still holds again, including the ones it already handled.
+
+Once a record comes back `DELIVERED` or `FILTERED`, or its failure ends in a confirmed `PARK`, the source marks `record.offset() + 1` to be committed for that record's partition.
+
+Once it has worked through a whole poll batch, it commits the marked offsets of every partition that made progress. It never uses the no-argument `commitSync()`, which would commit the whole batch including records nothing processed yet.
+
+As on RabbitMQ, the source's `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeException` or `AssertionError` thrown out of `acceptOrDefer(...)`, and a record that can't be rebuilt into a `CloudEvent`.
+
+Any other `Error`, or a checked exception, stops the source for good and commits nothing further. Its consumer leaves the group straight away, even with `group.instance.id` set, and the next consumer in the group resumes from the last committed offset.
+
+On `REFUSED` the source stops for good without committing that record's offset, so the next consumer in the group fetches it again.
+
+`REDELIVER` seeks the consumer back to the failed record's offset and doesn't process the rest of that partition's records in the current poll. So no later record in the same batch gets committed past the failed one, and the failed record's offset isn't marked either.
+
+`DEFERRED` and `UNAVAILABLE` skip the failure policy and seek back the same way. Either way, that partition is paused for about `pollTimeout` before the source fetches from it again, so a record that keeps coming back is retried at that pace.
+
+`PARK` republishes to a `parkingDestination(KafkaDestination)` and marks the original record's offset to be committed only once that publish's own broker acknowledgement arrives, the same as for a delivered record.
+
+The parking publish has its own time limit of five seconds. When it runs out, the source redelivers the record instead, but the publish isn't cancelled. `send()` can spend most of those five seconds waiting for the cluster's metadata, so the record can still reach the parking topic after the source has already decided to redeliver it.
+
+A duplicate park is possible in that case. The source doesn't try to prevent it, because every handler here already has to cope with a redelivered message.
+
+A partitioned Kafka topic does not preserve order across streams the way a single RabbitMQ queue does. A projection that handles one stream at a time is fine under the default stream-id keying. One that depends on order across streams is not, whichever resolver you use.
+
+`KafkaDomainEventSource<E>` and `KafkaDomainEventSink<E>` are the domain-level counterparts, built with `KafkaDomainEventSource.builder(consumerConfig, feed)` and `KafkaDomainEventSink.using(cloudEventSink, cloudEventConverter)`.
+
+## What's guaranteed
+
+The delivery guarantees are the same as the ones [ADR 62](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0062-pluggable-projection-event-source.md) set for a push feed.
+
+Publication is at-least-once, because the forwarder's checkpoint advances only after the sink returns. Delivery is at-least-once, because a source acknowledges a message only once the handler has run without throwing, the filter has declined it, or the message has been parked.
+
+A projection or saga reached through either path therefore has to tolerate seeing the same event twice, the same as any other push-fed one.
+
+After a restart, the broker redelivers whatever the source hadn't acknowledged.
+
+The event store is replayed again only when the `checkpointStorage` you passed has no record that the catch-up finished. With `null` in its place, every restart replays it.
+
+## A runnable example
+
+The `example/broker/rabbitmq` module in the [occurrent](https://github.com/johanhaleby/occurrent) repository wires a stored event through the forwarder to RabbitMQ, back through the source, and into a projection, at both the CloudEvent level and the domain level.
+
+Its Testcontainers tests cover the catch-up-to-live handover, a failing handler not losing the message, a restart resuming without replaying the whole history, and `EventMetadata` surviving the round trip on the domain path:
+
+```java
+// Publish side: one durable subscription forwards stored events to RabbitMQ.
+RabbitMqTopicExchangeDestinationResolver resolver =
+        new RabbitMqTopicExchangeDestinationResolver("orders-exchange", typeMapper);
+
+RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, resolver).build();
+
+DurableSubscriptionModel forwarderSubscription =
+        new DurableSubscriptionModel(nativeMongoSubscriptionModel, forwarderCheckpoints);
+CloudEventForwarder forwarder = new CloudEventForwarder(forwarderSubscription, sink);
+forwarder.forward("order-status-forwarder");
+
+// Consume side: the source feeds a PushSubscriptionModel, wrapped in catch-up.
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing());
+CatchupThenPushSubscriptionModel model =
+        new CatchupThenPushSubscriptionModel(eventStore, pushModel, catchupMarker);
+
+RabbitMqCloudEventSource source = RabbitMqCloudEventSource.builder(rabbitConnection, pushModel, "order-status-queue")
+        .resolver(resolver)
+        .readinessSource(model::isReadyForLiveDelivery)
+        .build();
+
+ProjectionRunner.stream(model, cloudEventConverter)
+        .project("order-status", orderStatusProjection(), repository);
+```
+
+The Kafka wiring below is built the same way. There is no Testcontainers-backed example module for Kafka, so treat it as a wiring sketch against the shipped API rather than a tested reference:
+
+```java
+// Publish side: one durable subscription forwards stored events to Kafka.
+KafkaSharedTopicDestinationResolver resolver = new KafkaSharedTopicDestinationResolver("orders");
+
+producerConfig.put(ProducerConfig.ACKS_CONFIG, "all");
+KafkaCloudEventSink sink = KafkaCloudEventSink.builder(producerConfig, resolver).build();
+
+DurableSubscriptionModel forwarderSubscription =
+        new DurableSubscriptionModel(nativeMongoSubscriptionModel, forwarderCheckpoints);
+CloudEventForwarder forwarder = new CloudEventForwarder(forwarderSubscription, sink);
+forwarder.forward("order-status-forwarder");
+
+// Consume side: the source feeds a PushSubscriptionModel, wrapped in catch-up.
+consumerConfig.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
+consumerConfig.put(ConsumerConfig.GROUP_ID_CONFIG, "order-status");
+
+PushSubscriptionModel pushModel = new PushSubscriptionModel(DataFieldReader.refusing());
+CatchupThenPushSubscriptionModel model =
+        new CatchupThenPushSubscriptionModel(eventStore, pushModel, catchupMarker);
+
+KafkaCloudEventSource source = KafkaCloudEventSource.builder(consumerConfig, pushModel)
+        .resolver(resolver)
+        .build();
+
+ProjectionRunner.stream(model, cloudEventConverter)
+        .project("order-status", orderStatusProjection(), repository);
+```
