@@ -1796,7 +1796,9 @@ By default this model refuses a subscription filter on the event `data` payload.
 
 ##### Push Subscription (Blocking)
 
-Use this when events aren't read from a MongoDB change stream at all, but forwarded by the writing application to a message broker such as RabbitMQ or Kafka, and consumed by a separate listener. `org.occurrent.subscription.push.blocking.PushSubscriptionModel` is a register-only `Subscribable`. It has no start position, checkpoint, catch-up, or replay of its own, and it never talks to an event store. You feed it events yourself, and it dispatches each one to whichever registered handlers match it.
+Use a push subscription when your application receives its events from a message broker, such as RabbitMQ or Kafka, instead of reading them from the event store. The application that writes the events forwards them to the broker, and a listener in your application receives them.
+
+`org.occurrent.subscription.push.blocking.PushSubscriptionModel` never reads from an event store. Your listener hands it each event, and it passes the event to every registered subscription whose filter matches. It has no start position, checkpoint or replay of its own.
 
 First include the dependency:
 
@@ -1819,7 +1821,13 @@ ProjectionRunner.agnostic(pushModel, cloudEventConverter)
         .project("order-status", orderStatusProjection(), repository);
 ```
 
-One model feeds one consumer. Registering a second projection or saga on the same `PushSubscriptionModel` fails at startup, naming both. A broker message carries one acknowledgement decision, so consumers sharing a model would share it too: one that kept failing would hold up every consumer behind it on every redelivery, and once the broker gave up on the message none of them would see it. Declare one model per projection, and give each its own queue, subscription, or consumer group on the broker, so that a message one projection cannot handle stops only that projection. A subscription model reading an event store is unaffected and still serves any number of subscriptions, since each has its own cursor and checkpoint.
+A `PushSubscriptionModel` takes one projection or saga. Registering a second one on the same model fails at startup, and the error names both.
+
+The reason is that your listener acknowledges each broker message once, so every projection on the model would have to share that one acknowledgement. If one of them kept failing on a message, the broker would keep sending that message to all of them. Once the broker gave up on it, none of them would get it.
+
+So create one `PushSubscriptionModel` per projection, and give each its own queue, subscription or consumer group on the broker. A message that one projection can't handle then holds up only that projection.
+
+This limit applies to `PushSubscriptionModel` only. A subscription model that reads from the event store serves any number of subscriptions, since each one keeps track of its own position.
 
 On the producer side, forward the stored `CloudEvent` to the broker as CloudEvents JSON, unchanged. On the listener side, reconstruct it from that CloudEvents JSON payload before handing it to the model, for example in a Spring `@RabbitListener`:
 
@@ -1879,7 +1887,7 @@ Set one and the other keeps its default. A zero or negative value fails startup 
 
 Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass, or nowhere at all if you pass `null`, so a restart skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. This means correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection. Only stream and capability-agnostic subscriptions can catch up this way.
 
-Declaratively, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`. With a single feed bean the name can be dropped, and the starter finds the bean on its own. Declaring the bean does not replace the default subscription model the starter contributes. The starter skips models without a start position, checkpoint or catch-up when it decides whether the application brought its own, so your event-store subscriptions keep the durable default and the feed runs beside it.
+With the Spring Boot starter, a `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`. With a single feed bean the name can be dropped, and the starter finds the bean on its own. Declaring the bean does not replace the default subscription model the starter contributes. The starter skips models without a start position, checkpoint or catch-up when it decides whether the application brought its own, so your event-store subscriptions keep the durable default and the feed runs beside it.
 
 A push source is rejected together with `mode = Mode.SYNCHRONOUS`, with `startAt`, `startAtGlobalPosition` and `resumeBehavior`, and with a `DcbProjection`. Those three attributes all answer "where in the log do I begin", and a broker queue is not a log you can seek in, so there is nothing for them to mean.
 
@@ -1893,7 +1901,7 @@ Projection<OrderStatus, OrderEvent, String> orderStatus() { ... }
 
 `DEFAULT` waits for the replay to finish before the application finishes starting. That is deliberately not the same rule as an event-store subscription, where `DEFAULT` decides from the start position: a push projection that is still replaying is not receiving live events either, so returning from startup with the read model both empty and disconnected would be the more surprising answer.
 
-Because nothing joins a background replay, neither its progress nor a failure in it has a caller to reach. The starters record both on a `PushCatchupStatus` bean instead, which you can inject and ask about one projection at a time:
+With the Spring Boot starter and `startupMode = BACKGROUND`, no code of yours waits for the replay, so nothing of yours would notice if it failed. The starter therefore records the progress of each push projection's replay, and any failure, on a `PushCatchupStatus` bean. Autowire it and ask about one projection at a time:
 
 ```java
 @Autowired
@@ -1919,6 +1927,19 @@ boolean readyToServe(String projectionId) {
 | `Unknown` | Nothing here registered that id, usually a typo. | No. |
 
 Only `Failed` carries a cause, so you cannot ask for one on a projection that is fine. `isCaughtUp(id)` is the shortcut when all you want is the boolean, and `all()` returns every push projection and saga this application registered, in registration order. A readiness probe is the obvious use, and the distinctions are what one actually needs: `Failed` and `CatchingUp` look identical if all you can see is a list of failures, and `Unknown` answers `false` rather than `true` because a probe asking about a name Occurrent does not recognise has not been told yes.
+
+Without Spring Boot there's no `PushCatchupStatus`, but your own code starts the catch-up, so it also sees how it ends. On the blocking stack `CatchupProjectionFeed.catchUp()` returns when the replay has finished and throws when it fails. On the reactor stack the `Mono` it returns completes or errors instead. The blocking `DomainEventFeed` can also be asked at any time:
+
+```java
+boolean readyToServe() {
+    if (feed.refusesPermanently()) {
+        throw new IllegalStateException("The order-status catch-up failed");
+    }
+    return feed.isReadyForLiveDelivery();
+}
+```
+
+`isReadyForLiveDelivery()` is `true` once the feed is live, and `refusesPermanently()` is `true` once its catch-up has failed. A replay that's still running answers `false` to both.
 
 Where the id is fed by a `PushSubscriptionModel`, `CatchingUp`, `Live` and `NotStarted` are read from the subscription model each time you ask rather than recorded once, so stopping and starting the model, which replays the history again, reports `CatchingUp` again. A projection with `catchup = NONE` has no history to work through, so it reports `Live` as soon as it is running. A `@Saga(source = PUSH)` is covered the same way.
 
@@ -4273,7 +4294,7 @@ val result: DcbAppendResult? = applicationService.execute(
 
 A DCB read model needs to see DCB events as they are written, and for a durable one, catch up on history first. `@DcbSubscription` is the declarative, framework-managed way to do that. It is the DCB counterpart to `@StreamSubscription`, filtering by event types and tags instead of an Occurrent `Filter`, and starting at a `position` instead of a time.
 
-For an ephemeral, per-connection subscription you start and cancel by hand, a Server-Sent-Events feed scoped to one request, for example, inject the `DcbSubscriptions` DSL instead and call `subscribe` (or the Kotlin `subscribeDcb`) directly, passing a `DcbCriteria` and a `DcbStartAt`. `DcbStartAt.beginning()` replays the whole DCB sequence by position before switching to live delivery, the same catch-up behavior `@DcbSubscription`'s `startAt = DcbStartPosition.BEGINNING` gives you declaratively.
+For an ephemeral, per-connection subscription you start and cancel by hand, a Server-Sent-Events feed scoped to one request, for example, inject the `DcbSubscriptions` DSL instead and call `subscribe` (or the Kotlin `subscribeDcb`) directly, passing a `DcbCriteria` and a `DcbStartAt`. `DcbStartAt.beginning()` replays the whole DCB sequence by position before switching to live delivery, the same catch-up behavior `@DcbSubscription`'s `startAt = DcbStartPosition.BEGINNING` gives you with the Spring Boot starter.
 
 {% capture java %}
 @DcbSubscription(id = "courseDashboard", startAt = DcbStartPosition.BEGINNING)
@@ -4853,7 +4874,9 @@ The [on-demand](#reading-on-demand) query path has no originating CloudEvent, so
 
 #### DCB projections
 
-On a DCB store a projection reads inside a consistency boundary rather than by event type alone. A `DcbProjection` adds a `DcbCriteria`, a tag filter, to a `Projection`. This is the read-side answer to a question such as "is this username already claimed?", scoped to the events tagged for that one username. There's one flag per username, and the tag boundary already pins the projection to a single username, so it updates a single slot with no `id` function:
+On a DCB store, a projection can read only the events that carry certain tags, instead of every event of a type. A `DcbProjection` is a `Projection` together with a `DcbCriteria`, which says which tags to read.
+
+Take the question "is this username already claimed?". The projection below reads only the events tagged with that one username, so its whole state is a single true or false. That's why it's a singleton projection, with no `id` function:
 
 {% capture kotlin %}
 fun isUsernameClaimed(username: String) =
@@ -4881,7 +4904,7 @@ Feed it with a DCB subscription the same way you feed a stream projection: `dcbS
 
 #### Reading on demand
 
-When you want a strongly consistent answer at the moment you ask, skip the subscription and apply the projection directly to a query. This reads the events in the boundary and returns the state, with no stored read model to keep in sync:
+Not every read needs a stored read model. You can also build the state when you need it, by applying the projection to the events in the event store. Nothing is stored, so there's nothing to keep in sync, and the result includes every event stored when you ask:
 
 {% capture kotlin %}
 val claimed: Boolean = dcbQueries.project(isUsernameClaimed("alice"))
@@ -4891,7 +4914,15 @@ boolean claimed = Projections.project(isUsernameClaimed("alice"), dcbQueries);
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-The same projection definition works both ways. Subscribe to keep a read model eventually consistent, or run a query on demand for a strongly consistent read. The plain, non-DCB `DomainEventQueries` has the same `project` method.
+Reading on demand fits when:
+
+* the result must include the latest writes, for example an order page shown right after the order was placed, before an asynchronous read model has caught up
+* the answer depends on few events, such as those of one order or one username, so reading them on every call is cheap
+* the answer is rarely asked for, for example in an admin page or a support script, so keeping a stored read model up to date isn't worth it
+
+Every call reads the events again. For an answer that many requests ask for, or one that depends on many events, a stored read model is cheaper.
+
+The same projection works both ways. Subscribe it to keep a stored read model up to date, or run it on demand. The plain, non-DCB `DomainEventQueries` has the same `project` method.
 
 In Java, the on-demand fold is also a static entry point, `Projections.project(projection, queries)`, the counterpart to the Kotlin `project` extension above:
 
@@ -4909,7 +4940,37 @@ This matters most with `occurrent.subscription.mode=manual`, where the registrat
 
 #### Read-your-writes
 
-Register the projection on a synchronous subscription model and build the application service with it, and the read model updates inside the same transaction as the write. The projected state is then visible the moment `execute(...)` returns, with no eventual-consistency lag. This trades a little write latency for read-your-writes consistency, so use it when a command needs to see its own effect immediately.
+Register the projection on a `SynchronousSubscriptionModel` and pass the same model to the application service. The application service then updates the read model before `execute(...)` returns, so a read right after the write sees it:
+
+{% capture java %}
+SynchronousSubscriptionModel synchronous = new SynchronousSubscriptionModel();
+ProjectionRunner.stream(synchronous, cloudEventConverter)
+        .project("enrolled-students", enrolledStudents, repository);
+
+ApplicationService<CourseEvent> applicationService =
+        GenericApplicationService.builder(eventStore, cloudEventConverter)
+                .synchronousSubscriptions(synchronous)
+                .build();
+
+applicationService.execute(courseId, events -> enrollStudent(events, studentId));
+// The enrolled-students read model already includes the new student here
+{% endcapture %}
+{% capture kotlin %}
+val synchronous = SynchronousSubscriptionModel()
+streamSubscriptions(synchronous, cloudEventConverter) {
+    project("enrolled-students", enrolledStudents, repository)
+}
+
+val applicationService = GenericApplicationService.builder(eventStore, cloudEventConverter)
+    .synchronousSubscriptions(synchronous)
+    .build()
+
+applicationService.execute(courseId) { events -> enrollStudent(events, studentId) }
+// The enrolled-students read model already includes the new student here
+{% endcapture %}
+{% include macros/docsSnippet.html java=java kotlin=kotlin %}
+
+Add a `transactionExecutor(...)` to the builder to update the read model in the same transaction as the write, as [Synchronous Subscriptions](#synchronous-subscriptions) describes. Each write then takes a little longer, so use this when a command needs to see its own effect at once.
 
 #### Reactor
 
@@ -4917,7 +4978,7 @@ Everything above has a reactor counterpart in `org.occurrent.dsl.projection.reac
 
 #### Replay batching {#replay-batching}
 
-A catch-up replay used to cost one store read and one store write per event. `CatchupProjectionFeed`, and a `DomainEventFeed` built on it (see [Feeding domain events instead of CloudEvents](#feeding-domain-events-instead-of-cloudevents)), now buffer replayed events per view instance instead and flush them in batches. A history of N events over K view instances then costs about 2K store round trips rather than 2N, and about two per batch when the repository also implements the bulk operations described below. This is on by default, nothing to opt in to.
+Without batching, a catch-up replay costs one store read and one store write per event. `CatchupProjectionFeed`, and a `DomainEventFeed` built on it (see [Feeding domain events instead of CloudEvents](#feeding-domain-events-instead-of-cloudevents)), buffer replayed events per view instance instead and write them in batches. A history of N events over K view instances then costs about 2K store round trips rather than 2N, and about two per batch when the repository also implements the bulk operations described below. Batching is on by default.
 
 Batching only reaches a projection fed that way. `ProjectionRunner`, `DcbProjectionRunner`, and the default `@Projection(source = Source.EVENT_STORE)` path register the projection on a `SubscriptionModel` instead, and so does `@Projection(source = Source.PUSH)` bound to a `PushSubscriptionModel` rather than a `DomainEventFeed`. All of those still pay one read and one write per replayed event, because the subscription model owns that catch-up and doesn't yet tell the view where a replay begins or ends.
 
@@ -4933,13 +4994,25 @@ CatchupProjectionFeed<OrderEvent> feed = CatchupProjectionFeed.create(
 
 Pass `new MaterializedViewOptions(1)` for a batch size of one. That reads, applies, and saves each event one at a time, the same as before this feature existed, and is the way out if the behaviour below surprises you.
 
-##### What a replay promises about the view while it runs
+##### The read model during a replay
 
-Nothing, and that's exactly why batching defaults on. Outside a replay the view is always current, an update reads the current state, applies the event, and writes it back one event at a time. During a replay, a buffered view instance is stale until its batch flushes, cross-instance write order is no longer the event order (updates land instance by instance rather than event by event), and anything watching the read model's storage directly, a change stream, an audit trail keyed off writes, sees fewer, larger writes than events replayed. Within one view instance, its buffered events still apply in arrival order, exactly as before. None of this takes away a promise that existed. The projection DSL never guaranteed a live view during a replay, only a correct one once the replay finishes, and batching keeps that.
+Outside a replay, the read model is always up to date. Each event is applied by reading the current state, applying the event and writing the state back.
 
-##### Opting a hand-built view in: `ReplayAware`
+During a replay with batching, the read model lags behind:
 
-A view learns where a replay begins and ends through a small capability interface in the view DSL:
+* A view instance with buffered events isn't updated until its batch is written.
+* Instances are written one after another, so writes to different instances don't happen in event order.
+* Anything that watches the read model's storage directly, such as a change stream or an audit trail of writes, sees fewer and larger writes than there were events.
+
+Within one view instance, events are still applied in the order they arrived.
+
+The projection DSL has never promised an up-to-date read model during a replay, only a correct one once the replay finishes, and batching keeps that promise.
+
+##### Batching in a view you build yourself
+
+`Projections.materializedView` and `Projections.reactiveUpdateWithMetadata` batch a replay for you. A `MaterializedView` you build yourself doesn't, whether you build it with `MaterializedView.create(...)` or with the view DSL's `materialized(mongoOperations, ...)` Kotlin helper (see [Materializing with Spring](#materialized-view-spring)). When you hand such a view to `CatchupProjectionFeed.create(id, view, filter, ...)`, it's written once per replayed event.
+
+To batch it, implement `ReplayAware` on the view. The feed then tells it when a replay starts and ends:
 
 ```java
 public interface ReplayAware {
@@ -4949,9 +5022,53 @@ public interface ReplayAware {
 }
 ```
 
-`Projections.materializedView` and `Projections.reactiveUpdateWithMetadata` already implement it, so you never touch this directly through the projection DSL. It matters when you build a `MaterializedView` by hand instead, through `MaterializedView.create(...)` or the view DSL's `materialized(mongoOperations, ...)` Kotlin helper (see [Materializing with Spring](#materialized-view-spring)), and hand it to `CatchupProjectionFeed.create(id, view, filter, ...)`. Neither of those builders implements the capability, so a hand-built view stays on the per-event path unless you implement `ReplayAware` on it yourself. Buffer in `replayStarted()`, write the buffer in `replayCompleted()`, and drop it in `replayAbandoned()`.
+Start buffering in `replayStarted()`, write the buffer in `replayCompleted()`, and drop it in `replayAbandoned()`. The feed records the catch-up as finished right after `replayCompleted()` returns, so write everything before it returns. For example:
 
-The reactor twin lives in `org.occurrent.dsl.projection.reactor` rather than beside the blocking one, the blocking view DSL carries no reactor dependency. It differs in one place, `replayCompleted()` returns a `Mono<Void>` so a buffered write can be asynchronous, chained before the catch-up marker is recorded. `replayStarted()` and `replayAbandoned()` stay plain signals on both.
+```java
+class OrderStatusView implements MaterializedView<OrderEvent>, ReplayAware {
+    private final ViewStateRepository<OrderStatus, String> repository;
+    private final Map<String, OrderStatus> buffer = new LinkedHashMap<>();
+    private boolean replaying;
+
+    OrderStatusView(ViewStateRepository<OrderStatus, String> repository) {
+        this.repository = repository;
+    }
+
+    @Override
+    public void update(OrderEvent event) {
+        String id = event.orderId();
+        OrderStatus current = buffer.containsKey(id)
+                ? buffer.get(id)
+                : repository.findById(id).orElse(OrderStatus.initial());
+        OrderStatus updated = current.apply(event);
+        if (replaying) {
+            buffer.put(id, updated);
+        } else {
+            repository.save(id, updated);
+        }
+    }
+
+    @Override
+    public void replayStarted() {
+        replaying = true;
+    }
+
+    @Override
+    public void replayCompleted() {
+        repository.saveAll(buffer);
+        buffer.clear();
+        replaying = false;
+    }
+
+    @Override
+    public void replayAbandoned() {
+        buffer.clear();
+        replaying = false;
+    }
+}
+```
+
+On the reactor stack the interface is `ReactiveReplayAware`, in `org.occurrent.dsl.projection.reactor`. Its `replayCompleted()` returns a `Mono<Void>`, so the buffered write can run asynchronously, and the feed records the catch-up as finished once that `Mono` completes. The other two methods return nothing, the same as on the blocking stack.
 
 ##### Partial failure
 
@@ -4964,11 +5081,17 @@ A batch write is not atomic across view instances. When it fails partway, some i
 
 None of this widens the replay's existing at-least-once contract. A failed or stopped catch-up already left the view partially advanced and replayed the same events again next time. Batching only narrows how much can be re-replayed if it fails, durability that used to be per event never spans more than one batch now.
 
-##### The shipped Mongo repositories
+##### Batching with MongoDB
 
-The Mongo-backed `ViewStateRepository` implementations Occurrent ships, the `MongoOperations`-backed one behind `materialized(mongoOperations, ...)`, the `CrudRepository`-backed one behind `materialized(crudRepository, ...)`, and the default store the `@Projection` annotation falls back to when you declare no store bean, all override `findAllById` and `saveAll`. A flush then costs one round trip each way instead of one per view instance, a single `_id in (...)` query for the read, and one unordered bulk write for the save. This only takes effect with the default `RetryStrategy.none()`, a configured retry strategy falls back to the per-instance path described above.
+Occurrent's MongoDB `ViewStateRepository` implementations read and write a whole batch in one round trip each, with one `_id in (...)` query for the read and one unordered bulk write for the save. That covers:
 
-No extra MongoDB index is needed to get this. Both the bulk read and the bulk write key off `_id`, the index every MongoDB collection already carries, so there's nothing to create up front the way [some of the event store's own indexes](#mongodb-indexes) sometimes need.
+* the one behind `materialized(mongoOperations, ...)`, which uses `MongoOperations`
+* the one behind `materialized(crudRepository, ...)`, which uses a Spring Data `CrudRepository`
+* the store the `@Projection` annotation uses when you declare no store bean
+
+They do this by overriding `findAllById` and `saveAll`. It only applies with the default `RetryStrategy.none()`. With a retry strategy, a batch is read and written one view instance at a time, as described above.
+
+You don't need an extra MongoDB index for this. Both the read and the write look documents up by `_id`, which every MongoDB collection already has an index on.
 
 #### The `@Projection` annotation {#the-projection-annotation}
 
