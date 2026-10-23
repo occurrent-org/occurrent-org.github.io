@@ -1699,15 +1699,15 @@ You still need automatic restart when:
 * the save is off (`neverSaveQuietPosition()`), or its interval (`saveQuietPositionEvery(Duration)`) is longer than the oplog keeps history
 * the persist predicate declined the last event before the subscription went quiet, as `EveryN` with `n` above 1 can, or the subscription started from a `StartAt` of your own and the predicate hasn't stored a position yet
 
-If there's not enough history available in the MongoDB oplog to resume a subscription created from a `SpringMongoSubscriptionModel`, you can configure it to restart the subscription from the current 
-time automatically.
+When the oplog no longer has the history a subscription needs to resume, the subscription model can restart the subscription from the current time instead. This section uses `SpringMongoSubscriptionModel` as the example, but `NativeMongoSubscriptionModel` and the reactive `ReactorMongoSubscriptionModel` work the same way, with the same `restartSubscriptionsOnChangeStreamHistoryLost(true)` setting on their config.
 
 A subscription runs into this whenever it opens its change stream at a position the oplog no longer has. That happens when an application restarts with a subscription configured to start from such a position. It also happens when a subscription is resumed, or its change stream restarts, after being paused or disconnected for longer than the oplog keeps history. A subscription that hasn't handled an event yet gets the same handling.
 
-It's disabled by default since it might not 
-be 100% safe (meaning that you can miss some events when the subscription is restarted). It's not 100% safe if you run subscriptions in a different process than the event store _and_ you have lot's of 
-writes happening to the event store. It's safe if you run the subscription in the same process as the writes to the event store _if_ you make sure that the
-subscription is started _before_ you accept writes to the event store on startup. To enable automatic restart, you can do like this:
+Automatic restart is off when you create the model yourself, because a subscription that restarts from the current time can miss events. That happens when the subscriptions run in a different process than the writes, and the event store gets many writes. It's safe when the subscription runs in the same process as the writes, as long as the subscription starts before the application accepts writes.
+
+The Spring Boot starter turns automatic restart on. Set `occurrent.subscription.mongodb.restart-on-change-stream-history-lost=false` to turn it off there.
+
+To turn it on when you create the model yourself:
   
 ```java
 var subscriptionModel = new SpringMongoSubscriptionModel(mongoTemplate, SpringMongoSubscriptionModelConfig.withConfig("events", TimeRepresentation.RFC_3339_STRING).restartSubscriptionsOnChangeStreamHistoryLost(true));
