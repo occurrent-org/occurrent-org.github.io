@@ -23,6 +23,20 @@ const groups = [
 export default defineConfig({
     site: "https://occurrent.org",
     markdown: { remarkPlugins: [remarkVersion, remarkPageMeta] },
+    // Built CSS and JS keep the same file name from one deploy to the next. GitHub Pages lets a browser keep a page for
+    // ten minutes, and a page it kept from before a deploy would otherwise ask for a hashed file the deploy removed, and
+    // show without its styles. Hashes buy nothing here, since GitHub Pages caches every file for the same ten minutes.
+    vite: {
+        build: {
+            rollupOptions: {
+                output: {
+                    entryFileNames: "_astro/[name].js",
+                    chunkFileNames: "_astro/[name].js",
+                    assetFileNames: "_astro/[name][extname]",
+                },
+            },
+        },
+    },
     integrations: [
         starlight({
             title: "Occurrent",
