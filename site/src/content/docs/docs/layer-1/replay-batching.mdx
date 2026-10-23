@@ -4,6 +4,7 @@ description: "Write a read model in batches while replaying history."
 sidebar:
   order: 13
 layer: "1"
+addedIn: "0.33.0"
 ---
 
 Without batching, a catch-up replay costs one store read and one store write per event. `CatchupProjectionFeed`, and a `DomainEventFeed` built on it (see [Feeding domain events instead of CloudEvents](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents)), buffer replayed events per view instance instead and write them in batches. A history of N events over K view instances then costs about 2K store round trips rather than 2N, and about two per batch when the repository also implements the bulk operations described below. Batching is on by default.

@@ -7,6 +7,7 @@ layer: "1"
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 A saga runs for as long as its process does, so sooner or later you need to ask operational questions about one. Is this instance still running, which step is it waiting in, and which instances have stopped moving? `SagaInstance` answers those and nothing else:
 
@@ -126,7 +127,7 @@ Each saga's running `SagaSubscription` is published the same way, as `sagaSubscr
 
 One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
 
-## Quarantined Instances
+## Quarantined Instances<HeadingBadge text="Added in 0.34.0" />
 
 Each saga gets one subscription, and that subscription delivers the events for all of its instances. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again.
 

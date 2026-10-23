@@ -8,6 +8,7 @@ stack: [spring-boot]
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 If you're on the [Spring Boot Starter](/docs/spring-boot/starter/), you don't have to wire up a `ProjectionRunner` yourself. Annotate a factory method that returns a `Projection` or `DcbProjection` with `org.occurrent.annotation.Projection`, and the framework registers it as a persistent read model for you. It subscribes through the same catch-up, durable-resume, and [competing-consumer](/docs/layer-0/competing-consumers/) machinery as [`@Subscription` and `@DcbSubscription`](/docs/spring-boot/subscription-annotations/), for both a stream `Projection` and a `DcbProjection`:
 
@@ -138,7 +139,7 @@ On the MongoDB starter, leaving `store` and `storeName` unset with no matching b
 
 `mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](/docs/layer-1/projections/#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. A synchronous projection has no subscription to catch up or resume, so startup fails if you set any of the start attributes listed under [The `@Projection` annotation](/docs/spring-boot/projection-annotation/).
 
-## Read-your-writes for an asynchronous projection
+## Read-your-writes for an asynchronous projection<HeadingBadge text="Added in 0.34.0" />
 
 Every write and DCB append returns an `AppendId`. It comes back as an `Optional<AppendId>` from `appendId()` on `WriteResult` and `DcbAppendResult`.
 

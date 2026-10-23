@@ -10,6 +10,7 @@ modules: [occurrent-subscription-mongodb-native-blocking, occurrent-subscription
 
 import Dependency from "../../../../components/Dependency.astro";
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 These are the _non-durable_ [blocking subscription implementations](/docs/layer-0/blocking-subscriptions/):
 
@@ -219,7 +220,7 @@ When the lost position is the live start a [catch-up subscription](/docs/layer-0
 
 An alternative approach to restarting automatically is to use a [catch-up subscription](/docs/layer-0/catch-up-subscription/) and restart the subscription from an earlier date.
 
-### Deferring Startup
+### Deferring Startup<HeadingBadge text="Added in 0.32.0" />
 
 By default a `SpringMongoSubscriptionModel` starts itself as soon as it's constructed, and if you register it as a Spring bean, Spring starts it again on refresh (it implements `SmartLifecycle`). Set `autoStartup(false)` on the config to skip both:
 
@@ -237,7 +238,7 @@ A subscription registered on a model created this way comes back paused, the sam
 
 Use `autoStartup(false)` to bring subscriptions up under your own control, behind a leader election or a health check for example, or in a test that wants to choose which subscriptions actually run before the context finishes starting.
 
-## Tuning the MongoDB change stream
+## Tuning the MongoDB change stream<HeadingBadge text="Added in 0.31.0" />
 
 Both blocking MongoDB subscription models let you tune the change stream they read from. Both options are opt-in. Leave them unset and you get the driver and server defaults, which is what every subscription did before these existed, so upgrading changes nothing on its own.
 

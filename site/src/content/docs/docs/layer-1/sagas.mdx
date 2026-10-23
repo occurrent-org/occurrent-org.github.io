@@ -7,6 +7,7 @@ layer: "1"
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 A "saga" represents and coordinates a long-lived business process (where "long-lived" is kind of arbitrary). This is an advanced subject, so try other means first. A [policy](/docs/overview/concepts/#policy) is often enough, and [DCB](/docs/layer-0/dcb-event-store/) covers the case where two rules must hold in one append. When you do need a saga, use Occurrent's [Saga DSL](/docs/layer-1/sagas/#saga-dsl) below. It lets you write a process manager in plain code, with timers and correlation, and it has [Spring Boot support](/docs/spring-boot/saga-annotation/).
 
@@ -23,7 +24,7 @@ If the DSL doesn't fit your needs, Occurrent is a library, so you can also hook 
 
 To integrate one of these with Occurrent, create a [subscription](/docs/layer-0/subscriptions/) that forwards the events written to the event store to it.
 
-## Saga DSL
+## Saga DSL<HeadingBadge text="Added in 0.31.0" />
 
 A saga (more precisely a process manager) reacts to events, and to their absence over time, by issuing commands. Use one for a process that spans more than one stream and unfolds over real time, such as "cancel the order if payment is not reserved within 30 minutes". A `Saga<E, S, C>` is the mirror image of a [decider](/docs/overview/deciders/): a decider turns commands into events, a saga turns events (and its own timeouts) into commands. Like a decider it is only data and functions, with no I/O, so a test asserts equality on the effects it returns and needs no infrastructure at all.
 

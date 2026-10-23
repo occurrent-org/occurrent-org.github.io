@@ -8,6 +8,7 @@ modules: [occurrent-decider]
 
 import Dependency from "../../../../components/Dependency.astro";
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 A [decider](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) is an object built from three functions: `initialState`, `decide`, and `evolve`. `initialState` returns the state a decider starts from, before any event has been applied. `decide` takes a command and the current state, checks your business rules and invariants, and returns the resulting events. `evolve` takes the current state and an event and returns the updated state. Together they give you a structured way to implement decision logic for a business entity (typically an aggregate) or a use case.
 
@@ -237,7 +238,7 @@ In the `orderDecider` example above, `C` is `OrderCommand`, `S` is `OrderState`,
 
 Read [this blog post](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) for the rationale behind deciders.
 
-## Using an ApplicationService with Deciders
+## Using an ApplicationService with Deciders<HeadingBadge text="Layer 1" variant="tip" />
 
 It's possible to integrate [Deciders](/docs/overview/deciders/) with an [ApplicationService](/docs/layer-1/application-service/) to easily load existing events from an [event store](/docs/layer-0/eventstore/).
 

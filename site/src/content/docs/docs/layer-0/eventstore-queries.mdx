@@ -7,6 +7,7 @@ layer: "0"
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 Since Occurrent builds on-top of existing databases it's ok, given that you know what you're doing\*, to use the strengths of these databases. One such strength is that databases typically have good querying support. Occurrent exposes this with the `EventStoreQueries` interface that an EventStore implementation may implement to expose querying capabilities. For example:
 
@@ -72,7 +73,7 @@ The `EventStoreQueries` interface also supports skip and limit capabilities whic
 
 To get started with an event store refer to [Choosing An EventStore](/docs/stores/choosing-an-event-store/).
 
-## Filtering on Payload Data
+## Filtering on Payload Data<HeadingBadge text="Added in 0.32.0" />
 
 `Filter.data(name, condition)` filters on a field inside an event's `data` payload. It's statically imported from `org.occurrent.filter.Filter`, next to `subject`, `type` and `time`, and resolves to `filter("data." + name, condition)`, so it composes with `.and()` and `.or()` like any other `Filter`. It works the same way whether you're querying an `EventStore` or filtering a subscription:
 

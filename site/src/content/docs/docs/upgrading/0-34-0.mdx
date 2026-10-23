@@ -6,6 +6,7 @@ sidebar:
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 The `org.occurrent.UpgradeToOccurrent_0_34` recipe makes the mechanical changes for you. Run it before editing anything by hand.
 
@@ -24,7 +25,7 @@ The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migra
 * A reactor `@Projection`, `@Saga` or `@Snapshot` factory method that returns `null` fails startup with `IllegalStateException`, as on the blocking stack.
 * An HTTP endpoint whose caller retries can call `acceptOrDefer(CloudEvent)`, the same as a RabbitMQ or Kafka listener.
 
-## Repairing events damaged before 0.34.0
+## Repairing events damaged before 0.34.0<HeadingBadge text="Added in 0.34.0" />
 
 On 0.33.0 and earlier, `updateEvent` on a MongoDB event store could damage the values the store owns, an event's `position`, its DCB tags, its `streamId` and its `streamVersion`:
 

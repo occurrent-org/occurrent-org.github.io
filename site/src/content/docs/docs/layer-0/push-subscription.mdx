@@ -8,6 +8,7 @@ model: [blocking]
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 Use a push subscription when your application receives its events from a message broker, such as RabbitMQ or Kafka, instead of reading them from the event store. The application that writes the events forwards them to the broker, and a listener in your application receives them.
 
@@ -64,7 +65,7 @@ void onMessage(byte[] body) {
 
 ## Feeding it from a broker
 
-## Observing pushed events
+## Observing pushed events<HeadingBadge text="Added in 0.34.0" />
 
 `accept(..)` returns normally for an event that no subscription takes, and it logs nothing about it. So each of these looks exactly like a saga or projection that got the event and ignored it:
 
@@ -274,13 +275,13 @@ On the reactor stack, a push projection on a bean built after startup never wait
 
 Add `catchup = Catchup.NONE` when the feed carries events that are not in this application's event store, which is the case when another application writes them. The wrapper is skipped entirely and the bare `PushSubscriptionModel` is used instead, so no `PositionOrderedReader` or `CheckpointStorage` bean is needed. Left at the default `Catchup.FROM_EVENT_STORE`, a missing one of those beans now fails naming `catchup = Catchup.NONE` as the fix, rather than a bare missing-bean error. `startAt`, `startAtGlobalPosition` and `resumeBehavior` stay rejected either way. `startupMode` only applies under the default, since `Catchup.NONE` has no replay for `startupMode = BACKGROUND` to move off the startup path.
 
-## Life-cycle
+## Life-cycle<HeadingBadge text="Added in 0.32.0" />
 
 Like every other subscription model, a `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. There's no feed behind it holding events back, so an event handed to `accept(..)` while the model is stopped, or a subscription is paused, never reaches that handler, and resuming does not replay it. That's dropped, not deferred. `shutdown()` is one-way. A model that's been shut down stays that way. This is the same contract [`SynchronousSubscriptionModel` runs on](/docs/layer-1/synchronous-subscriptions/#life-cycle), and it's what lets a test [stop every subscription model in the application and opt back in per test](/docs/testing/integration-testing/#stopping-every-subscription-then-opting-in), a `PushSubscriptionModel` included.
 
 `CatchupThenPushSubscriptionModel` gained the same full life cycle in 0.32.0, on both stacks, and stopping it now also interrupts a catch-up replay that's already running rather than only the live feed behind it. Starting it again replays the interrupted history from the beginning, and `start(false)` leaves that replay for `resumeSubscription(..)` to pick up on its own.
 
-## Feeding domain events instead of CloudEvents
+## Feeding domain events instead of CloudEvents<HeadingBadge text="Layer 1" variant="tip" />
 
 If your listener already hands you domain events, for example because a broker message converter deserializes them for you, a projection that takes CloudEvents needs each event turned into a `CloudEvent` and back into a domain event. That's an extra serialize and deserialize for every event. Pass the domain events to the projection directly instead, and nothing is converted between your listener and the read model.
 

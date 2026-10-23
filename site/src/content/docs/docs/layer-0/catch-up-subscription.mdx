@@ -6,10 +6,12 @@ sidebar:
 layer: "0"
 model: [blocking]
 modules: [occurrent-subscription-catchup-blocking]
+addedIn: "0.1.1"
 ---
 
 import Dependency from "../../../../components/Dependency.astro";
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events as they arrive. A catch-up subscription allows for exactly this! It combines the [EventStoreQueries](/docs/layer-0/eventstore-queries/) API with a [subscription](/docs/layer-0/blocking-subscriptions/) and an optional [checkpoint storage](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage). It starts off by streaming historic events from the event store and then automatically switch to continuous streaming mode once the historic events have caught up.
 
@@ -109,7 +111,7 @@ var catchupSubscriptionModel = new CatchupSubscriptionModel(subscriptionModel, e
 
 By default, events are sorted by time and then stream version (if two or more events have the same time).
 
-## Interrupting a Replay in Progress
+## Interrupting a Replay in Progress<HeadingBadge text="Added in 0.32.0" />
 
 `stop()` now reaches a catch-up replay that's already running, not just the live subscription behind it. Before, stopping the model while a subscription was still replaying history left that replay running to completion regardless, since only the live delegate was told to stop. Now `stop()` interrupts it at the next event, so a shutdown or a deliberate stop no longer waits for the whole backlog to be delivered.
 

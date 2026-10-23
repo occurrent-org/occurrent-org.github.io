@@ -7,6 +7,8 @@ layer: "0"
 model: [reactive]
 ---
 
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
 The reactive twin of the [blocking push subscription](/docs/layer-0/push-subscription/). Use it when the writing application forwards events to a broker such as RabbitMQ or Kafka instead of a MongoDB change stream, and a reactive listener consumes them. `org.occurrent.subscription.push.reactor.PushSubscriptionModel` is a register-only `Subscribable` with no start position, checkpoint, catch-up, or replay of its own.
 
 First include the dependency:
@@ -119,6 +121,6 @@ A projection on a bean built after startup never waits, see [When Annotations Re
 
 A running reactor replay can be stopped with `stopCatchUp()`, so shutting down does not wait for the whole history to be applied. Stopping the model itself also interrupts an in-flight catch-up replay, the same as on the blocking stack.
 
-## Life-cycle
+## Life-cycle<HeadingBadge text="Added in 0.32.0" />
 
 Like its [blocking twin](/docs/layer-0/push-subscription/#life-cycle), a reactive `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down, with the same _dropped, not deferred_ contract for whatever is fed to it while stopped or paused, and the same one-way `shutdown()`.

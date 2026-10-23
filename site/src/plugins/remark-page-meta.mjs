@@ -1,6 +1,6 @@
-// Puts a line at the top of each page that says what the page is about: its layer, stack, programming model and
-// modules, taken from the front matter. It is part of the content rather than the page chrome, so the Markdown copy
-// of the page that AI tools read carries it too.
+// Puts a line at the top of each page that says what the page is about: its layer, stack, programming model, the
+// version that added it and its modules, taken from the front matter. It is part of the content rather than the page
+// chrome, so the Markdown copy of the page that AI tools read carries it too.
 
 const LAYERS = {
     0: ["Layer 0: CloudEvents", "/docs/layer-0/"],
@@ -26,6 +26,7 @@ export function pageMeta(frontmatter) {
         if (!(frontmatter.layer === "spring-boot" && stack === "spring-boot")) parts.push(badge(STACKS[stack], "stack"));
     }
     for (const model of frontmatter.model ?? []) parts.push(badge(MODELS[model], "model"));
+    if (frontmatter.addedIn !== undefined) parts.push(badge(`Added in ${frontmatter.addedIn}`, "added"));
     const modules = (frontmatter.modules ?? []).map((module) => `<code>${escape(module)}</code>`);
     if (parts.length === 0 && modules.length === 0) return null;
     if (modules.length > 0) parts.push(`<span class="page-meta-modules">Modules: ${modules.join(", ")}</span>`);

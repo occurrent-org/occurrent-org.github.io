@@ -10,6 +10,7 @@ modules: [occurrent-subscription-mongodb-spring-reactor, occurrent-subscription-
 
 import Dependency from "../../../../components/Dependency.astro";
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 These are the _non-durable_ [reactive subscription implementations](/docs/layer-0/reactive-subscriptions/):
 
@@ -175,7 +176,7 @@ Then we should instantiate a `CheckpointAwareSubscriptionModel`, that subscribes
   </TabItem>
 </Tabs>
 
-### Life-cycle
+### Life-cycle<HeadingBadge text="Added in 0.32.0" />
 
 `ReactorDurableSubscriptionModel` can be stopped, started, paused per subscription and shut down like any other reactor `SubscriptionModel`.
 
@@ -280,7 +281,7 @@ That includes a durable model that wraps a catch-up model, which is what the rea
 
 If you subscribe with a subscription id while `shutdown()` is running, the subscribe either throws the same exception or is cancelled by the shutdown.
 
-### Delegating to a Named Wrapped Model
+### Delegating to a Named Wrapped Model<HeadingBadge text="Added in 0.32.0" />
 
 When the model that `ReactorDurableSubscriptionModel` wraps, the wrapped model, is itself a named reactor `SubscriptionModel`, the durable model hands the subscription straight to it. It doesn't drive the cold `Flux` primitive itself then. Everything the wrapped model already does for a named subscription applies from there:
 

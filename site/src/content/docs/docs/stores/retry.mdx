@@ -6,9 +6,11 @@ sidebar:
 modules: [occurrent-retry]
 ---
 
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
 import Dependency from "../../../../components/Dependency.astro";
 
-## Retry Configuration (Blocking)
+## Retry Configuration (Blocking)<HeadingBadge text="Added in 0.7.0" />
 
 Occurrent contains a retry module that you can depend on using:
 
@@ -108,7 +110,7 @@ A `RetryStrategy` you implement yourself, rather than one built from `RetryStrat
 
 Check a flag like `running` in the predicate you pass to `execute`, not in `retryIf`. A `retryIf` predicate is only called between attempts, so a shutdown that happens during a backoff still waits for the backoff to finish. And `retryIf` replaces whatever retry predicate the strategy already had instead of adding to it.
 
-## Retry and Transactions
+## Retry and Transactions<HeadingBadge text="Added in 0.31.0" />
 
 A retry only works where it also owns the transaction, because only the code that began a transaction can begin a fresh one. A retry running inside somebody else's transaction spends its attempts on a transaction MongoDB already aborted at the first conflict, and every later attempt fails immediately on its first read. As of version %OCCURRENT_VERSION% Occurrent applies that rule across the whole write path.
 

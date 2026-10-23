@@ -4,9 +4,11 @@ description: "Update a read model in the same transaction as the write."
 sidebar:
   order: 5
 layer: "1"
+addedIn: "0.31.0"
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 The subscriptions described so far are asynchronous, except the [push subscription](/docs/layer-0/push-subscription/), which runs on the thread that hands it the event. The others run on their own thread, driven by a MongoDB change stream, a catch-up replay, or an in-memory background dispatcher, and they fire only after the write has committed. That is the right default for a read model that is allowed to lag the write slightly, and for anything that must survive a restart or run cluster-wide.
 
@@ -24,7 +26,7 @@ Use a synchronous subscription when the reaction must be visible the moment `exe
 * **No free lunch.** Enabling synchronous subscriptions adds one read per event-producing write, to recover the global `position` for the handler. You pay it only while at least one synchronous subscription is registered. An application that declares none does exactly what it did before, with no extra read.
 * **Reentrancy and latency.** The handler runs on the writer thread, inside the transaction when there is one, so a handler that calls `execute` again re-enters on the same thread, and a slow handler directly increases write latency and lock-hold time. Keep synchronous handlers small, and do not let one issue a command that re-triggers itself.
 
-## Life-cycle
+## Life-cycle<HeadingBadge text="Added in 0.32.0" />
 
 Like every other subscription model, a `SynchronousSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. What makes that sharper here than on an asynchronous subscription is what stopping it actually costs.
 

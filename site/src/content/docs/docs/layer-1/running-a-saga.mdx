@@ -7,6 +7,7 @@ layer: "1"
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 Programmatically, `SagaRunner` is the write-side mirror of the read-side [`ProjectionRunner`](/docs/layer-1/views/). It subscribes to the saga's events, applies and persists per-instance state, dispatches the commands each reaction issues, and polls the state store to fire timers. Pick the capability with the factory. `agnostic(...)` delivers both stream-written and DCB-appended events, `stream(...)` only stream-written ones. There is no reactive `SagaRunner`, sagas run on the blocking stack only:
 
@@ -58,7 +59,7 @@ The store's type parameter follows the saga's state, so it is `SagaStateStore<Or
 
 Building a `SpringMongoSagaStateStore` by hand for a flow saga means passing the application's `CloudEventConverter` alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using a constructor that takes no converter, throws `IllegalArgumentException` rather than falling back to Java class names, which stop matching once an event class moves to another package. A core saga has no such requirement, since it serializes with the application's own `MongoConverter`.
 
-## Sagas Without Command Types
+## Sagas Without Command Types<HeadingBadge text="Added in 0.32.0" />
 
 Everything above assumes you have command types. You do not need them. Occurrent's [command philosophy](/docs/overview/commands/#command-philosophy) says a command can be a plain function, and a saga can issue one.
 

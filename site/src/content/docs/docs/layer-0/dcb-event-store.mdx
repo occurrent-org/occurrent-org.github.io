@@ -7,6 +7,7 @@ layer: "0"
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 Most invariants live inside a single entity: an order cannot ship twice, an account cannot go negative. Occurrent's stream event store handles those well, because a stream is exactly the boundary the invariant needs.
 
@@ -155,7 +156,7 @@ The read-decide-append cycle is how you use it directly, without an application 
   </TabItem>
 </Tabs>
 
-### Reading part of a boundary
+### Reading part of a boundary<HeadingBadge text="Added in 0.31.0" />
 
 `read`, `exists` and `count` each take an optional `DcbReadOptions` with a position window. A read can also select part of the matching events with a `direction`, `skip` and `limit`. `exists` and `count` use the criteria and position window, but ignore those three selection options.
 

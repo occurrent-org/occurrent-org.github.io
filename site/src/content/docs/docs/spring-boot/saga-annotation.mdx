@@ -8,6 +8,7 @@ stack: [spring-boot]
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 On the [Spring Boot starter](/docs/spring-boot/starter/) you do not wire a `SagaRunner` yourself. Annotate a no-arg factory method returning a `Saga` with `org.occurrent.annotation.Saga`. The framework registers it as a managed saga, subscribing through the same catch-up, durable-resume, and [competing-consumer](/docs/layer-0/competing-consumers/) machinery as [`@Subscription`](/docs/spring-boot/subscription-annotations/):
 
@@ -85,7 +86,7 @@ The annotation and the DSL class share the name `Saga`, so a Java factory method
 
 `@Saga` is blocking-only in this first version, the reactive starter does not register it.
 
-## Fed from a broker
+## Fed from a broker<HeadingBadge text="Added in 0.32.0" />
 
 A saga does not have to read the event store. Set `source = Source.PUSH` and point it at a [`PushSubscriptionModel`](/docs/layer-0/push-subscription/) bean, and it reacts to whatever your listener hands that model, from RabbitMQ, Kafka, or any other source that can deliver an event again:
 

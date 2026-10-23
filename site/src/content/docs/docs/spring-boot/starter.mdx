@@ -6,7 +6,10 @@ sidebar:
 layer: "spring-boot"
 stack: [spring-boot]
 modules: [occurrent-mongodb-spring-boot-starter]
+addedIn: "0.14.0"
 ---
+
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 import Dependency from "../../../../components/Dependency.astro";
 
@@ -115,7 +118,7 @@ You can set both the old and the new key as long as they have the same value. Th
 
 The `org.occurrent.UpgradeToOccurrent_0_34` OpenRewrite recipe renames the keys in your `.properties` and `.yaml` files, as described in [section 4 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb). It can't rename environment variables such as `OCCURRENT_EVENT_STORE_COLLECTION`, so you have to find those in your deployment configuration and rename them yourself.
 
-## Deferring Subscription Startup
+## Deferring Subscription Startup<HeadingBadge text="Added in 0.32.0" />
 
 By default the starter creates every subscription and starts it during context refresh, before your application is ready to receive requests. `occurrent.subscription.mode` controls whether that happens at all:
 

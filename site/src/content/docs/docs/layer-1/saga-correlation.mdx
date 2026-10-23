@@ -7,6 +7,7 @@ layer: "1"
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 A saga is not one process, it is many instances of the same process, one per order or game or auction. Correlation is how an incoming event finds its instance. For every event the saga is handed, it derives a `String` id, and that id is the key the state store loads and saves under. Two events that produce the same id are the same running saga. The id is a plain `String` so it survives being persisted and read back unchanged, and it is yours to choose, usually the domain id already on the event.
 
@@ -22,7 +23,7 @@ The builder checks the rules rather than trusting you to follow them. Every even
 
 Two things happen at run time rather than at build time, and both are deliberately quiet. A correlator that returns `null` means "this event belongs to no instance", and the event is skipped. So is an event that correlates to an instance that does not exist yet, unless its type is a start type, which is what stops a mid-process event from starting a saga at the wrong point.
 
-## Declared Event Types
+## Declared Event Types<HeadingBadge text="Added in 0.33.0" />
 
 A saga's event types are also its subscription filter. Occurrent takes the types you registered through `startsOn`, `evolve`, `react`, a step's `on(...)` and an `event(...)` condition, asks the `CloudEventTypeMapper` for the CloudEvent type of each one, and subscribes on those.
 
@@ -34,7 +35,7 @@ To fix a refused declaration, [seal the hierarchy](/docs/layer-1/deriving-the-ev
 
 Sealing the hierarchy and declaring the concrete types both keep events arriving under a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, since the saga then subscribes on that string. If a class you need to handle is neither final nor sealed and you can't change it, use `replacementFilter(..)` instead, as [Setting an Explicit Filter](/docs/layer-1/saga-correlation/#setting-an-explicit-filter) shows.
 
-## Setting an Explicit Filter
+## Setting an Explicit Filter<HeadingBadge text="Added in 0.33.0" />
 
 A saga can also select on more than its declared event types, or subscribe on something a derived selector cannot express at all. Two builder members cover the two cases: `narrowingFilter(Filter)` adds a condition on top of the derived selector, `replacementFilter(Filter)` replaces it outright. `FlowSaga.Builder` has both, both Kotlin `saga { }` blocks expose them under the same names, and the lower-level `Saga.create(...)` factory takes a replacement only, as its trailing argument.
 
