@@ -1,0 +1,278 @@
+---
+title: "Sagas"
+description: "Coordinate a process across events with the core and flow saga DSL."
+sidebar:
+  order: 15
+layer: "1"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+A "saga" represents and coordinates a long-lived business process (where "long-lived" is kind of arbitrary). This is an advanced subject, so try other means first. A [policy](/docs/overview/concepts/#policy) is often enough, and [DCB](/docs/layer-0/dcb-event-store/) covers the case where two rules must hold in one append. When you do need a saga, use Occurrent's [Saga DSL](/docs/layer-1/sagas/#saga-dsl) below. It lets you write a process manager in plain code, with timers and correlation, and it has [Spring Boot support](/docs/spring-boot/saga-annotation/).
+
+If the DSL doesn't fit your needs, Occurrent is a library, so you can also hook in an existing solution, for example:
+
+* [Temporal](https://temporal.io/) - Open source microservices orchestration platform for running mission critical code at any scale.
+* [zio-saga](https://github.com/VladKopanev/zio-saga) - If you're using [Scala](https://scala-lang.org/) and [zio](https://zio.dev/) (there's also a [cats implementation](https://github.com/VladKopanev/cats-saga)).
+* [Apache Camel Saga](https://camel.apache.org/components/latest/eips/saga-eip.html) - If you're using Java and don't mind bringing in [Apache Camel](https://camel.apache.org/) as a dependency.
+* [nflow](https://github.com/NitorCreations/nflow) - Battle-proven solution for orchestrating business processes in Java.
+* [saga-coordinator-java](https://github.com/fernandoBRS/saga-coordinator-java) - Saga Coordinator as a Finite State Machine (FSM) in Java.
+* [Baker](https://github.com/ing-bank/baker) - Baker is a library that reduces the effort to orchestrate (micro)service-based process flows.
+* Use the [routing-slip pattern](https://www.enterpriseintegrationpatterns.com/patterns/messaging/RoutingTable.html) from the [Enterprise Integration Patterns](https://www.enterpriseintegrationpatterns.com/) book.
+* Represent sagas as todo lists. This is described in the [event modeling](https://eventmodeling.org/) documentation in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation).
+
+To integrate one of these with Occurrent, create a [subscription](/docs/layer-0/subscriptions/) that forwards the events written to the event store to it.
+
+## Saga DSL<HeadingBadge text="Added in 0.31.0" />
+
+A saga (more precisely a process manager) reacts to events, and to their absence over time, by issuing commands. Use one for a process that spans more than one stream and unfolds over real time, such as "cancel the order if payment is not reserved within 30 minutes". A `Saga<E, S, C>` is the mirror image of a [decider](/docs/overview/deciders/): a decider turns commands into events, a saga turns events (and its own timeouts) into commands. Like a decider it is only data and functions, with no I/O, so a test asserts equality on the effects it returns and needs no infrastructure at all.
+
+Here is the order-fulfillment process. `OrderPlaced` reserves payment and arms a 30-minute timer, `PaymentReserved` ships the order, `PaymentFailed` cancels it, and the timer firing (nobody reserved or failed the payment in time) also cancels it:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> orderFulfillment =
+            FlowSaga.<OrderEvent, OrderCommand>builder()
+                    .correlateAll(OrderEvent::orderId)
+                    .startsOn(OrderPlaced.class,
+                            order -> List.of(new ReservePayment(order.orderId(), order.amount())))
+                    .step("awaiting-payment", step -> step
+                            .on(PaymentReserved.class, Continuation.end(),
+                                    payment -> List.of(new ShipOrder(payment.orderId())))
+                            .on(PaymentFailed.class, Continuation.end(),
+                                    failure -> List.of(new CancelOrder(failure.orderId(), failure.reason())))
+                            .timeout(Duration.ofMinutes(30), Continuation.end(),
+                                    received -> List.of(new CancelOrder(received.initiating(OrderPlaced.class).orderId(), "payment timeout"))))
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val orderFulfillment: Saga<OrderEvent, FlowState<OrderEvent>, OrderCommand> =
+        saga {
+            correlateAll { it.orderId }
+            startsOn<OrderPlaced> { order ->
+                issue(ReservePayment(order.orderId, order.amount))
+            }
+            step("awaiting-payment") {
+                on<PaymentReserved>(then = end) { payment -> issue(ShipOrder(payment.orderId)) }
+                on<PaymentFailed>(then = end) { failure -> issue(CancelOrder(failure.orderId, failure.reason)) }
+                timeout(after = Duration.ofMinutes(30), then = end) { received ->
+                    issue(CancelOrder(received.initiating<OrderPlaced>().orderId, "payment timeout"))
+                }
+            }
+        }
+    ```
+  </TabItem>
+</Tabs>
+
+A saga is not a substitute for a [Dynamic Consistency Boundary](/docs/layer-0/dcb-event-store/). When two rules must hold atomically in one append, express both as a single `DcbCriteria` and let one decider decide against them together, which is cheaper and stronger. Use a saga only when the process is genuinely cross-boundary and time-involving. The "cancel if payment is not reserved within 30 minutes" rule has no single append at which both facts are known, because the payment may simply never arrive and the deciding write has to be triggered by the passage of time rather than by an event. That is the gap a saga fills, and the only one.
+
+There are two ways to write a saga, and both produce the same `Saga<E, S, C>`, so the runner only ever runs one kind of thing. The flow DSL above is the shorthand for the common case, a linear process moving through a few named steps. Underneath it is the core DSL, an explicit fold and reaction per event type. Use the flow DSL when your process is a small sequence of steps, and drop to the core DSL when it is not.
+
+### The Core DSL
+
+The core DSL is `Saga.builder(...)` in Java and `saga(...) { }` in Kotlin. Both take an initial state, or none when the state should start out as `null`. Without one, the state's type is nullable, `@Nullable S` in Java and `S?` in Kotlin. You register, per event type, an `evolve` that applies the event to state and a `react` that decides what to do now that the event has been applied. Timers get their own `evolveOnTimeout` and `reactOnTimeout`, keyed by name. `evolve` and `react` are kept separate on purpose. Rehydrating an instance from history calls only `evolve`, so replay can never re-issue a command.
+
+Here is the same order-fulfillment process as the flow example above, written against an explicit `OrderSagaState`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga<OrderEvent, @Nullable OrderSagaState, OrderCommand> orderFulfillment =
+            Saga.<OrderEvent, OrderSagaState, OrderCommand>builder()
+                    .correlateAll(OrderEvent::orderId)
+                    .startsOn(OrderPlaced.class)
+                    .evolve(OrderPlaced.class, (state, e) -> new AwaitingPayment(e.orderId()))
+                    .react(OrderPlaced.class, (state, e) -> List.of(
+                            SagaEffect.issue(new ReservePayment(e.orderId(), e.amount())),
+                            SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
+                    .evolve(PaymentReserved.class, (state, e) -> new Completed(e.orderId()))
+                    .react(PaymentReserved.class, (state, e) -> List.of(
+                            SagaEffect.issue(new ShipOrder(e.orderId())),
+                            SagaEffect.cancelTimeout("payment")))
+                    .evolve(PaymentFailed.class, (state, e) -> new Cancelled(e.orderId(), e.reason()))
+                    .react(PaymentFailed.class, (state, e) -> List.of(
+                            SagaEffect.issue(new CancelOrder(e.orderId(), e.reason())),
+                            SagaEffect.cancelTimeout("payment")))
+                    .evolveOnTimeout("payment", (state, t) -> new Cancelled(t.sagaId(), "payment timeout"))
+                    .reactOnTimeout("payment", (state, t) -> List.of(SagaEffect.issue(new CancelOrder(t.sagaId(), "payment timeout"))))
+                    .isTerminal(state -> state instanceof Completed || state instanceof Cancelled)
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val orderFulfillment = saga<OrderEvent, OrderSagaState?, OrderCommand> {
+        correlateAll { it.orderId }
+        startsOn<OrderPlaced>()
+        evolve<OrderPlaced> { _, e -> AwaitingPayment(e.orderId) }
+        react<OrderPlaced> { _, e ->
+            issue(ReservePayment(e.orderId, e.amount))
+            startTimeout("payment", Duration.ofMinutes(30))
+        }
+        evolve<PaymentReserved> { _, e -> Completed(e.orderId) }
+        react<PaymentReserved> { _, e ->
+            issue(ShipOrder(e.orderId))
+            cancelTimeout("payment")
+        }
+        evolve<PaymentFailed> { _, e -> Cancelled(e.orderId, e.reason) }
+        react<PaymentFailed> { _, e ->
+            issue(CancelOrder(e.orderId, e.reason))
+            cancelTimeout("payment")
+        }
+        evolveOnTimeout("payment") { _, t -> Cancelled(t.sagaId, "payment timeout") }
+        reactOnTimeout("payment") { _, t -> issue(CancelOrder(t.sagaId, "payment timeout")) }
+        isTerminal { it is Completed || it is Cancelled }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+`startsOn` names the event types that create a new instance, and `correlateAll` (or a per-type `correlate`) says which instance every other event belongs to, described under [correlation](/docs/layer-1/saga-correlation/) below. `isTerminal` marks the states that end the process. A terminal instance ignores further input, and the runner cancels its outstanding timers.
+
+The flow DSL cannot express everything, on purpose. A step can wait on a fixed combination of alternatives and counts, built once when the saga is defined, but a count decided at runtime rather than fixed at build time is still out of reach, and so are accumulators across steps and "this event is valid in every step" matching. A process that needs any of those drops to the core DSL, where `evolve` and `react` can express them directly.
+
+### The Flow DSL
+
+The flow DSL describes a process as a linear sequence of named steps. Here is one branch from a step, reacting to `PaymentReserved`:
+
+```kotlin
+on<PaymentReserved>(then = end) {
+    if (it.partial) issue(ReserveRemainder(it.orderId))
+    issue(ShipOrder(it.orderId))
+}
+```
+
+A step holds a list of branches like the one above, tried in the order you declared them, and the first one satisfied wins. Each branch waits for either a single event type or a condition over the events received since the step was entered. A step can also have a `timeout(...)`. Each branch and timeout names where the saga goes next through a `Continuation`. `end` completes the saga, `next` advances to the following step, and `transitionTo("step")` jumps to a step you name, including one the flow has already been through, which is how you write a retry loop. The whole step graph is validated at `build()` time, so a `transitionTo` to a step that does not exist is a build error, not a run-time surprise.
+
+The order-fulfillment example above is the shape to copy for a branch-and-timeout step. For a timeout on its own, here is the "close the game if no player joins within 10 minutes" case:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga<GameEvent, FlowState<GameEvent>, CloseGame> lobby =
+            FlowSaga.<GameEvent, CloseGame>builder()
+                    .startsOn(GameCreated.class)
+                    .correlateAll(GameEvent::gameId)
+                    .step("awaiting-players", step -> step
+                            .on(PlayerJoined.class, Continuation.end())
+                            .timeout(Duration.ofMinutes(10), Continuation.end(),
+                                    received -> List.of(new CloseGame(received.initiating(GameCreated.class).gameId()))))
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val lobby = saga<GameEvent, CloseGame> {
+        startsOn<GameCreated>()
+        correlateAll { it.gameId }
+        step("awaiting-players") {
+            on<PlayerJoined>(then = end)
+            timeout(after = Duration.ofMinutes(10), then = end) { received ->
+                issue(CloseGame(received.initiating<GameCreated>().gameId))
+            }
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+`on<PlayerJoined>(then = end)` above has no reaction at all. A branch, timeout or start that issues nothing simply omits it, in Java through a `StepBuilder` overload that takes no reaction.
+
+When there is a reaction, it returns what `issue` gives back rather than nothing. That is what makes the mistake below a compile error instead of a saga that silently does nothing at runtime, since a Kotlin lambda expecting `Unit` would have accepted the command and discarded it:
+
+```kotlin
+// Does not compile, the command is produced and never issued
+on<PaymentReserved>(then = end) { ShipOrder(it.orderId) }
+```
+
+A reaction can still run several statements and branch on the event's data, as long as its last expression is an `issue`.
+
+In the Kotlin DSL, when a reaction issues a command only in some cases and none in the others, say so with `nothing`. In Java a reaction returns the list of commands to issue, so returning an empty list issues nothing. It means there is nothing to issue, not that nothing happens. The branch still fires and still follows its `then`, so the flow advances either way. An `if` without an `else` has type `Unit` and cannot close the lambda, so give it an else branch or end on `nothing`:
+
+```kotlin
+// Issue only when the payment was partial, otherwise nothing
+on<PaymentReserved>(then = end) {
+    if (it.partial) issue(ReserveRemainder(it.orderId)) else nothing
+}
+
+// The same thing when the conditional is the last of several statements
+on<PaymentReserved>(then = end) {
+    if (it.partial) issue(ReserveRemainder(it.orderId))
+    nothing
+}
+```
+
+Kotlin's `when` expression works the same way as the `if` above. Every branch must end on a command or on `nothing`. Issuing no command is an outcome in its own right rather than an omission, which is what the word is for.
+
+```kotlin
+on<PaymentReserved>(then = end) {
+    when {
+        it.partial -> issue(ReserveRemainder(it.orderId))
+        else -> nothing
+    }
+}
+```
+
+#### What a Reaction Reads
+
+An `on<T>` branch's reaction is handed the event that fired it, the way `on<PaymentReserved>(then = end) { payment -> ... }` is handed the `PaymentReserved`. A timeout has no such event, so its reaction takes a `received` parameter instead, the way the game lobby's does:
+
+```kotlin
+timeout(after = Duration.ofMinutes(10), then = end) { received ->
+    issue(CloseGame(received.initiating<GameCreated>().gameId))
+}
+```
+
+`received` is a `ReceivedEvents`, the events the instance has kept with the initiating event first. `received.initiating<GameCreated>()` returns the start event, which is how the reaction above reaches a `gameId` that only `GameCreated` has. Java writes the same call as `received.initiating(GameCreated.class)`.
+
+The other accessors ask about an event type rather than about the start event. `first<T>()` returns the first event of that type, `null` in Kotlin and an empty `Optional` in Java when none has arrived. `all<T>()` returns every event of that type in arrival order, `count<T>()` returns how many of them have arrived, `any<T>()` and `none<T>()` answer whether any has, and `asList()` returns the kept events in arrival order. Java passes a `Class` to each of the type-based ones, `received.count(PaymentFailed.class)`.
+
+Not every callback reads the same amount of an instance's history. [What Each Callback Reads](/docs/layer-1/saga-step-conditions/#what-each-callback-reads) sets that out, once conditions and guards are in view.
+
+Those reified accessors are Kotlin extensions, so a file outside the `org.occurrent.dsl.saga.flow` package imports each one it uses, `import org.occurrent.dsl.saga.flow.initiating` for the example above. Leaving that import out for `initiating` specifically does not report a missing extension. `ReceivedEvents` also has a no-arg `initiating()` member, and a member wins over an extension, so the compiler points at that member with "No type arguments expected" and sends you looking in the wrong place.
+
+#### Loops and Absolute Timeouts
+
+The timeouts so far have all been `timeout(after = ...)`, which fires once a relative duration has elapsed. `timeout(at = { received -> ... })` fires at an absolute `Instant` computed from the received events instead, an auction's end time for example.
+
+A `transitionTo` names any step, including the current one, which is how a flow expresses a loop. In the example below, an auction stays open as long as bids keep arriving. Each `BidPlaced` transitions the `bidding` step back to itself, and an absolute timeout closes it once its end time passes. Re-entering the step re-arms its timeout, but because the deadline comes from the initiating event, the timeout still fires at the auction's original end time rather than sliding forward on every bid:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga<AuctionEvent, FlowState<AuctionEvent>, CloseAuction> auction =
+            FlowSaga.<AuctionEvent, CloseAuction>builder()
+                    .startsOn(AuctionStarted.class)
+                    .correlate(AuctionStarted.class, AuctionStarted::auctionId)
+                    .correlate(BidPlaced.class, BidPlaced::auctionId)
+                    .step("bidding", step -> step
+                            .on(BidPlaced.class, Continuation.transitionTo("bidding"))
+                            .timeout(received -> received.initiating(AuctionStarted.class).endsAt(), Continuation.end(),
+                                    received -> List.of(new CloseAuction(received.initiating(AuctionStarted.class).auctionId()))))
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val auction = saga<AuctionEvent, CloseAuction> {
+        startsOn<AuctionStarted>()
+        correlate<AuctionStarted> { it.auctionId }
+        correlate<BidPlaced> { it.auctionId }
+        step("bidding") {
+            on<BidPlaced>(then = transitionTo("bidding"))
+            timeout(at = { received -> received.initiating<AuctionStarted>().endsAt }, then = end) { received ->
+                issue(CloseAuction(received.initiating<AuctionStarted>().auctionId))
+            }
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>

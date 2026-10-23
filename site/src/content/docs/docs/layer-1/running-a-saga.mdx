@@ -1,0 +1,156 @@
+---
+title: "Running a saga"
+description: "Run a saga, with or without command types."
+sidebar:
+  order: 18
+layer: "1"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+Programmatically, `SagaRunner` is the write-side mirror of the read-side [`ProjectionRunner`](/docs/layer-1/views/). It subscribes to the saga's events, applies and persists per-instance state, dispatches the commands each reaction issues, and polls the state store to fire timers. Pick the capability with the factory. `agnostic(...)` delivers both stream-written and DCB-appended events, `stream(...)` only stream-written ones. There is no reactive `SagaRunner`, sagas run on the blocking stack only:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    SagaStateStore<OrderSagaState> stateStore = SagaStateStore.inMemory();
+    CommandDispatcher<OrderCommand> dispatcher = command ->
+            applicationService.execute(command.orderId(), events -> handle(events, command));
+
+    SagaSubscription runningSaga = SagaRunner.agnostic(subscriptionModel, cloudEventConverter)
+            .run("order-fulfillment", orderFulfillment, stateStore, dispatcher);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val stateStore: SagaStateStore<OrderSagaState> = SagaStateStore.inMemory()
+    val dispatcher = CommandDispatcher<OrderCommand> { command ->
+        applicationService.execute(command.orderId) { events -> handle(events, command) }
+    }
+
+    val runningSaga = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, cloudEventConverter)
+        .run("order-fulfillment", orderFulfillment, stateStore, dispatcher)
+    ```
+  </TabItem>
+</Tabs>
+
+`run(...)` waits for the saga's subscription to be started and caught up before it returns. An overload takes a `waitUntilStarted` boolean to opt out of that wait, so a caller driving the runner directly can start a long replay in the background the way [`@Saga` does by default](/docs/spring-boot/saga-annotation/). Either way, the saga's timers do not fire until the subscription is running and has finished replaying, on a push feed and on a catch-up subscription model alike. So a timeout can never decide against state the saga has only half rebuilt.
+
+The dispatcher is a `CommandDispatcher`, usually just a lambda over an `ApplicationService`. The decider-free path above is first-class, you hand each command to any `ApplicationService`-shaped receiver. When the command target is a decider, `CommandDispatchers.decider(...)` wires it for you:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    CommandDispatcher<OrderCommand> dispatcher =
+            CommandDispatchers.decider(deciderApplicationService, orderCommandDecider, OrderCommand::orderId);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val dispatcher = CommandDispatchers.decider(deciderApplicationService, orderCommandDecider) { it.orderId }
+    ```
+  </TabItem>
+</Tabs>
+
+The store's type parameter follows the saga's state, so it is `SagaStateStore<OrderSagaState>` for the core-DSL saga above and `SagaStateStore<FlowState<OrderEvent>>` for the flow one. The `SagaStateStore` persists each instance. `SagaStateStore.inMemory()` is for tests and single-node use, and `SpringMongoSagaStateStore` (in the blocking MongoDB starter) is the durable one. Unlike a read-model store it supports a compare-and-set save, because an event and a timer can touch the same instance concurrently, so the runner detects a lost update and retries instead of overwriting. Timers live in the same stored envelope as the state, not in an external scheduler. A timer poller inside the runner periodically reads instances with a due timer and re-enters them through the same pipeline a live event uses. That means no deadline or JobRunr infrastructure to run, at the cost of firing precision bounded by the poll interval, which does not matter at the minutes-to-days timescale sagas work on.
+
+Building a `SpringMongoSagaStateStore` by hand for a flow saga means passing the application's `CloudEventConverter` alongside the state type. That converter is what lets the store serialize a `FlowState`'s retained events by their stable CloudEvent type rather than a Java class name. Passing `null`, or using a constructor that takes no converter, throws `IllegalArgumentException` rather than falling back to Java class names, which stop matching once an event class moves to another package. A core saga has no such requirement, since it serializes with the application's own `MongoConverter`.
+
+## Sagas Without Command Types<HeadingBadge text="Added in 0.32.0" />
+
+Everything above assumes you have command types. You do not need them. Occurrent's [command philosophy](/docs/overview/commands/#command-philosophy) says a command can be a plain function, and a saga can issue one.
+
+Say the domain is written the way that section recommends, as pure functions from events to events, with no command records and no handler that switches over them:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    static List<OrderEvent> reservePayment(List<OrderEvent> events, double amount) { ... }
+    static List<OrderEvent> ship(List<OrderEvent> events) { ... }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    fun reservePayment(events: List<OrderEvent>, amount: Double): List<OrderEvent> = ...
+    fun ship(events: List<OrderEvent>): List<OrderEvent> = ...
+    ```
+  </TabItem>
+</Tabs>
+
+A saga can command those directly. Its command type becomes `Invocation<E>`, which pairs the stream to write to with the function to run against that stream's events:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    .react(OrderPlaced.class, (state, e) -> List.of(
+            SagaEffect.issue(Invocation.to(e.orderId(), events -> reservePayment(events, e.amount()))),
+            SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
+    .react(PaymentReserved.class, (state, e) -> List.of(
+            SagaEffect.issue(Invocation.to(e.orderId(), OrderDomain::ship)),
+            SagaEffect.cancelTimeout("payment")))
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    react<OrderPlaced> { _, e ->
+        issue(e.orderId) { events -> reservePayment(events, e.amount) }
+        startTimeout("payment", Duration.ofMinutes(30))
+    }
+    react<PaymentReserved> { _, e ->
+        issue(e.orderId) { events -> ship(events) }
+        cancelTimeout("payment")
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The Kotlin two-argument `issue(streamId) { events -> ... }` is available in every core and flow reaction and comes from `occurrent-saga-dsl-blocking`. Wire the runner with `CommandDispatchers.invocation(applicationService)` instead of a decider dispatcher, and the saga is typed `Saga<OrderEvent, S, Invocation<OrderEvent>>`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    CommandDispatcher<Invocation<OrderEvent>> dispatcher = CommandDispatchers.invocation(applicationService);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val dispatcher = CommandDispatchers.invocation(applicationService)
+    ```
+  </TabItem>
+</Tabs>
+
+Nothing about the saga machinery changes. An invocation is an ordinary command, so it goes through the same `CommandDispatcher`, gets the same at-least-once delivery, and is safe for the same reason a decider is. The application service re-reads the stream before your function decides, so a duplicate decides nothing.
+
+For [DCB](/docs/layer-0/dcb-event-store/) the type is `DcbInvocation`, which takes a `DcbCriteria` read boundary in place of the stream id, and optionally its own `TagGenerator`. Dispatch it with `DcbCommandDispatchers.invocation(applicationService)`.
+
+`E` here is the event type of the stream being written to, which is not necessarily the type the saga subscribes to. `Saga.adapt` cannot widen an `Invocation<Narrow>` into an `Invocation<Wide>`, because Java generics are invariant, so type a feature saga on the module-wide event type from the start.
+
+The cost is in the tests. A lambda has no value equality, so `assertThat(step.issuedCommands()).containsExactly(ShipOrder(orderId))` has no equivalent. Two replacements, both of which say more than the command's name did:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Check what the command does, by running its decision over the events you care about
+    assertThat(step.issuedCommands().get(0).decision().apply(List.of(placed)))
+            .containsExactly(new OrderShipped(orderId));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Check what the command does, by running its decision over the events you care about
+    assertThat(step.issuedCommands().single().decision().apply(listOf(placed)))
+        .containsExactly(OrderShipped(orderId))
+    ```
+  </TabItem>
+</Tabs>
+
+Or run the saga against an in-memory event store and check the events it wrote, which asserts the outcome rather than the message. Command types remain the better choice when you want the fast, pure assertion on `issuedCommands()`, or when the saga's intent is a thing you want to name, log, and read back later.
+
+[ADR 81](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0081-function-shaped-saga-commands.md) records why this is a command type rather than a new kind of saga effect.

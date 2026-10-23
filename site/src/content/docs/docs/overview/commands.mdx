@@ -1,0 +1,414 @@
+---
+title: "Commands"
+description: "How Occurrent thinks about commands, and how to compose them."
+sidebar:
+  order: 7
+modules: [occurrent-command-composition]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+A command is used to represent an _intent_ in an event sourced system, i.e. something that you _want_ to do. They're different, in a very important way, from events in that commands can fail or be rejected, where-as events cannot. A typical example of a command would be a data structure whose name is defined as an imperative verb, for example `PlaceOrder`. The resulting event, if the command is processed successfully, could then be `OrderPlaced`. However, in Occurrent, as explained in more detail in the [Command Philosophy](/docs/overview/commands/#command-philosophy) section below, you may start off by not using explicit data structures for commands unless you want to. In Occurrent, you can instead use pure functions to represent commands and command handling. Combine this with function composition and you have a powerful way to invoke the domain model (refer to the [application service](/docs/layer-1/application-service/) for examples).
+
+## Command Philosophy
+
+Occurrent doesn't contain a built-in command bus. Instead, you're encouraged to pick any infrastructure component you need to act as the command bus to send commands to another service. Personally, I typically make a call to a REST API or make an RPC invocation instead of using a distributed command bus that routes the commands to my aggregate. There are of course exceptions to this, such as the need for [location transparency](https://en.wikipedia.org/wiki/Location_transparency) or if you're using [Deciders](/docs/overview/deciders/). If you need location transparency, a command bus or an actor model can be of help. But I would argue that you may not always need the complexity by prematurely going down this route if your business requirements doesn't point you in this direction. [Deciders](/docs/overview/deciders/) are a nice alternative, that doesn't require any additional infrastructure.
+
+But what about internally? For example if a service exposes a REST API and upon receiving a request it publishes a command that's somehow picked up and routed to a function in your domain model. This is where an [application service](/docs/layer-1/application-service/) becomes useful. However, let's first explore the rationale behind the philosophy of Occurrent. In other frameworks, it's not uncommon that you define your domain model like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class WordGuessingGame extends AggregateRoot {
+
+        @AggregateId
+        private String gameId;
+        private String wordToGuess;
+
+        @HandleCommand
+        public void handle(StartNewGameCommand startNewGameCommand) {
+            // Insert some validation and logic
+            ...
+            // Publish an event using the "publish" method from AggregateRoot
+            publish(new WordGuessingGameWasStartedEvent(...));
+        }
+
+        @HandleCommand
+        public void handle(GuessWordCommand guessWordCommand) {
+            // Some validation and implementation ...
+            ...
+
+            // Publish an event using the "publish" method from AggregateRoot
+            publish(new WordGuessedEvent(...));
+        }
+
+        @HandleEvent
+        public void handle(WordGuessingGameWasStartedEvent e) {
+            this.gameId = e.getGameId();
+            this.wordToGuess = e.getWordToGuess();
+        }
+
+        ...
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    class WordGuessingGame : AggregateRoot() {
+
+        @AggregateId
+        var gameId : String
+        var wordToGuess : String
+
+        @HandleCommand
+        fun handle(startNewGameCommand : StartNewGameCommand) {
+            // Insert some validation and logic
+            ...
+            // Publish an event using the "publish" method from AggregateRoot
+            publish(WordGuessingGameWasStartedEvent(...))
+        }
+
+        @HandleCommand
+        fun handle(guessWordCommand : GuessWordCommand) {
+            // Some validation and implementation ...
+            ...
+
+            // Publish an event using the "publish" method from AggregateRoot
+            publish(WordGuessedEvent(...))
+        }
+
+        @HandleEvent
+        fun handle(e : WordGuessingGameWasStartedEvent) {
+            gameId = e.getGameId()
+            wordToGuess = e.getWordToGuess()
+        }
+
+        ...
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+This is a made-up example of an imaginary event sourcing framework, it's not how you're encouraged to implement a domain model using Occurrent.
+:::
+
+Let's look at a "command" and see what it typically looks like in these frameworks:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class StartNewGameCommand {
+
+        @AggregateId
+        private String gameId;
+        private String wordToGuess;
+
+        public void setGameId(String gameId) {
+            this.gameId = gameId;
+        }
+
+        public String getGameId() {
+            return gameId;
+        }
+
+        public void setWordToGuess(String wordToGuess) {
+            this.wordToGuess = wordToGuess;
+        }
+
+        public String getWordToGuess() {
+            return wordToGuess;
+        }
+
+        // Equals/hashcode/tostring methods are excluded for brevity
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    data class StartNewGameCommand(@AggregateId var gameId: String, val wordToGuess : String)
+    ```
+  </TabItem>
+</Tabs>
+
+Now that we have our `WordGuessingGame` implementation and a command we can dispatch it to a command bus:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    commandbus.dispatch(new StartNewGameCommand("someGameId", "Secret word"));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    commandbus.dispatch(StartNewGameCommand("someGameId", "Secret word"))
+    ```
+  </TabItem>
+</Tabs>
+
+From a typical Java perspective one could argue that this is not too bad. But it does have a few things one could improve upon from a broader perspective:
+
+1. The `WordGuessingGame` is [complecting](https://www.infoq.com/presentations/Simple-Made-Easy/) several things that may be modelled separately. Data, state, behavior, command- and event routing and event publishing are all defined in the same model (the `WordGuessingGame` class). It also uses framework specific annotations, classes and inheritance inside your domain model which is something you want to avoid. For small examples like this it arguably doesn't matter, but if you have complex logic and a large system, it probably will in my experience. Keeping state and behavior separate allows for easier testing, referential transparency and function composition. It allows treating the state as a [value](https://www.infoq.com/presentations/Value-Values/) which has many benefits.
+2. Commands are defined as explicit data structures with framework-specific annotations when arguably they don't have to. This is fine if you need to serialize the command (in order to send it to another location or to schedule it for the future) but one could argue that you don't want to couple your commands to some infrastructure. This is of course a trade-off, in Occurrent you're free to choose any approach you like (i.e. commands/functions can be completely free of framework/library/infrastructure concerns).
+
+## Commands in Occurrent
+
+So how would one dispatch commands in Occurrent? As we've already mentioned there's nothing stopping you from using a (distributed) command bus or to create explicit commands, and dispatch them the way we did in the example above. For example, if you're using [Deciders](/docs/overview/deciders/), it could be nice to have commands explicitly defined. But if you recognize some of the points described above and are looking for a simpler approach, here's another way to go about. First let's refactor the domain model to pure functions, without any state or dependencies to Occurrent or any other library/framework.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class WordGuessingGame {
+    	public static List<DomainEvent> startNewGame(String gameId, String wordToGuess) {
+    		...
+    	}
+
+    	public static List<DomainEvent> guessWord(List<DomainEvent> eventStream, String word) {
+    		...
+    	}
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Note that the functions might as well be placed directly in a package.
+     object WordGuessingGame {
+        fun startNewGame(gameId : String, wordToGuess : String) : List<DomainEvent> = ...
+
+        fun guessWord(eventStream : List<DomainEvent>, word : String) : List<DomainEvent> = ...
+     }
+    ```
+  </TabItem>
+</Tabs>
+
+If you define your behavior like this it'll be easy to test (and also to compose using normal function composition techniques). There are no side-effects (such as publishing events) which also allows for easier testing and [local reasoning](https://www.inner-product.com/posts/fp-what-and-why/).
+
+But where are our commands!? In this example we've decided to represent them as functions. I.e. the "command" is modeled as simple function, e.g. `startNewGame`! This means that the command handling logic is handled by function as well. You don't need to switch/match over the command since you directly invoke the function itself. Again, you may prefer to actually define your commands explicitly, but in this example we'll just be using normal functions.
+
+But wait, how are these functions called? Create or copy a generic `ApplicationService` class like the one below (or use the generic [application service](/docs/layer-1/application-service/) provided by Occurrent):
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class ApplicationService {
+
+        private final EventStore eventStore;
+        private final Function<CloudEvent, DomainEvent> convertCloudEventToDomainEvent;
+        private final Function<DomainEvent, CloudEvent> convertDomainEventToCloudEvent;
+
+        public ApplicationService(EventStore eventStore,
+                                  Function<CloudEvent, DomainEvent> convertCloudEventToDomainEvent,
+                                  Function<DomainEvent, CloudEvent> convertDomainEventToCloudEvent) {
+            this.eventStore = eventStore;
+            this.convertCloudEventToDomainEvent = convertCloudEventToDomainEvent;
+            this.convertDomainEventToCloudEvent = convertDomainEventToCloudEvent;
+        }
+
+        public void execute(String streamId, Function<List<DomainEvent>, List<DomainEvent>> functionThatCallsDomainModel) {
+            // Read all events from the event store for a particular stream
+            EventStream<CloudEvent> eventStream = eventStore.read(streamId);
+            // Convert the cloud events into domain events
+            List<DomainEvent> domainEventsInStream = eventStream.events().map(convertCloudEventToDomainEvent).toList();
+
+            // Call a pure function from the domain model which returns a List of domain events
+            List<DomainEvent> newDomainEvents = functionThatCallsDomainModel.apply(domainEventsInStream);
+
+            // Convert domain events to cloud events and write them to the event store
+            List<CloudEvent> newCloudEvents = newDomainEvents.stream().map(convertDomainEventToCloudEvent).toList();
+            eventStore.write(streamId, eventStream.version(), newCloudEvents);
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    class ApplicationService constructor (val eventStore : EventStore,
+                                          val convertCloudEventToDomainEvent : (CloudEvent) -> DomainEvent,
+                                          val convertDomainEventToCloudEvent : (DomainEvent) -> CloudEvent) {
+
+        fun execute(streamId : String, functionThatCallsDomainModel : (List<DomainEvent>) -> List<DomainEvent>) {
+            // Read all events from the event store for a particular stream
+            val  eventStream : EventStream<CloudEvent> = eventStore.read(streamId)
+            // Convert the cloud events into domain events
+            val domainEventsInStream : List<DomainEvent> = eventStream.events().map(convertCloudEventToDomainEvent).toList()
+
+            // Call a pure function from the domain model which returns a List of domain events
+            val newDomainEvents = functionThatCallsDomainModel(domainEventsInStream)
+
+            // Convert domain events to cloud events and write them to the event store
+            val newCloudEvents = newDomainEvents.map(convertDomainEventToCloudEvent)
+            eventStore.write(streamId, eventStream.version(), newCloudEvents)
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+and then use the `ApplicationService` like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // A function that converts a CloudEvent to a "domain event"
+    Function<CloudEvent, DomainEvent> convertCloudEventToDomainEvent = ..
+    // A function that a "domain event" to a CloudEvent
+    Function<DomainEvent, CloudEvent> convertDomainEventToCloudEvent = ..
+    EventStore eventStore = ..
+    ApplicationService applicationService = new ApplicationService(eventStore, convertCloudEventToDomainEvent, convertDomainEventToCloudEvent);
+
+    // Now in your REST API use the application service:
+    String gameId = ... // From a form parameter
+    String wordToGuess = .. // From a form parameter
+    applicationService.execute(gameId, events -> WordGuessingGame.startNewGame(gameId, wordToGuess));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // A function that converts a CloudEvent to a "domain event"
+    val convertCloudEventToDomainEvent : (CloudEvent) -> DomainEvent = ..
+    // A function that a "domain event" to a CloudEvent
+    val convertDomainEventToCloudEvent : (DomainEvent) -> CloudEvent = ..
+    val eventStore : EventStore = ..
+    val applicationService = ApplicationService(eventStore, convertCloudEventToDomainEvent, convertDomainEventToCloudEvent);
+
+    // Now in your REST API use the application service:
+    val gameId = ... // From a form parameter
+    val wordToGuess = .. // From a form parameter
+    applicationService.execute(gameId) { events ->
+        WordGuessingGame.startNewGame(gameId, wordToGuess)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+We're leveraging higher-order functions instead of using explicit commands.
+
+## Command Composition<HeadingBadge text="Added in 0.2.0" />
+
+Many times it's useful to compose multiple commands into a single unit-of-work for the same stream/aggregate. What this means that you'll "merge" several commands into one, and they will be executed in an atomic fashion. I.e. either _all_ commands succeed, or all commands fail.
+
+While you're free to use any means and/or library to achieve this, Occurrent ships with a "command composition" library that you can leverage:
+
+<Dependency artifact="occurrent-command-composition" />
+
+As an example consider this simple domain model:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class WordGuessingGame {
+        public List<DomainEvent> startNewGame(List<DomainEvent> events, String gameId, String wordToGuess) {
+            // Implementation
+        }
+
+        public List<DomainEvent> makeGuess(List<DomainEvent> events, String guess) {
+            // Implementation
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    object WordGuessingGame {
+        fun startNewGame(events : List<DomainEvent>, gameId : String, wordToGuess : String) : List<DomainEvent> {
+            // Implementation
+        }
+
+        fun makeGuess(events : List<DomainEvent>, guess : String) : List<DomainEvent> {
+            // Implementation
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Imagine that for a specific API you want to allow starting a new game and making a guess in the same request. Instead of changing your domain model, you can use function composition! If you statically import `composeCommands` from `org.occurrent.application.composition.command.ListCommandComposition` you can do like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    String gameId = ...
+    String wordToGuess = ...
+    String guess = ...
+    applicationService.execute(gameId, composeCommands(
+        events -> WordGuessingGame.startNewGame(events, gameId, wordToGuess),
+        events -> WordGuessingGame.makeGuess(events, guess)
+    ));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val gameId = ...
+    val wordToGuess = ...
+    val guess = ...
+    applicationService.execute(gameId, composeCommands(
+        { events -> WordGuessingGame.startNewGame(events, gameId, wordToGuess) }
+        { events -> WordGuessingGame.makeGuess(events, guess) }
+    ))
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+If you're using Kotlin you should import the "composeCommands" extension function from "org.occurrent.application.composition.command.composeCommands".
+:::
+
+If you're using Kotlin you can also make use of the `andThen` (infix) function for command composition (import `org.occurrent.application.composition.command.andThen`):
+
+```kotlin
+applicationService.execute(gameId,
+    { events -> WordGuessingGame.startNewGame(events, gameId, wordToGuess) }
+        andThen { events -> WordGuessingGame.makeGuess(events, guess) })
+```
+
+Events returned from `WordGuessingGame.startNewGame(..)` will be appended to the event stream when calling `WordGuessingGame.makeGuess(..)` and the new domain events returned by the two functions will be merged and written in an atomic fashion to the event store.
+
+The command composition library also contains some utilities for [partial function application](https://en.wikipedia.org/wiki/Partial_application) that you can use to further enhance the example above (if you like). If you statically import `partial` method from `org.occurrent.application.composition.command.partial.PartialFunctionApplication` you can refactor the code above into this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    String gameId = ...
+    String wordToGuess = ...
+    String guess = ...
+    applicationService.execute(gameId, composeCommands(
+        partial(WordGuessingGame::startNewGame, gameId, wordToGuess),
+        partial(WordGuessingGame::makeGuess, guess)
+    ));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val gameId = ...
+    val wordToGuess = ...
+    val guess = ...
+    applicationService.execute(gameId, composeCommands(
+        WordGuessingGame::startNewGame.partial(gameId, wordToGuess)
+        WordGuessingGame::makeGuess.partial(guess)
+    ))
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+If you're using Kotlin, import the "partial" extension function from "org.occurrent.application.composition.command.partial".
+:::
+
+With Kotlin, you can also use `andThen` (described above) to do:
+
+```kotlin
+applicationService.execute(gameId, 
+    WordGuessingGame::startNewGame.partial(gameId, wordToGuess)
+            andThen WordGuessingGame::makeGuess.partial(guess))
+```

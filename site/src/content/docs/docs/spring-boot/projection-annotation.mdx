@@ -1,0 +1,374 @@
+---
+title: "@Projection"
+description: "Declare a projection with an annotation."
+sidebar:
+  order: 4
+layer: "spring-boot"
+stack: [spring-boot]
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+If you're on the [Spring Boot Starter](/docs/spring-boot/starter/), you don't have to wire up a `ProjectionRunner` yourself. Annotate a factory method that returns a `Projection` or `DcbProjection` with `org.occurrent.annotation.Projection`, and the framework registers it as a persistent read model for you. It subscribes through the same catch-up, durable-resume, and [competing-consumer](/docs/layer-0/competing-consumers/) machinery as [`@Subscription` and `@DcbSubscription`](/docs/spring-boot/subscription-annotations/), for both a stream `Projection` and a `DcbProjection`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    import org.occurrent.annotation.Projection;
+
+    @Configuration
+    class ProjectionConfig {
+
+        @Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING)
+        org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledStudents() {
+            return org.occurrent.dsl.projection.Projection.<Integer, CourseEvent, String>builder(0)
+                    .id(CourseEvent::courseId)
+                    .on(StudentEnrolled.class,   (count, event) -> count + 1)
+                    .on(StudentUnenrolled.class, (count, event) -> count - 1)
+                    .build();
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    import org.occurrent.annotation.Projection
+
+    @Configuration
+    class ProjectionConfig {
+
+        @Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING)
+        fun enrolledStudents() = projection<Int, CourseEvent, String>(initialState = 0) {
+            id { event -> event.courseId }
+            on<StudentEnrolled> { count, _ -> count + 1 }
+            on<StudentUnenrolled> { count, _ -> count - 1 }
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The annotation and the DSL class share the name `Projection`, so a Java factory method needs to qualify one of them, as above. Kotlin doesn't have this problem since the DSL's entry point is the lowercase `projection` function.
+
+The factory method doesn't have to be a `@Bean` on a `@Configuration` class. The bean post-processor scans every Spring bean's declared methods for `@Projection`, so a plain `@Component` works too, and reads better for a single dedicated projection:
+
+```kotlin
+import org.occurrent.annotation.Projection
+
+@Component
+class CourseDashboardProjection {
+
+    @Projection(id = "course-dashboard", startAt = Projection.StartPosition.BEGINNING, store = CourseDashboard::class)
+    fun courseDashboardProjection() = singletonProjection<DashboardState, DomainEvent>(initialState = DashboardState.EMPTY) {
+        on<StudentEnrolled> { state, event -> state.withEnrollment(event) }
+    }
+}
+```
+
+The `@Configuration` plus `@Bean` form still works, and is handy for grouping several projections in one class. For a single projection, `@Component` is the cleaner shape: with `@Bean`, Spring also registers the returned `Projection` as an unused context bean and calls the factory method an extra time, whereas `@Component` invokes it once.
+
+`@Projection` takes:
+
+| Attribute | Description |
+| :- | :- |
+| `id` | The subscription id (required). |
+| `startAt` | `StartPosition.BEGINNING`, `NOW`, or `DEFAULT`, the same `StartPosition` that [`@Subscription`'s `startAt`](/docs/spring-boot/subscription-annotations/#subscription-start-position) takes. |
+| `startAtGlobalPosition` | Start after a specific global or DCB position instead, to rewind a durable read model to a known-good point. Mutually exclusive with a non-default `startAt`. |
+| `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](/docs/spring-boot/subscription-annotations/#subscription-start-position) as `@Subscription`. |
+| `startupMode` | `DEFAULT`, `WAIT_UNTIL_STARTED`, or `BACKGROUND`, the same [startup-mode idea](/docs/spring-boot/subscription-annotations/#subscription-startup-mode) as `@Subscription`. |
+| `capability` | `AGNOSTIC` (both stream and DCB events) or `STREAM` (stream events only). Only read for a `Projection` factory. A `DcbProjection` factory ignores it and always subscribes over its own `DcbCriteria`. |
+| `mode` | `ASYNC` (the default) or `SYNCHRONOUS`, see below. |
+| `store` | Select the store bean by type, for example `CourseDashboard.class` (`CourseDashboard::class` in Kotlin). `Void.class`, the default, leaves the type unset. |
+| `storeName` | Select the store bean by name, on its own or together with `store` to disambiguate when several beans share that type. Empty, the default, leaves the name unset. |
+| `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the projection from a `PushSubscriptionModel` or `DomainEventFeed` bean instead, see [Push Subscription](/docs/layer-0/push-subscription/). |
+| `subscriptionModel` / `subscriptionModelName` | Select the feed bean by type or name when `source = PUSH`. |
+| `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
+
+`startAt`, `startAtGlobalPosition`, `resumeBehavior` and `startupMode` can't be combined with `mode = SYNCHRONOUS`, and startup fails when a synchronous projection sets any of them. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
+
+With both `store` and `storeName` unset, the store resolves by convention: the unique `MaterializedView` bean, then `ViewStateRepository`, then `CrudRepository`, then the Mongo default on the blocking stack. The reactive stack has no Mongo default, so an unset pair only resolves there if a unique `MaterializedView` or `ViewStateRepository` bean exists. Naming a `store` type or a `storeName` with no matching bean is an error, not a silent fall-through to convention.
+
+On a DCB store, point the factory method at a `DcbProjection` instead and the subscription runs inside that projection's `DcbCriteria` rather than by event type. A factory that takes a parameter, like [`isUsernameClaimedProjection(username)`](/docs/layer-1/projections/#dcb-projections), doesn't fit here, `@Projection` calls the factory once with no arguments. Use a `DcbCriteria` broad enough to cover every instance the read model needs. Here there's exactly one instance total, a count across every `AccountRegistered` event in the boundary, so the fold is `singleton()` rather than keyed by `id`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    import org.occurrent.annotation.Projection;
+
+    @Configuration
+    class ProjectionConfig {
+
+        @Projection(id = "registered-account-count")
+        DcbProjection<Integer, AccountEvent, String> registeredAccountCount() {
+            org.occurrent.dsl.projection.Projection<Integer, AccountEvent, String> view =
+                    org.occurrent.dsl.projection.Projection.<Integer, AccountEvent>singletonBuilder(0)
+                            .on(AccountRegistered.class, (count, event) -> count + 1)
+                            .build();
+            return new DcbProjection<>(view, DcbCriteria.type(AccountRegistered.class));
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    import org.occurrent.annotation.Projection
+
+    @Configuration
+    class ProjectionConfig {
+
+        @Projection(id = "registered-account-count")
+        fun registeredAccountCount() = dcbSingletonProjection<Int, AccountEvent>(initialState = 0) {
+            criteria(DcbCriteria.type(AccountRegistered::class.java))
+            on<AccountRegistered> { count, _ -> count + 1 }
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## Store
+
+You choose where the projection is stored. `store` selects the bean by type, `MaterializedView`, `ViewStateRepository`, or a `CrudRepository` subinterface on the blocking stack (no `CrudRepository` on reactive), and `storeName` selects by name on its own or alongside `store` to disambiguate. Leave both unset to fall back to the convention resolution described above. It's the same store abstraction [`ProjectionRunner.project(...)`](/docs/layer-1/projections/#maintaining-a-stored-read-model) already takes as a method argument, just resolved through the annotation instead of passed in code.
+
+On the MongoDB starter, leaving `store` and `storeName` unset with no matching bean in the context falls back to `MongoProjectionStoreProvider`. Since 0.33.0 its `save` and `saveAll` reject a state whose `@Id` doesn't match the projection key with `IllegalStateException`, the same guard [`view.materialized(mongoOperations)` and `view.materialized(crudRepository)` already apply](/docs/layer-1/views/#materializing-with-spring) to a hand-wired store. Before this, a mismatch on this path silently wrote to the wrong document and the read model never accumulated.
+
+## Read-your-writes (synchronous mode)
+
+`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](/docs/layer-1/projections/#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. A synchronous projection has no subscription to catch up or resume, so startup fails if you set any of the start attributes listed under [The `@Projection` annotation](/docs/spring-boot/projection-annotation/).
+
+## Read-your-writes for an asynchronous projection<HeadingBadge text="Added in 0.34.0" />
+
+Every write and DCB append returns an `AppendId`. It comes back as an `Optional<AppendId>` from `appendId()` on `WriteResult` and `DcbAppendResult`.
+
+Tell a projection to record the appends it has applied, and you can wait for one of them right after you write it. That gives you read-your-writes without moving the projection to [synchronous mode](/docs/spring-boot/projection-annotation/#read-your-writes-synchronous-mode), which updates the read model on every write.
+
+`AppliedAppendStore` holds those records. It's part of the projection DSL, so you don't need Spring Boot to use it, but if you use the Spring Boot starter, it configures one for you. Autowire it and call `waitUntilApplied` once you have the id:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    WriteResult result = applicationService.execute(courseId, events -> enrollStudent(events, studentId));
+    AppendId appendId = result.appendId().orElseThrow();
+
+    appliedAppendStore.waitUntilApplied("enrolled-students", appendId, Duration.ofSeconds(5));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val result = applicationService.execute(courseId) { events -> enrollStudent(events, studentId) }
+    val appendId = result.appendId().orElseThrow()
+
+    appliedAppendStore.waitUntilApplied("enrolled-students", appendId, Duration.ofSeconds(5))
+    ```
+  </TabItem>
+</Tabs>
+
+`appendId()` is empty when the write persisted no events. If you know your write persisted at least one, `orElseThrow()` is fine. Otherwise, check `isPresent()` first.
+
+`waitUntilApplied` polls the store. It returns `true` once the projection has recorded that append, and `false` when the timeout runs out. It also returns `false` if the thread is interrupted, and sets the interrupt flag again before it does.
+
+If it can't reach the store, it keeps polling until the timeout rather than answering early.
+
+The reactive MongoDB store's `waitUntilApplied` blocks the calling thread, so call it from `Schedulers.boundedElastic()` or another thread meant for blocking work. On a thread Reactor marks as non-blocking, a WebFlux handler for example, it throws `IllegalStateException` straight away.
+
+### Wiring it up
+
+With the Spring Boot starter, add `recordAppliedAppends = true` to the `@Projection` annotation and the rest is wired for you:
+
+```java
+@Projection(id = "enrolled-students", startAt = Projection.StartPosition.BEGINNING, recordAppliedAppends = true)
+org.occurrent.dsl.projection.Projection<Integer, CourseEvent, String> enrolledStudents() {
+    // ...
+}
+```
+
+Occurrent then wraps the projection, so the projection records the append of every event it applies.
+
+A clear deletes every append the projection has recorded. When a catch-up begins, the wrapper marks a clear as due, and it doesn't record anything from the history the catch-up then reads.
+
+[What a `true` answer means](/docs/spring-boot/projection-annotation/#what-a-true-answer-means-and-what-it-doesnt) says when a projection replays.
+
+This works on both the blocking and the reactor stack, and for a `DcbProjection` factory too.
+
+Startup fails when there is no `AppliedAppendStore` bean.
+
+It also fails when you combine `recordAppliedAppends = true` with `mode = SYNCHRONOUS`, because a synchronous projection already gives you read-your-writes and there is nothing to wait for.
+
+The MongoDB starters configure a store for you, one document per projection id and append id pair, so `recordAppliedAppends = true` needs no store of your own.
+
+Without Spring Boot you do the same by hand. `Projections.recordingAppliedAppends(view, projectionId, store)` wraps the projection, on the blocking stack and the reactor stack alike.
+
+`AppliedAppendStore.inMemory()` gives you a store for tests or for a single-process application. It keeps the 10000 most recent appends per projection, or the number you pass to `AppliedAppendStore.inMemory(int)`, and a wait for one it has dropped times out.
+
+The wrapper doesn't know when a catch-up begins and ends unless you tell it. To tell it, pass the wrapper to [`listenForCatchup`](/docs/layer-0/subscription-model-capabilities/) on the subscription model the projection runs on, before you subscribe.
+
+On the blocking stack, `ReplayAwareSubscriptions.findIn(subscriptionModel)` finds the model that has `listenForCatchup`, even when other models wrap it.
+
+The reactor stack has no `findIn`, so check the model with `instanceof` instead. Check the subscription model itself, not a subscription DSL wrapper around it, since the wrappers don't pass the capability on.
+
+If `listenForCatchup` returns `false`, you have to watch the model yourself. When `isCatchingUp(projectionId)` turns `true`, call `catchupStarted` on the wrapper with a new object that identifies this catch-up, a plain `new Object()` for example. When it turns `false` again, call `historyRead` with that same object.
+
+If nothing calls them, the wrapper records every event of a replay and never clears its old records.
+
+Also call the wrapper's `pollForClear()` on a schedule, from a thread meant for blocking work. A clear that is due runs on whichever comes first, the projection's next event or the next `pollForClear()` call. A clear that fails because the store is unavailable is tried again the same way.
+
+Without the poll, a projection that receives no further event never clears, and keeps the records from before its replay.
+
+If you maintain a projection some other way, call `recordApplied(projectionId, appendId)` on the store yourself wherever it applies an event.
+
+### Properties
+
+These properties belong to the Spring Boot starter. Configure the store it auto-configures under `occurrent.projection.applied-append`:
+
+| Property | Default | Configures |
+| :- | :- | :- |
+| `collection` | `appliedAppends` | The MongoDB collection recorded appends live in. |
+| `retention` | `7d` | How long a record is kept before MongoDB's TTL index deletes it. A wait for a deleted record times out rather than answering wrong, so this setting only affects how much storage the records take, not whether a wait answers correctly. |
+| `max-attempts` | `10` | How many times the store calls MongoDB for one read or write before it fails, at most 1000. The projection records on the thread that delivers its events, so when the store can't be reached, the delivery waits until every attempt has failed and then fails the same way as a handler that threw. A `waitUntilApplied` that runs out of attempts keeps polling instead. |
+| `wait-backoff.initial` / `.max` / `.multiplier` | `25ms` / `250ms` / `2.0` | How `waitUntilApplied` paces its polls. |
+| `replay-poll.initial` / `.max` / `.multiplier` | `200ms` / `5s` / `2.0` | How often the starter runs a clear that a catch-up has marked as due, and retries a clear that failed. On a subscription model whose `listenForCatchup` returns `false`, it is also how often the starter checks `isCatchingUp`. |
+
+### What a `true` answer means, and what it doesn't
+
+A `true` answer means the projection has applied at least one event of that append. It is not a promise that the projection has caught up to any particular point, and it says nothing about writes other callers made.
+
+The projection records the append after each event it applies, not after the whole append. So a wait can return `true` before every event of a multi-event append has been applied.
+
+How long the rest of the append takes depends on what happens to the projection in the meantime.
+
+* **In the ordinary case**, it takes however long the same node needs to work through the rest of the append.
+* **If the node crashes mid-append**, another node takes over once the crashed node's [competing consumer](/docs/layer-0/competing-consumers/) lock expires, 20 seconds by default.
+* **If the subscription is paused or stopped**, nothing more is applied until it starts again.
+
+A replay changes the answer too. Once a catch-up's clear has run, a wait for an append recorded before the replay times out.
+
+Whether a projection replays at all depends on its start position. With the subscription models the Spring Boot starter configures for you, the start position also decides how you rebuild a read model:
+
+| `startAt` | Replays? | To rebuild the read model |
+| :- | :- | :- |
+| `StartPosition.BEGINNING`, or an explicit `startAtGlobalPosition` | Yes | Delete its stored checkpoint. |
+| Unset (`StartPosition.DEFAULT`, the annotation's own default) | Never, whatever its checkpoint holds, so it never clears its own records | Set `startAt = StartPosition.BEGINNING` (or a global position) and delete its stored checkpoint. Or wipe its read model and then call `AppliedAppendStore.clear(projectionId)` yourself. |
+| `NOW` | Never, whatever its checkpoint holds | Set `startAt = StartPosition.BEGINNING` (or a global position) and delete its stored checkpoint. |
+
+You have to delete the checkpoint because the default `resumeBehavior` resumes from it instead of replaying again. If you wipe the read model but keep the checkpoint, the projection resumes instead of replaying, so it never clears its recorded appends either.
+
+A push projection (`source = PUSH`) doesn't use `startAt`. Its `catchup` decides instead. The default, `FROM_EVENT_STORE`, replays history before the projection goes live, and `NONE` never replays.
+
+A running projection isn't told about a `clear(projectionId)` call. The wrapper remembers the append it recorded last and doesn't write it twice, so if that append is delivered again after your call, it isn't recorded, and a wait for it times out.
+
+At startup, the Spring Boot starter logs a `WARN` naming each `recordAppliedAppends = true` projection that it can tell will never replay. It can tell for:
+
+* an explicit `NOW`
+* `DEFAULT` on the MongoDB subscription models the starter configures
+* a push projection with `catchup = NONE`
+* on the reactor stack, a subscription model the starter configured without a catch-up model inside it
+
+It can't tell for a subscription model of your own, so it logs nothing there.
+
+A projection that replays stops recording when its catch-up begins. Its old records stay readable until the clear has run, so a wait in between can still answer `true` for an append whose read model the rebuild is discarding.
+
+Once the catch-up has read the history that was already there, the projection starts recording again. The catch-up then delivers whatever was written while it was reading, and those events are recorded.
+
+So a write issued right after your application starts is recorded even though the projection is still catching up. This applies to `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
+
+The stream and DCB catch-up models behave differently. When they read the history, they can pick up a write that was still being committed when the catch-up began, and the projection doesn't record that delivery.
+
+Reading the history also adds nothing to the cache of event ids and sources that the live subscription checks for duplicates. So the live subscription delivers the same event again, and the projection records the append. The wait answers `true`, and the projection applies that event twice.
+
+`CatchupThenPushSubscriptionModel` does keep the id and source of each event its replay delivered. When the live feed offers one of those events again, it drops that copy and tells the projection with `alreadyDeliveredByReplay(event)`, so the append is recorded and the event is applied once.
+
+Waiting for an append the catch-up is still working through is a wait like any other. It answers as soon as the projection has applied one of that append's events, which can be well before the catch-up hands over to live delivery.
+
+Occurrent's own subscription models tell the projection a catch-up has begun before they deliver anything, so no replay goes unnoticed on them.
+
+If the store is unavailable when the clear runs, the clear is retried on the next event the projection receives and on the `replay-poll` schedule. That poll comes with the Spring Boot starter. Without the starter, schedule `pollForClear()` yourself as described above.
+
+On a subscription model whose `listenForCatchup` returns `false`, the starter checks `isCatchingUp` on the `replay-poll` schedule instead. The projection records nothing until the catch-up is over, including the writes that arrive while it runs.
+
+A catch-up that starts and finishes between two of those checks goes unnoticed. The projection records the replayed history as if it were live, and keeps its old records.
+
+The checks start 200ms apart and slow down until they're 5 seconds apart. From then on, a catch-up shorter than 5 seconds can be missed.
+
+Even when the start position does replay, the projection can only tell a replay from live delivery when the subscription model implements [`ReplayAwareSubscriptions`](/docs/layer-0/subscription-model-capabilities/).
+
+On the blocking stack, `ReplayAwareSubscriptions.findIn(..)` looks through the chain of wrapping models for one that implements it. When nothing in the chain does, the model is treated as never replaying, and nothing is logged about it.
+
+A model of your own that replays without implementing `ReplayAwareSubscriptions` therefore keeps recording during its own rebuild and never clears its old records.
+
+On the reactor stack, the starter always knows whether the MongoDB subscription model it configures is catching up, because the auto-configuration that builds that model hands the starter the catch-up model inside it.
+
+A reactive model of your own, or a third-party one, that doesn't implement `ReplayAwareSubscriptions` itself is treated as never replaying too. The starter logs a warning about it once, when the projection registers.
+
+## Fed by a push source
+
+A projection with `source = Source.PUSH` is fed by a [push subscription](/docs/layer-0/push-subscription/), for example from a broker, instead of reading the event store.
+
+The [handover settings](/docs/layer-0/push-subscription/#replaying-the-event-store-before-going-live) `dedupCacheSize` and `maxBufferedEvents` are properties here, which is how you tune a projection that the `@Projection` wiring bootstraps for you:
+
+```properties
+occurrent.subscription.catchup-then-live.dedup-cache-size=50000
+occurrent.subscription.catchup-then-live.max-buffered-events=200000
+```
+
+Set one and the other keeps its default. A zero or negative value fails startup rather than falling back.
+
+A `@Projection` binds to a push source with `source = Source.PUSH` and `subscriptionModel` or `subscriptionModelName` to pick the `PushSubscriptionModel` bean. The starter then wraps it in the catch-up for you, on both the blocking and reactor stacks. Each bean feeds one projection, so declare one per push projection and point each at its own with `subscriptionModelName`. With a single feed bean the name can be dropped, and the starter finds the bean on its own. Declaring the bean does not replace the default subscription model the starter contributes. The starter skips models without a start position, checkpoint or catch-up when it decides whether the application brought its own, so your event-store subscriptions keep the durable default and the feed runs beside it.
+
+A push source is rejected together with `mode = Mode.SYNCHRONOUS`, with `startAt`, `startAtGlobalPosition` and `resumeBehavior`, and with a `DcbProjection`. Those three attributes all answer "where in the log do I begin", and a broker queue is not a log you can seek in, so there is nothing for them to mean.
+
+`startupMode` is the exception, and it is honoured. `BACKGROUND` starts the application while the replay is still running, which is worth reaching for when a projection's history takes long enough to make startup uncomfortable:
+
+```java
+@Projection(id = "order-status", source = Source.PUSH,
+            subscriptionModelName = "ordersFeed", startupMode = StartupMode.BACKGROUND)
+Projection<OrderStatus, OrderEvent, String> orderStatus() { ... }
+```
+
+`DEFAULT` waits for the replay to finish before the application finishes starting. That is deliberately not the same rule as an event-store subscription, where `DEFAULT` decides from the start position: a push projection that is still replaying is not receiving live events either, so returning from startup with the read model both empty and disconnected would be the more surprising answer.
+
+With `startupMode = BACKGROUND`, no code of yours waits for the replay, so nothing of yours would notice if it failed. The starter therefore records the progress of each push projection's replay, and any failure, on a `PushCatchupStatus` bean. Autowire it and ask about one projection at a time:
+
+```java
+@Autowired
+PushCatchupStatus status;
+
+boolean readyToServe(String projectionId) {
+    return switch (status.of(projectionId)) {
+        case CatchingUp ignored -> false;
+        case Live ignored -> true;
+        case NotStarted ignored -> false;
+        case Failed failed -> throw new IllegalStateException("Catch-up failed", failed.cause());
+        case Unknown ignored -> false;
+    };
+}
+```
+
+| State | Meaning | Becomes ready on its own? |
+| :- | :- | :- |
+| `CatchingUp` | The replay is still working through the history. The read model is filling but not ready. | Yes, it becomes `Live` when the replay finishes. |
+| `Live` | The replay finished and live events are being delivered. | Already ready. |
+| `NotStarted` | Registered, but the subscription has not been started. This is what `occurrent.subscription.mode = manual` and a stopped subscription model leave it as. | No, something must start it. |
+| `Failed` | The replay died. The application started fine but the read model will never fill. Carries the cause. | No. |
+| `Unknown` | Nothing here registered that id, usually a typo. | No. |
+
+Only `Failed` carries a cause, so you cannot ask for one on a projection that is fine. `isCaughtUp(id)` is the shortcut when all you want is the boolean, and `all()` returns every push projection and saga this application registered, in registration order. A readiness probe is the obvious use, and the distinctions are what one actually needs: `Failed` and `CatchingUp` look identical if all you can see is a list of failures, and `Unknown` answers `false` rather than `true` because a probe asking about a name Occurrent does not recognise has not been told yes.
+
+Where the id is fed by a `PushSubscriptionModel`, `CatchingUp`, `Live` and `NotStarted` are read from the subscription model each time you ask rather than recorded once, so stopping and starting the model, which replays the history again, reports `CatchingUp` again. A projection with `catchup = NONE` has no history to work through, so it reports `Live` as soon as it is running. A `@Saga(source = PUSH)` is covered the same way.
+
+On the reactor stack, a push projection on a bean built after startup never waits for its replay, whatever `startupMode` says, see [When Annotations Register](/docs/spring-boot/subscription-annotations/#when-annotations-register). If that replay fails, the failure is recorded on `PushCatchupStatus`, the same as for a `BACKGROUND` replay.
+
+Add `catchup = Catchup.NONE` when the feed carries events that are not in this application's event store, which is the case when another application writes them. The wrapper is skipped entirely and the bare `PushSubscriptionModel` is used instead, so no `PositionOrderedReader` or `CheckpointStorage` bean is needed. Left at the default `Catchup.FROM_EVENT_STORE`, a missing one of those beans now fails naming `catchup = Catchup.NONE` as the fix, rather than a bare missing-bean error. `startAt`, `startAtGlobalPosition` and `resumeBehavior` stay rejected either way. `startupMode` only applies under the default, since `Catchup.NONE` has no replay for `startupMode = BACKGROUND` to move off the startup path.
+
+### Fed by a `DomainEventFeed`
+
+To feed domain events instead of CloudEvents, declare a [`DomainEventFeed<E>`](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents) as a bean (carrying the `eventId` function) and feed it from your listener, and `@Projection(source = Source.PUSH, subscriptionModelName = "ordersFeed")` binds a projection to it. The starter looks at the referenced feed bean and, seeing a `DomainEventFeed` rather than a `PushSubscriptionModel`, applies domain events directly. It registers the projection on the feed and runs its catch-up. One feed drives exactly one projection, for the same reason a `PushSubscriptionModel` takes one projection, so declare a feed bean per projection and give each its own queue, subscription, or consumer group. Sharing one is refused at startup with a message naming both projections. On the reactor stack the projection's store must be a `ViewStateRepository`. The `occurrent.subscription.catchup-then-live.*` properties do not reach this feed, because you declare the bean yourself, so tune its catch-up by passing `CatchupThenLiveOptions` to the `DomainEventFeed` constructor. `catchup = Catchup.NONE` calls `goLive(id)` here instead of running the catch-up, for a feed whose events are not in this application's event store.
+
+You don't [start a feed](/docs/layer-0/push-subscription-failures/#skipping-the-catch-up-with-golive) yourself. At startup the starter calls `catchUp(id)` by default, and `goLive(id)` when the `@Projection` has `catchup = Catchup.NONE`. A `DomainEventFeed` takes a projection only once, and the feed is a bean, so restarting the application is the only way to replace one that [failed](/docs/layer-0/push-subscription-failures/#recovering-from-a-failed-feed).
+
+Without the starter, [Catching up, then resuming](/docs/layer-1/projections/#catching-up-then-resuming) shows how plain code gets the same catch-up-then-resume behaviour.
+
+`@Projection` and `@DcbSubscription` run that same check internally for `resumeBehavior = DEFAULT`, and `@Projection` subscribes through the Spring catch-up composite, so it always gets the catch-up-capable path.

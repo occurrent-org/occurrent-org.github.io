@@ -1,0 +1,169 @@
+---
+title: "Blocking subscriptions"
+description: "Filters, start positions and checkpoint storage for blocking subscriptions."
+sidebar:
+  order: 8
+layer: "0"
+model: [blocking]
+modules: [occurrent-subscription-mongodb-native-blocking-checkpoint-storage, occurrent-subscription-mongodb-spring-blocking-checkpoint-storage, occurrent-subscription-redis-spring-blocking-checkpoint-storage, occurrent-subscription-inmemory, occurrent-subscription-api-blocking, occurrent-tck-subscription-blocking]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+A "blocking subscription" is a subscription that uses the normal Java threading mechanism for IO operations, i.e. reading changes from an [EventStore](/docs/stores/choosing-an-event-store/) will block the thread. This is arguably the easiest and most familiar way to use subscriptions for the typical Java developer, and it's probably good-enough for most scenarios. If high throughput, low CPU and memory-consumption is critical then consider using [reactive subscription](/docs/layer-0/reactive-subscriptions/) instead. Reactive subscriptions are also better suited if you want to work with streaming data.
+
+To create a blocking subscription, you first need to choose which "subscription model" to use. Then you create a subscription instance from this subscription model. All blocking subscriptions implements the `org.occurrent.subscription.api.blocking.SubscriptionModel` interface. This interface provide means to subscribe to new events from an `EventStore` as they are written. For example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    subscriptionModel.subscribe("mySubscriptionId", System.out::println);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscriptionModel.subscribe("mySubscriptionId", ::println)
+    ```
+  </TabItem>
+</Tabs>
+
+This will simply print each cloud event written to the event store to the console.
+
+Note that the signature of `subscribe` is defined like this:
+
+```java
+public interface SubscriptionModel {
+    /**
+     * Start listening to cloud events persisted to the event store using the supplied start position and <code>filter</code>.
+     *
+     * @param subscriptionId  The id of the subscription, must be unique!
+     * @param filter          The filter used to limit which events that are of interest from the EventStore.
+     * @param startAt         The position to start the subscription from
+     * @param action          This action will be invoked for each cloud event that is stored in the EventStore.
+     */
+    Subscription subscribe(String subscriptionId, SubscriptionFilter filter, StartAt startAt, Consumer<CloudEvent> action);
+
+    // Default methods 
+
+}
+```
+
+It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes the checkpoint (if the datastore doesn't maintain the checkpoint on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this checkpoint for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `SubscriptionModel` implementation that also implement the `org.occurrent.subscription.api.blocking.CheckpointAwareSubscriptionModel` interface. The `CheckpointAwareSubscriptionModel` is an example of a `SubscriptionModel` that returns a wrapper around `io.cloudevents.CloudEvent` called `org.occurrent.subscription.CheckpointAwareCloudEvent` which adds an additional method, `Checkpoint getCheckpoint()`, that you can use to get\
+the current checkpoint. You can check if a cloud event contains a checkpoint by calling `CheckpointAwareCloudEvent.hasCheckpoint(cloudEvent)` and then get the checkpoint by using `CheckpointAwareCloudEvent.getCheckpointOrThrowIAE(cloudEvent)`. Note that `CheckpointAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that you're subscribing from a `CheckpointAwareSubscriptionModel`, you are responsible for [keeping track of the checkpoint](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage), so that it's possible to resume this subscription from the last known checkpoint on application restart. This interface also provides means to get the so called "current global checkpoint", by calling the `globalCheckpoint` method which can be useful when starting a new subscription.
+
+For example, consider the case when subscription "A" starts subscribing at the current time (T1). Event E1 is written to the `EventStore` and propagated to subscription "A". But imagine there's a bug in "A" that prevents it from performing its action. Later, the bug is fixed and the application is restarted at the "current time" (T2). But since T2 is after T1, E1 will not sent to "A" again since it happened before T2. Thus this event is missed! Whether or not this is actually a problem depends on your use case. But to avoid it you should not start the subscription at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage) _before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.
+
+## Blocking Subscription Filters
+
+You can also provide a subscription filter, applied at the datastore level so that it's really efficient, if you're only interested in certain events:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")), System.out::println);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded")), ::println)
+    ```
+  </TabItem>
+</Tabs>
+
+This will print each cloud event written to the event store, and has type equal to "GameEnded", to the console. The `filter` method is statically imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is statically imported from `org.occurrent.filter.Filter`. The `StreamSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted"), System.out::println);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted"), ::println)
+    ```
+  </TabItem>
+</Tabs>
+
+Now `filter` is statically imported from `org.occurrent.subscription.mongodb.MongoDBFilterSpecification` and `Filters` is imported from `com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with a `StreamSubscriptionFilter` and only pick a more specific implementation if you cannot express your filter using the capabilities of `StreamSubscriptionFilter`.
+
+The `Filter` wrapped by a `StreamSubscriptionFilter` can also filter on a field inside the event's `data` payload with `Filter.data(...)`. See [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data) for what it matches and, on the in-memory and synchronous/push subscription models, what you need to configure for it to work.
+
+These filters also decide which event-store capability a subscription sees. `StreamSubscriptionFilter` (the one built above) scopes delivery to stream-written events. On a store that also has the DCB capability enabled, `AgnosticSubscriptionFilter.filter(...)` wraps the same kind of plain `Filter` but delivers matching events from every enabled capability, so it sees stream-written and DCB-appended events together and catches up over the shared global `position`. `DcbSubscriptionFilter.filter(...)` wraps a `DcbCriteria` and narrows delivery to the DCB events matching it. The capability-neutral [`@Subscription`](/docs/spring-boot/subscription-annotations/) annotation and [`subscriptions(...)`](/docs/layer-1/subscribing-to-domain-events/) DSL already deliver both on a dual-capability store, so you only use these filters when subscribing through a `SubscriptionModel` directly. See [Subscribing to DCB Events](/docs/layer-1/dcb-with-domain-events/#subscribing-to-dcb-events) for the DCB side.
+
+## Blocking Subscription Start Position
+
+A subscription can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a `org.occurrent.subscription.StartAt` instance. It provides several ways to specify the start position, either by using `StartAt.now()`, `StartAt.subscriptionModelDefault()` (default if `StartAt` is not defined when calling the `subscribe` function), or `StartAt.checkpoint(<checkpoint>)`, where `<checkpoint>` is a datastore-specific implementation of the `org.occurrent.subscription.Checkpoint` interface which provides the start position as a `String`. You may want to store the `String` returned by a `Checkpoint` in a database so that it's possible to resume a subscription from the last processed checkpoint on application restart. You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage) available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
+
+## Blocking Subscription Checkpoint Storage
+
+It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the checkpoint provided by a [blocking subscription](/docs/layer-0/blocking-subscriptions/) any way you like, Occurrent provides an interface called `org.occurrent.subscription.api.blocking.CheckpointStorage` acts as a uniform abstraction for this purpose. A `CheckpointStorage` is defined like this:
+
+```java
+public interface CheckpointStorage {
+    Checkpoint read(String subscriptionId);
+    Checkpoint save(String subscriptionId, Checkpoint checkpoint, CheckpointWriteCondition condition);
+    default Checkpoint save(String subscriptionId, Checkpoint checkpoint) {
+        return save(subscriptionId, checkpoint, CheckpointWriteCondition.any());
+    }
+    void delete(String subscriptionId);
+    boolean exists(String subscriptionId);
+    OptionalLong writeVersion(String subscriptionId);
+    default boolean evaluatesWriteConditions() {
+        return false;
+    }
+    default boolean evaluatesWriteConditionsFor(String subscriptionId) {
+        return evaluatesWriteConditions();
+    }
+}
+```
+
+It's a way to read, write and delete the `Checkpoint` for a given subscription, and to ask whether one is stored at all. `save` takes a `CheckpointWriteCondition` as a third argument, stating what has to be true of the stored version before the write is allowed. The two-argument overload keeps its old meaning, an unconditional write, `any()`, that carries whatever version is already stored forward untouched, and every subscription model in this library calls it unless you wire up [checkpoint fencing](/docs/layer-0/checkpoint-fencing/) for competing consumers. `writeVersion(subscriptionId)` reads back the version a condition is judged against, and `evaluatesWriteConditions()` answers whether this storage really accepts and refuses those conditions. That one defaults to `false`, so a storage written against an earlier release keeps compiling and keeps working without answering it, and every storage Occurrent ships answers `true`. The reactor twin has the same four members. `ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position, where a `false` answer keeps the unconditional write and gets a `WARN` saying so. Occurrent ships with four pre-defined implementations:
+
+1\. **NativeMongoCheckpointStorage**\
+Uses the vanilla MongoDB Java (sync) driver to store `Checkpoint`'s in MongoDB.
+
+<Dependency artifact="occurrent-subscription-mongodb-native-blocking-checkpoint-storage" />
+
+2\. **SpringMongoCheckpointStorage**\
+Uses the Spring MongoTemplate to store `Checkpoint`'s in MongoDB.
+
+<Dependency artifact="occurrent-subscription-mongodb-spring-blocking-checkpoint-storage" />
+
+3\. **SpringRedisCheckpointStorage**\
+Uses the Spring RedisTemplate to store `Checkpoint`'s in Redis.
+
+<Dependency artifact="occurrent-subscription-redis-spring-blocking-checkpoint-storage" />
+
+4\. **InMemoryCheckpointStorage**\
+Keeps `Checkpoint` instances in a `ConcurrentHashMap`, so they are gone once the process stops. Useful in tests, and in an application that can replay from the start after a restart.
+
+<Dependency artifact="occurrent-subscription-inmemory" />
+
+Note that the two MongoDB implementations recognize their own checkpoint types (a change stream resume token and an operation time) and give them back as the same type, while every other type is stored as the string it reports and read back as a `StringBasedCheckpoint`. The Redis implementation does that to everything, including the two MongoDB types. So if you write code that reads a checkpoint back out of storage, rely on `Checkpoint.asString()` rather than casting to the type you saved.
+
+If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "blocking subscription API" which contains the `CheckpointStorage` interface:
+
+<Dependency artifact="occurrent-subscription-api-blocking" />
+
+You can also have Occurrent's own conformance suite check it for you. `occurrent-tck-subscription-blocking` contains `CheckpointStorageConformance`, an abstract JUnit 5 test class that all four implementations above run against. Extend it, supply a `CheckpointStorageFixture` that hands back a storage holding no checkpoints, and you get the whole contract asserted:
+
+```java
+class MyCheckpointStorageTest extends CheckpointStorageConformance {
+
+    @Override
+    protected CheckpointStorageFixture createFixture() {
+        return new MyCheckpointStorageFixture();
+    }
+}
+```
+
+The fixture also declares whether your storage gives back a checkpoint of the same type it was handed, since both answers are legitimate and nothing on `CheckpointStorage` reports which way an implementation goes.
+
+<Dependency artifact="occurrent-tck-subscription-blocking" scope="test" />
+
+Implementing your own event store or subscription model against Occurrent's conformance suites is covered in [Testing Your Own EventStore](/docs/extending/your-own-event-store/) and [Testing Your Own Subscription Model](/docs/extending/your-own-subscription-model/).

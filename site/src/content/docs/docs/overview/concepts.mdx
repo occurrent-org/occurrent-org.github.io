@@ -1,0 +1,70 @@
+---
+title: "Concepts"
+description: "Event sourcing, and synchronous and asynchronous policies."
+sidebar:
+  order: 5
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+## Event Sourcing
+
+Every system needs to store and update data somehow. Many times this is done by storing the _current_ state of an entity in the database. For example, you might have an entity called `Order` stored in a `order` table in a relational database. Everytime something happens to the order, the table is updated with the new information and replacing the previous values. Event Sourcing is a technique that instead stores the _changes_, represented by _events_, that occurred for the entity. Events are facts, things that have happened, and they should never be updated. This means that not only can you derive the current state from the set of historic events, but you also know _which_ steps that were involved to reach the current state.
+
+## Policy
+
+A policy (aka reaction/trigger) can be used to deal with workflows such as "whenever _this_ happens, do _that_". For example, whenever a game is won, send an email to the winner. For simple workflows like this there's typically no need for a full-fledged [saga](/docs/layer-1/sagas/).
+
+### Asynchronous Policy
+
+In Occurrent, you can create asynchronous policies by creating a [subscription](/docs/layer-0/subscriptions/). Let's consider the example above:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public class WhenGameWonThenSendEmailToWinnerPolicy {
+
+        private final SubscriptionModel subscriptionModel;
+        private final EmailClient emailClient;
+        private final Players players;
+
+        public WhenGameWonThenSendEmailToWinnerPolicy(SubscriptionModel subscriptionModel, EmailClient emailClient, Players players) {
+            this.subscriptionModel = subscriptionModel;
+            this.emailClient = emailClient;
+            this.players = players;
+        }
+
+        @PostConstruct
+        public void whenGameWonThenSendEmailToWinner() {
+            subscriptionModel.subscribe("whenGameWonThenSendEmailToWinnerPolicy", filter(type("GameWon")), cloudEvent -> {
+                String playerEmailAddress =  players.whatIsTheEmailAddressOfPlayer(playerIdIn(cloudEvent.getData()));
+                emailClient.sendEmail(playerEmailAddress, "You won, yaay!");
+            }
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    class WhenGameWonThenSendEmailToWinnerPolicy(val subscriptionModel : SubscriptionModel,
+                                                 val emailClient : EmailClient, val players : Players) {
+
+        @PostConstruct
+        fun whenGameWonThenSendEmailToWinner() =
+            subscriptionModel.subscribe("whenGameWonThenSendEmailToWinnerPolicy", filter(type("GameWon")) { cloudEvent ->
+                val playerEmailAddress =  players.whatIsTheEmailAddressOfPlayer(playerIdIn(cloudEvent.getData()))
+                emailClient.sendEmail(playerEmailAddress, "You won, yaay!")
+            }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+You could also create a generic policy that simply forwards all events to another piece of infrastructure. For example, you may wish to forward all events to [rabbitmq](https://www.rabbitmq.com/) (by publishing them) or [Spring's event infrastructure](https://www.baeldung.com/spring-events), and _then_ create policies that subscribes to events from these systems instead. There's an example in the [github repository](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/forwarder/mongodb-subscription-to-spring-event) that shows an example of how one can achieve this.
+
+You may also want to look into the "todo-list" pattern described in the [automation section](https://eventmodeling.org/posts/what-is-event-modeling/#automation) on the in the [event modeling](https://eventmodeling.org/) website.
+
+### Synchronous Policy
+
+In some cases, for example if you have a simple website and you want views to be updated when a command is dispatched by a REST API, it can be useful to update a view in a synchronous fashion. The application service provided by Occurrent allows for this through a synchronous `SideEffect` that runs as part of executing the command, please see the [application service documentation](/docs/layer-1/application-service-side-effects/) for an example.

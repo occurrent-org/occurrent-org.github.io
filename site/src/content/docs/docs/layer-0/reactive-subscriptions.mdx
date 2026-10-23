@@ -1,0 +1,191 @@
+---
+title: "Reactive subscriptions"
+description: "Filters, start positions and checkpoint storage for reactive subscriptions."
+sidebar:
+  order: 17
+layer: "0"
+model: [reactive]
+modules: [occurrent-subscription-mongodb-spring-reactor-checkpoint-storage, occurrent-subscription-inmemory, occurrent-subscription-api-reactor]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+A "reactive subscription" is a subscription that uses non-blocking IO when reading events from the event store, i.e. reading changes from an [EventStore](/docs/stores/choosing-an-event-store/) will _not_ block a thread. It uses concepts from [reactive programming](https://en.wikipedia.org/wiki/Reactive_programming) which is well-suited for working with streams of data. This is arguably a bit more complex for the typical Java developer, and you should consider using [blocking subscriptions](/docs/layer-0/blocking-subscriptions/) if high throughput, low CPU and memory-consumption is not critical.
+
+To create a reactive subscription you first need to choose which "subscription model" to use. Then you create a subscription instance from this subscription model. All reactive subscriptions implement the `org.occurrent.subscription.api.reactor.FluxSubscriptionModel` interface which uses components from [project reactor](https://projectreactor.io). This interface provides means to subscribe to new events from an `EventStore` as they are written. For example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    subscriptionModel.subscribe("mySubscriptionId").doOnNext(System.out::println).subscribe();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscriptionModel.subscribe("mySubscriptionId").doOnNext(::println).subscribe()
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+The "subscribe" method returns an instance of "Flux\<CloudEvent>".
+:::
+
+This will simply print each cloud event written to the event store to the console.
+
+Note that the signature of `subscribe` is defined like this:
+
+```java
+public interface FluxSubscriptionModel {
+
+    /**
+     * Stream events from the event store as they arrive. Use this method if want to start streaming from a specific position.
+     *
+     * @return A Flux with cloud events which may also includes the Checkpoint that can be used to resume the stream from the current checkpoint.
+     */
+    Flux<CloudEvent> subscribe(SubscriptionFilter filter, StartAt startAt);
+
+    // Default methods 
+
+}
+```
+
+It's common that subscriptions produce "wrappers" around the vanilla `io.cloudevents.CloudEvent` type that includes the checkpoint (if the datastore doesn't maintain the checkpoint on behalf of the clients). Someone, either you as the client or the datastore, needs to keep track of this checkpoint for each individual subscriber ("mySubscriptionId" in the example above). If the datastore doesn't provide this feature, you should use a `FluxSubscriptionModel` implementation that also implements the `org.occurrent.subscription.api.reactor.CheckpointAwareSubscriptionModel` interface. The `CheckpointAwareSubscriptionModel` interface extends `FluxSubscriptionModel` and returns a wrapper around `io.cloudevents.CloudEvent` called `org.occurrent.subscription.CheckpointAwareCloudEvent` which adds an additional method, `Checkpoint getCheckpoint()`, that you can use to get\
+the current checkpoint. You can check if a cloud event contains a checkpoint by calling `CheckpointAwareCloudEvent.hasCheckpoint(cloudEvent)` and then get the checkpoint by using `CheckpointAwareCloudEvent.getCheckpointOrThrowIAE(cloudEvent)`. Note that `CheckpointAwareCloudEvent` is fully compatible with `io.cloudevents.CloudEvent` and it's ok to treat it as such. So given that you're subscribing from a `CheckpointAwareSubscriptionModel`, you are responsible for [keeping track of the checkpoint](/docs/layer-0/reactive-subscriptions/#reactive-subscription-checkpoint-storage), so that it's possible to resume this subscription from the last known checkpoint on application restart. This interface also provides means to get the so called "current global checkpoint", by calling the `globalCheckpoint` method which can be useful when starting a new subscription.
+
+For example, consider the case when subscription "A" starts subscribing at the current time (T1). Event E1 is written to the `EventStore` and propagated to subscription "A". But imagine there's a bug in "A" that prevents it from performing its action. Later, the bug is fixed and the application is restarted at the "current time" (T2). But since T2 is after T1, E1 will not sent to "A" again since it happened before T2. Thus this event is missed! Whether or not this is actually a problem depends on your use case. But to avoid it you should not start the subscription at the "current time", but rather from the "global checkpoint". This checkpoint should be written to a [checkpoint storage](/docs/layer-0/reactive-subscriptions/#reactive-subscription-checkpoint-storage) _before_ subscription "A" is started. Thus the subscription can continue from this checkpoint on application restart and no events will be missed.
+
+The interface also has `globalCheckpointAsOfNow()`. It records the moment you call it, and works out the position for that moment once the `Mono` is subscribed to. A subscription started from the position it emits receives every event written after the call, even if you subscribe to the `Mono` long after it.
+
+`globalCheckpoint()` on `ReactorMongoSubscriptionModel` works out the position when its `Mono` is subscribed to instead, so an event written between the call and the subscription can be skipped. The position from `globalCheckpointAsOfNow()` can be earlier than the call, so the subscription can also receive events written before it.
+
+`ReactorMongoSubscriptionModel` works out `globalCheckpointAsOfNow()` the same way it works out where `StartAt.now()` starts. So what [Reactive Subscription using Spring ReactiveMongoTemplate](/docs/layer-0/reactive-subscription-models/#reactive-subscription-using-spring-reactivemongotemplate) says about how far before the call the position can reach, and when it can be later than the call, applies here too. The reactor catch-up models pass the call on to the model they wrap.
+
+A subscription model of your own has to implement `globalCheckpointAsOfNow()` and return the position for the moment of the call. Returning what `globalCheckpoint()` returns can make `ReactorDurableSubscriptionModel` skip events written after its `subscribe(..)` returned. A model that wraps another one passes the call on to the model it wraps.
+
+## Reactive Subscription Filters
+
+You can also provide a subscription filter, applied at the datastore level so that it's really efficient, if you're only interested in certain events:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded"))).doOnNext(System.out::println).subscribe();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscriptionModel.subscribe("mySubscriptionId", filter(type("GameEnded"))).doOnNext(::println).subscribe()
+    ```
+  </TabItem>
+</Tabs>
+
+This will print each cloud event written to the event store, and has type equal to "GameEnded", to the console. The `filter` method is statically imported from `org.occurrent.subscription.StreamSubscriptionFilter` and `type` is statically imported from `org.occurrent.filter.Filter`. The `StreamSubscriptionFilter` is generic and should be applicable to a wide variety of different datastores. However, subscription implementations may provide different means to express filters. For example, the MongoDB subscription implementations allows you to use filters specific to MongoDB:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")).doOnNext(System.out::println).subscribe();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscriptionModel.subscribe("mySubscriptionId", filter().id(Filters::eq, "3c0364c3-f4a7-40d3-9fb8-a4a62d7f66e3").type(Filters::eq, "GameStarted")).doOnNext(::println).subscribe()
+    ```
+  </TabItem>
+</Tabs>
+
+Now `filter` is statically imported from `org.occurrent.subscription.mongodb.MongoDBFilterSpecification` and `Filters` is imported from `com.mongodb.client.model.Filters` (i.e the normal way to express filters in MongoDB). However, it's recommended to always start with a `StreamSubscriptionFilter` and only pick a more specific implementation if you cannot express your filter using the capabilities of `StreamSubscriptionFilter`.
+
+The `Filter` wrapped by a `StreamSubscriptionFilter` can also filter on a field inside the event's `data` payload with `Filter.data(...)`. See [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data) for what it matches and, on the in-memory and synchronous/push subscription models, what you need to configure for it to work.
+
+The capability-scoped filters (`StreamSubscriptionFilter`, `AgnosticSubscriptionFilter`, and `DcbSubscriptionFilter`) work the same way here as on the [blocking side](/docs/layer-0/blocking-subscriptions/#blocking-subscription-filters): the agnostic filter delivers events from every enabled capability, and the DCB filter narrows delivery to matching DCB events.
+
+## Reactive Subscription Start Position
+
+A subscription can be started at different locations in the event store. You can define where to start when a subscription is started. This is done by supplying a `org.occurrent.subscription.StartAt` instance. It provides several ways to specify the start position, either by using `StartAt.now()`, `StartAt.subscriptionModelDefault()` (default if `StartAt` is not defined when calling the `subscribe` function), or `StartAt.checkpoint(<checkpoint>)`, where `<checkpoint>` is a datastore-specific implementation of the `org.occurrent.subscription.Checkpoint` interface which provides the start position as a `String`. You may want to store the `String` returned by a `Checkpoint` in a database so that it's possible to resume a subscription from the last processed checkpoint on application restart. You can do this anyway you like, but for most cases you probably should consider if there's a [checkpoint storage](/docs/layer-0/reactive-subscriptions/#reactive-subscription-checkpoint-storage) available that suits your needs. If not, you can still have a look at them for inspiration on how to write your own.
+
+With `ReactorMongoSubscriptionModel`, a subscription started with `StartAt.now()`, or without a `StartAt`, starts from the moment `subscribe(..)` is called. It can also receive events written before the call, as described in [Reactive Subscription using Spring ReactiveMongoTemplate](/docs/layer-0/reactive-subscription-models/#reactive-subscription-using-spring-reactivemongotemplate).
+
+## Reactive Subscription Checkpoint Storage
+
+It's very common that an application needs to start at its last known location in the subscription stream when it's restarted. While you're free to store the checkpoint provided by a [reactive subscription](/docs/layer-0/reactive-subscriptions/) any way you like, Occurrent provides an interface called `org.occurrent.subscription.api.reactor.CheckpointStorage` acts as a uniform abstraction for this purpose. A `CheckpointStorage` is defined like this:
+
+```java
+public interface CheckpointStorage {
+    Mono<Checkpoint> read(String subscriptionId);
+    Mono<Checkpoint> save(String subscriptionId, Checkpoint checkpoint, CheckpointWriteCondition condition);
+    default Mono<Checkpoint> save(String subscriptionId, Checkpoint checkpoint) {
+        return save(subscriptionId, checkpoint, CheckpointWriteCondition.any());
+    }
+    Mono<Void> delete(String subscriptionId);
+    default Mono<Void> delete(String subscriptionId, CheckpointWriteCondition condition) {
+        if (condition instanceof CheckpointWriteCondition.Any) {
+            return delete(subscriptionId);
+        }
+        return Mono.error(new UnsupportedOperationException(getClass().getName() + " cannot evaluate " + condition + " on a delete"));
+    }
+    Mono<Long> writeVersion(String subscriptionId);
+    default boolean evaluatesWriteConditions() {
+        return false;
+    }
+    default boolean evaluatesWriteConditionsFor(String subscriptionId) {
+        return evaluatesWriteConditions();
+    }
+    default boolean evaluatesDeleteConditions() {
+        return false;
+    }
+}
+```
+
+It's a way to read, write and delete the `Checkpoint` for a given subscription:
+
+| Method | What it does |
+| :- | :- |
+| `save(subscriptionId, checkpoint, condition)` | Writes the checkpoint when `condition` holds for the stored version. A condition that isn't met signals `Mono.error` with `CheckpointWriteConditionNotFulfilledException`. |
+| `save(subscriptionId, checkpoint)` | An unconditional write, `any()`, that keeps whatever version is already stored, untouched. |
+| `writeVersion(subscriptionId)` | Reads back the version a condition is judged against. Empty if none is stored, including for a storage that can't evaluate conditions at all. |
+| `evaluatesWriteConditions()` | Whether the storage evaluates `notOlderThan` and `ifAbsent` for real rather than refusing them. Defaults to `false`. Both reactive storages Occurrent ships return `true`. |
+| `evaluatesWriteConditionsFor(subscriptionId)` | The per-id version of `evaluatesWriteConditions()`, and defaults to it. For a storage whose answer depends on the subscription id. |
+| `delete(subscriptionId, condition)` | Deletes the checkpoint only when `condition` holds for the stored version, judged the same way `save` judges it. |
+| `evaluatesDeleteConditions()` | Whether the storage evaluates `notOlderThan` and `ifAbsent` on a delete rather than refusing them. |
+
+A storage that can only ever evaluate `any()` refuses any other condition with `UnsupportedOperationException` instead. Check the storage's own documentation for which conditions it evaluates before depending on one.
+
+The default implementations evaluate no condition. The default `delete(subscriptionId, condition)` deletes for `any()` and signals `UnsupportedOperationException` for any other condition. The default `evaluatesDeleteConditions()` returns `false`. Both reactive storages Occurrent ships evaluate the conditions.
+
+`ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position. When it returns `false`, that write is unconditional, and the model logs a `WARN` rather than refusing to start.
+
+A `save` for that first position that completes without emitting a checkpoint is refused with `IllegalStateException`, naming the storage and the position it tried to record. Nothing then shows whether the write reached storage.
+
+`ReactorDurableSubscriptionModel` deletes a cancelled subscription's checkpoint with `notOlderThan` and the version it read just before. A subscribe of the same id that comes while that delete runs writes the checkpoint back at a higher version. So the delete is refused, or what it removed is stored again.
+
+With a storage that returns `false` from `evaluatesDeleteConditions()` or from `evaluatesWriteConditionsFor(subscriptionId)`, the delete is unconditional. The checkpoint is then written back once the delete attempt in progress has ended.
+
+Occurrent ships two pre-defined reactive implementations:
+
+1\. **ReactorCheckpointStorage**\
+Uses the [project reactor](https://projectreactor.io/) driver to store `Checkpoint`'s in MongoDB.
+
+<Dependency artifact="occurrent-subscription-mongodb-spring-reactor-checkpoint-storage" />
+
+2\. **InMemoryCheckpointStorage**\
+Keeps `Checkpoint` instances in a `ConcurrentHashMap`, in the `org.occurrent.subscription.inmemory.reactor` package. It's the reactive twin of the [blocking `InMemoryCheckpointStorage`](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage) and ships from the very same `occurrent-subscription-inmemory` artifact, as an optional class. The artifact declares `occurrent-subscription-api-reactor` (and with it reactor-core) as an `optional` dependency, so a blocking-only consumer never pulls in the reactive stack. Depend on both to use it:
+
+<Dependency artifact="occurrent-subscription-inmemory" />
+
+<Dependency artifact="occurrent-subscription-api-reactor" />
+
+Since 0.33.0, `ReactorCheckpointStorage` retries a transient MongoDB error while reading, saving or deleting a checkpoint instead of letting it reach the subscription. It retries with exponential backoff by default, 100 ms up to 2 seconds, the same interval `SpringMongoCheckpointStorage` already uses on the blocking stack, but bounded to 5 attempts before rethrowing the original failure rather than retrying without limit. Pass your own `reactor.util.retry.Retry` to the three-argument constructor to change it.
+
+If you want to roll your own implementation (feel free to contribute to the project if you do) you can depend on the "reactive subscription API" which contains the `CheckpointStorage` interface:
+
+<Dependency artifact="occurrent-subscription-api-reactor" />
+
+Checking your own reactive subscription model against Occurrent's conformance suites, including the blocking bridge the suites run through, is covered in [Testing Your Own Subscription Model](/docs/extending/your-own-subscription-model/).
+
+The reactor `IntrospectableSubscriptions`, in `occurrent-subscription-api-reactor`, is not only a bridge precondition. It gives the reactive stack the same `subscriptionIds()` the [blocking stack has](/docs/layer-0/blocking-subscriptions/), every id a model holds, running or paused, and `ReactorMongoSubscriptionModel`, `ReactorDurableSubscriptionModel`, `CatchupThenPushSubscriptionModel` and the reactive push and synchronous models all implement it, so a test or an admin endpoint can name the ids that exist rather than repeating the one it was given.

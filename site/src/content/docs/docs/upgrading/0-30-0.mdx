@@ -1,0 +1,8 @@
+---
+title: "Upgrading to 0.30.0"
+description: "What changes in 0.30.0."
+sidebar:
+  order: 5
+---
+
+The `org.occurrent.UpgradeToOccurrent_0_30` recipe handles the mechanical renames, the package moves, and the safe part of the `Stream` to `List` write-side migration, plus the module artifact coordinate renames (every artifact now has an `occurrent-` prefix). If you are upgrading an existing MongoDB deployment, note that stream `position` is on by default for new stores, but the events already in your collection have none. The store detects this at startup and turns position off for itself rather than triggering a surprise index build on your existing data. Follow the [position-backfill runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/position-backfill.md) and its [tool](https://github.com/johanhaleby/occurrent/blob/main/eventstore/migration/position-backfill/README.md) to backfill `position` onto those old events and use position-based catch-up against them. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.30.0.md) for the full plugin setup and old-to-new artifact mapping.

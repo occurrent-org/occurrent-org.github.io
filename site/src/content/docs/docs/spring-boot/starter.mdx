@@ -1,0 +1,151 @@
+---
+title: "Spring Boot starter"
+description: "The blocking and reactive starters, and what they set up."
+sidebar:
+  order: 1
+layer: "spring-boot"
+stack: [spring-boot]
+modules: [occurrent-mongodb-spring-boot-starter]
+addedIn: "0.14.0"
+---
+
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+import Dependency from "../../../../components/Dependency.astro";
+
+:::caution
+Occurrent %OCCURRENT_VERSION% requires **Java 21** or later.
+:::
+
+Use the "Spring Boot Starter" project to bootstrap Occurrent quickly if using Spring Boot 4. Add the following to your build script:
+
+<Dependency artifact="occurrent-mongodb-spring-boot-starter" />
+
+Next create a Spring Boot application annotated with `@SpringBootApplication` as you would normally do, and also add the `@EnableOccurrent` annotation (located in package `org.occurrent.springboot.mongo.blocking`). Occurrent will then configure the following components automatically:
+
+* A Spring MongoDB Event Store instance (`EventStore`)
+
+* A Spring `CheckpointStorage` instance
+
+* A durable Spring MongoDB competing consumer subscription model (`SubscriptionModel`)
+
+* A Jackson-based `CloudEventConverter`. From `0.20.1`, the starter autoconfigures the Jackson 3 lane by default. Existing applications can still use the Jackson 2 compatibility lane during migration, but in that case you need to define your own `CloudEventConverter` bean explicitly. It uses a reflection based cloud event type mapper that uses the fully-qualified class name as cloud event type (you _should_ absolutely override this bean for production use cases). You can do this, for example, by doing:
+
+  ```java
+  @Bean
+  public CloudEventTypeMapper<GameEvent> cloudEventTypeMapper() {
+    return ReflectionCloudEventTypeMapper.simple(GameEvent.class);
+  }
+  ```
+
+  This will use the "simple name" (via reflection) of a domain event as the cloud event type. But since the package name is now lost from the cloud event type property, the `ReflectionCloudEventTypeMapper` will append the package name of `GameEvent` when converting back into a domain event. This _only_ works if all your domain events are located in the exact same package as `GameEvent`. If this is not the case you need to implement a more advanced `CloudEventTypeMapper` such as
+
+  ```kotlin
+  class CustomTypeMapper : CloudEventTypeMapper<GameEvent> {
+      override fun getCloudEventType(type: Class<out GameEvent>): String = type.simpleName
+
+      override fun <E : GameEvent> getDomainEventType(cloudEventType: String): Class<E> = when (cloudEventType) {
+          GameStarted::class.simpleName -> GameStarted::class
+          GamePlayed::class.simpleName -> GamePlayed::class
+          // Add all other events here!!
+          ...
+          else -> throw IllegalStateException("Event type $cloudEventType is unknown")
+      }.java as Class<E>
+  }
+  ```
+
+  or implement your own custom [CloudEventConverter](/docs/layer-1/cloudevent-conversion/).
+
+* A `GenericApplicationService` instance (`ApplicationService`)
+
+* A subscription dsl instance (`Subscriptions`)
+
+* A query dsl instance (`DomainEventQueries`)
+
+* When the DCB capability is enabled, the DCB counterparts too: a DCB application service (`DcbApplicationService`), a DCB subscription dsl (`DcbSubscriptions`), and a DCB query dsl (`DcbDomainEventQueries`)
+
+* Support for [annotations](/docs/spring-boot/subscription-annotations/)
+
+For most new Spring Boot applications, the recommended setup is:
+
+* Spring Boot 4
+* `occurrent-mongodb-spring-boot-starter`
+* `occurrent-cloudevent-converter-jackson3` if you configure the converter explicitly
+
+If you are upgrading an existing application that still depends on the Jackson 2 converter API, you can continue to use that compatibility lane while migrating incrementally. The Spring Boot starter will not autoconfigure the Jackson 2 converter for you, so you must register a `CloudEventConverter` bean yourself, for example:
+
+```java
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.net.URI;
+import org.occurrent.application.converter.CloudEventConverter;
+import org.occurrent.application.converter.jackson.JacksonCloudEventConverter;
+import org.occurrent.application.converter.typemapper.CloudEventTypeMapper;
+
+@Bean
+CloudEventConverter<GameEvent> cloudEventConverter(ObjectMapper objectMapper, CloudEventTypeMapper<GameEvent> cloudEventTypeMapper) {
+    return new JacksonCloudEventConverter.Builder<GameEvent>(objectMapper, URI.create("urn:example:game"))
+            .typeMapper(cloudEventTypeMapper)
+            .build();
+}
+```
+
+Any user-defined `CloudEventConverter` bean takes precedence over the starter's built-in fallback converter, regardless of whether your custom converter uses Jackson 2 or Jackson 3.
+
+You can of course override other beans as well to tailor them to your needs. See the source code of [org.occurrent.springboot.mongo.blocking.OccurrentMongoAutoConfiguration](https://github.com/johanhaleby/occurrent/blob/occurrent-%OCCURRENT_VERSION%/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java) if you want to know exactly what gets configured automatically.
+
+It's also possible to configure certain aspects from the `application.yaml` file under the "occurrent" namespace. For example:
+
+```yaml
+occurrent:
+  application-service:
+    enable-default-retry-strategy: false
+```
+
+You can code-complete the available properties in Intellij or have a look at [org.occurrent.springboot.common.OccurrentProperties](https://github.com/johanhaleby/occurrent/blob/occurrent-%OCCURRENT_VERSION%/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java) to find which configuration properties that are supported.
+
+The settings that only apply to a MongoDB event store or a MongoDB subscription model have `mongodb` in their key:
+
+| Key | Default | Deprecated key it replaces |
+| :- | :- | :- |
+| `occurrent.event-store.mongodb.collection` | `events` | `occurrent.event-store.collection` |
+| `occurrent.event-store.mongodb.time-representation` | `DATE` | `occurrent.event-store.time-representation` |
+| `occurrent.subscription.mongodb.collection` | `subscriptions` | `occurrent.subscription.collection` |
+| `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` | `true` | `occurrent.subscription.restart-on-change-stream-history-lost` |
+
+The deprecated keys still work, and will be removed two releases after 0.34.0.
+
+You can set both the old and the new key as long as they have the same value. That way an old key you have not found yet, in an environment variable for example, does not break a configuration you have already migrated. If the two values differ, the application fails at startup with an error that names both keys.
+
+The `org.occurrent.UpgradeToOccurrent_0_34` OpenRewrite recipe renames the keys in your `.properties` and `.yaml` files, as described in [section 4 of the upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md#4-four-mongodb-only-keys-move-under-mongodb). It can't rename environment variables such as `OCCURRENT_EVENT_STORE_COLLECTION`, so you have to find those in your deployment configuration and rename them yourself.
+
+## Deferring Subscription Startup<HeadingBadge text="Added in 0.32.0" />
+
+By default the starter creates every subscription and starts it during context refresh, before your application is ready to receive requests. `occurrent.subscription.mode` controls whether that happens at all:
+
+```properties
+occurrent.subscription.mode=auto
+```
+
+| Mode | What it means |
+| - | - |
+| `auto` | The default. Every subscription is created and started during context refresh. |
+| `manual` | Every subscription is registered, but none of them runs until you start it yourself. |
+| `disabled` | No subscription beans are created at all. |
+
+`manual` registers a subscription rather than starting it. Nothing is subscribed, no competing-consumer lease is taken, and no change stream or catch-up replay begins until you start it yourself, by calling `resumeSubscription(id)` on the injected `SubscriptionModel`. This is the same mechanism the [subscription life cycle](/docs/testing/integration-testing/#using-the-subscription-life-cycle) uses to hold subscriptions back between tests, made available for production startup too, for an application that only wants its subscriptions running once, say, it has won a leader election.
+
+Withholding is not the same as never having registered. A subscription that resolves to the model's own default start position has that position fixed the moment it is registered, not the moment it is started, so a subscription that has never run before does not silently skip whatever is written while it waits. A subscription registered with an explicit start position of its own, a replay or an explicit checkpoint, writes nothing at registration and keeps doing what it asked for. Once a subscription has run at least once, it resumes from its own stored checkpoint regardless of how long it was withheld this time around.
+
+`manual` also withholds sagas and push projections, not only the `@Subscription`, `@StreamSubscription`, and `@DcbSubscription` annotations. A [`@Saga`](/docs/spring-boot/saga-annotation/)'s timer poller does not fire until its saga's subscription is started. A withheld [`@Projection(source = Source.PUSH)`](/docs/spring-boot/projection-annotation/) bound to a `DomainEventFeed` is not registered on the feed until you start it, so it does not take part in the feed's `catchUpAll()`. If a projection is started later than the rest of the feed, for example a `manual` subscription resumed after the feed has already caught up, `catchUpAll()` will not replay it, since it only re-runs projections that were already live. Replay it on its own with `catchUp(String)`, passing that projection's id.
+
+Boot no longer validates subscription wiring under `manual`. A bad filter or an unsupported start position used to fail during context refresh. Under `manual` it instead fails the first time the subscription is started, which for a leader-election deployment can be well after the application has already started serving traffic.
+
+Outside Spring, `ManualStartSubscriptionModel` in `occurrent-subscription-api-blocking` gives you the same thing, minus the registration-fixes-the-position guarantee above. `ManualStartSubscriptionModel.stoppedByDefault(subscriptionModel)` wraps any subscription model so that subscriptions register withheld and start only when you say so, but a first run starts from the wrapped model's own default at the moment it's started, so events written between registration and start do not reach it. Pass a `GlobalCheckpointSource` and a `CheckpointStorage` to the three-argument `stoppedByDefault` overload to get that guarantee outside Spring too. It is also what the JUnit extension's [stopped-by-default testing](/docs/testing/integration-testing/#stopping-every-subscription-then-opting-in) is built on.
+
+`occurrent.subscription.mode` replaces the deprecated `occurrent.subscription.enabled` (`true` maps to `auto`, `false` to `disabled`). The deprecated property still works during the deprecation window, and setting both is fine as long as they agree, so a leftover environment variable does not break an otherwise-migrated configuration. Setting both to values that disagree fails startup, naming both values in the error. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) for the OpenRewrite recipe that renames the property for you.
+
+## Reactive Spring Boot Starter
+
+If your application is reactive (Spring WebFlux with reactive MongoDB), use the reactive starter (`org.occurrent:occurrent-mongodb-reactive-spring-boot-starter`) and annotate your application with `@EnableOccurrentReactive` (package `org.occurrent.springboot.mongo.reactor`) instead of `@EnableOccurrent`. It auto-configures the reactive counterparts of everything the blocking starter sets up: a reactive `EventStore`, a reactive transaction manager, a reactive application service (both the stream and the DCB application service), the query DSLs, a reactive subscription model backed by `CheckpointStorage`, and the reactive `StreamSubscriptions` and `DcbSubscriptions` DSLs. `@EnableOccurrent` and `@EnableOccurrentReactive` can now sit on one classpath together, since the beans each contributes are disjoint, so an application that genuinely needs both a blocking and a reactive stack can annotate with both instead of picking one.
+
+[Deferring subscription startup](/docs/spring-boot/starter/#deferring-subscription-startup) with `occurrent.subscription.mode=manual` works the same way here, with one difference that follows from the reactive `SubscriptionModel` having no competing-consumer layer. There is nothing to wrap. The starter simply hands back a model that is already stopped, and you resume each subscription with `resumeSubscription(id)`. A `@Projection(source = Source.PUSH)` fed by a reactive `DomainEventFeed` is withheld by a registry rather than by the model itself, so starting it runs the work that registering it would otherwise have done immediately. The reactive `DomainEventFeed` has the same per-id `catchUp(String)` as the blocking one, for a projection started after the rest of the feed has already caught up.

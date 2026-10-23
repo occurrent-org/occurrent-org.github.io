@@ -1,0 +1,224 @@
+---
+title: "DCB with domain events"
+description: "The DCB application service, tags from annotations, and DCB subscriptions."
+sidebar:
+  order: 7
+layer: "1"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+The [Dynamic Consistency Boundary](/docs/layer-0/dcb-event-store/) section in layer 0 covers tags, criteria and the `DcbEventStore`, which all work with CloudEvents. This section covers the parts that work with your domain events: an application service, deciders and subscriptions for a DCB boundary.
+
+## The DCB Application Service
+
+Running that cycle by hand for every command gets repetitive, and it is easy to forget the retry. `DcbApplicationService` does the read, decide, tag, and append for you, retrying automatically on a `DcbAppendConditionNotFulfilledException` (five attempts by default, with exponential backoff). `execute(criteria, fn)` reads the events matching `criteria`, hands them to your function, converts and tags whatever new domain events it returns, and appends them under the same boundary. The service needs a way to derive DCB tags for the events it appends, supplied once as a `TagGenerator` when constructing `GenericDcbApplicationService`, or per call through `DcbExecuteOptions.tagGenerator(...)`. That built-in retry sits inside whatever transaction is open around `execute`, so if you open one yourself, retry at your own boundary instead. See [Retry and Transactions](/docs/stores/retry/#retry-and-transactions).
+
+The Java signature returns `Optional<DcbAppendResult>`, empty when your function decided there was nothing to do. The Kotlin extension `executeOrNull` returns a nullable `DcbAppendResult` instead, so a no-op command reads as `null` rather than an `Optional`.
+
+When a boundary matches many events and working through them on every command becomes too slow, you can accelerate it with a [DCB snapshot](/docs/layer-1/snapshots/#dcb-snapshots).
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    DcbCriteria boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId));
+
+    Optional<DcbAppendResult> result = applicationService.execute(boundary, events -> {
+        if (isCourseFull(events, courseId) || isStudentAtEnrollmentLimit(events, studentId)) {
+            return List.of();
+        }
+        return List.of(new StudentEnrolledInCourse(courseId, studentId));
+    });
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val boundary = DcbCriteria.tagsAnyOf(Tag.of("course", courseId), Tag.of("student", studentId))
+
+    val result: DcbAppendResult? = applicationService.executeOrNull(boundary) { events ->
+        if (isCourseFull(events, courseId) || isStudentAtEnrollmentLimit(events, studentId)) {
+            emptyList()
+        } else {
+            listOf(StudentEnrolledInCourse(courseId, studentId))
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## Deriving Tags From Annotations
+
+Hand-writing a `TagGenerator` works, but for the common case, where an event's own fields are the tag values, `AnnotationTagGenerator` derives one from `@DcbTag`. Annotate a record component, field, or no-arg getter. The tag key comes from `@DcbTag`'s `value` (or its alias `key`), and falls back to the member's own name when neither is set. The tag value is the member's runtime value converted with `toString()`. A null or blank value skips that tag rather than failing.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public record StudentEnrolledInCourse(
+            @DcbTag("course") String courseId,
+            @DcbTag("student") String studentId) {
+    }
+
+    TagGenerator<StudentEnrolledInCourse> tagGenerator = new AnnotationTagGenerator<>();
+    // tagGenerator.tags(event) returns {Tag.of("course", courseId), Tag.of("student", studentId)}
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // On a Kotlin data class, apply @DcbTag to the generated getter with the @get use-site target
+    data class StudentEnrolledInCourse(
+        @get:DcbTag("course") val courseId: String,
+        @get:DcbTag("student") val studentId: String
+    )
+
+    val tagGenerator: TagGenerator<StudentEnrolledInCourse> = AnnotationTagGenerator()
+    // tagGenerator.tags(event) returns setOf(Tag.of("course", courseId), Tag.of("student", studentId))
+    ```
+  </TabItem>
+</Tabs>
+
+## Coupling a Decider to a Boundary
+
+A `DcbDecider` couples three things a feature would otherwise have to keep in sync by hand: the plain `Decider` (decide and evolve), a function from command to the `DcbCriteria` boundary that command needs, and a `TagGenerator` for the events it emits. Build one with `DcbDecider.create(...)` (or `DcbDecider.from` around an existing `Decider`), or the Kotlin `dcbDecider(...)` factory, which reads a little more naturally at the call site. In Kotlin you can also turn an existing `Decider` into a `DcbDecider` with the `toDcb { ... }` extension, supplying the `criteria` and `tags` for the boundary.
+
+Once a decider is a `DcbDecider`, it is self-describing: given a command, it knows both what to decide and where to read from. Running it is a single call, the Kotlin DSL's `execute(command, dcbDecider)` or, from Java, a `DcbDeciderApplicationService` wrapping the DCB application service. Either one asks the decider for the command's boundary, reads the matching events, decides, tags the new events with the decider's own `TagGenerator`, and appends, all without you naming a `DcbCriteria` at the call site.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> enrollmentDecider = DcbDecider.create(
+            new EnrollmentState(),
+            (command, state) -> decide(command, state),
+            (state, event) -> evolve(state, event),
+            command -> DcbCriteria.tagsAnyOf(Tag.of("course", command.courseId()), Tag.of("student", command.studentId())),
+            event -> tagsFor(event)
+    );
+
+    // DcbDeciderApplicationService resolves the boundary, decides, tags, and appends in one call
+    var deciderApplicationService = new DcbDeciderApplicationService<>(applicationService);
+    Optional<DcbAppendResult> result = deciderApplicationService.execute(
+            new EnrollStudent(courseId, studentId),
+            enrollmentDecider);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val enrollmentDcbDecider: DcbDecider<EnrollStudent, EnrollmentState, DomainEvent> = dcbDecider(
+        initialState = EnrollmentState(),
+        decide = ::decide,
+        evolve = ::evolve,
+        criteria = { command -> DcbCriteria.tagsAnyOf(Tag.of("course", command.courseId), Tag.of("student", command.studentId)) },
+        tags = { event -> tagsFor(event) }
+    )
+
+    // execute(command, dcbDecider) resolves the boundary, decides, tags, and appends in one call
+    val result: DcbAppendResult? = applicationService.execute(
+        EnrollStudent(courseId, studentId),
+        enrollmentDcbDecider
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+`DcbDeciderApplicationService` also has an `execute(DcbCriteria, List<C>, DcbDecider<C, S, E>)` overload for a caller that has already resolved the boundary itself, so the criteria don't have to come from the decider a second time.
+
+## Subscribing to DCB Events
+
+A DCB read model needs to see DCB events as they are written, and for a durable one, catch up on history first. `@DcbSubscription` is the declarative, framework-managed way to do that. It is the DCB counterpart to `@StreamSubscription`, filtering by event types and tags instead of an Occurrent `Filter`, and starting at a `position` instead of a time.
+
+For an ephemeral, per-connection subscription you start and cancel by hand, a Server-Sent-Events feed scoped to one request, for example, inject the `DcbSubscriptions` DSL instead and call `subscribe` (or the Kotlin `subscribeDcb`) directly, passing a `DcbCriteria` and a `DcbStartAt`. `DcbStartAt.beginning()` replays the whole DCB sequence by position before switching to live delivery, the same catch-up behavior `@DcbSubscription`'s `startAt = DcbStartPosition.BEGINNING` gives you with the Spring Boot starter.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @DcbSubscription(id = "courseDashboard", startAt = DcbStartPosition.BEGINNING)
+    void onEvent(CourseEvent event) {
+        dashboard.update(event);
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val subscriptions = DcbSubscriptions(subscriptionModel, cloudEventConverter)
+
+    subscriptions.subscribeDcb(
+        subscriptionId = "courseDashboard-$connectionId",
+        criteria = DcbCriteria.tags(Tag.of("course", courseId)),
+        startAt = DcbStartAt.beginning()
+    ) { event: CourseEvent ->
+        dashboard.update(event)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+`@DcbSubscription` filters by the DCB query built from its `eventTypes` (matched as any-of, and taken from the handler's event parameter when left empty) and its `tags` (matched as all-of, each in `"key:value"` form and validated at startup so a malformed tag fails fast). `startAt = DcbStartPosition.BEGINNING` replays from the start of the DCB sequence, or use `startAtDcbPosition` to resume after a specific position instead.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @DcbSubscription(
+            id = "courseDashboard",
+            eventTypes = {CourseRegistered.class, StudentEnrolled.class},
+            tags = {"course:123"},
+            startAt = DcbStartPosition.BEGINNING)
+    void onEvent(CourseEvent event) {
+        dashboard.update(event);
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @DcbSubscription(
+        id = "courseDashboard",
+        eventTypes = [CourseRegistered::class, StudentEnrolled::class],
+        tags = ["course:123"],
+        startAt = DcbStartPosition.BEGINNING
+    )
+    fun onEvent(event: CourseEvent) {
+        dashboard.update(event)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+### Reading DCB Metadata
+
+A DCB subscription handler can read the event's metadata the same way a stream subscription can. Declare an `org.occurrent.cloudevents.EventMetadata` parameter for the generic parts (stream id, version, `position`, and any CloudEvent extension), or an `org.occurrent.dsl.dcb.DcbEventMetadata` parameter for a DCB-focused view that also exposes the event's tags and its position as an `OptionalLong`. `DcbEventMetadata` wraps an `EventMetadata`, so `eventMetadata()` always gets you back to the generic view. In Kotlin there is also a `dcbTags` extension property on `EventMetadata`, for handlers that take the generic type.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @DcbSubscription(id = "courseDashboard")
+    void onEvent(CourseEvent event, DcbEventMetadata metadata) {
+        Set<Tag> tags = metadata.dcbTags();
+        OptionalLong position = metadata.position();
+        long streamVersion = metadata.eventMetadata().getStreamVersion();
+        dashboard.update(event);
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscriptions.subscribeDcbWithMetadata(
+        subscriptionId = "courseDashboard-$connectionId",
+        criteria = DcbCriteria.tags(Tag.of("course", courseId))
+    ) { metadata: DcbEventMetadata, event: CourseEvent ->
+        val tags: Set<Tag> = metadata.dcbTags()
+        val position = metadata.eventMetadata().position
+        dashboard.update(event)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## Reactive DCB
+
+Everything above has a reactive counterpart, the same way Occurrent pairs a blocking and a reactive API everywhere else. `org.occurrent.eventstore.api.dcb.reactor.DcbEventStore` returns `Mono<DcbEventStream>` from `read` and `Mono<DcbAppendResult>` from `append`, using the same criteria, tags, and append-condition types as the blocking store. The reactive `DcbApplicationService.execute(criteria, fn)` returns a `Mono<DcbAppendResult>` that completes empty when the domain function produced no new events. The domain function itself stays a plain synchronous `Function<List<E>, List<E>>`, since deciding is a pure computation over a list the read has already materialized, only the read and the append are reactive. `DcbSubscriptions` has a Project Reactor variant too, so a live subscription or a from-the-beginning catch-up works the same way over `Flux` as it does over the blocking callback API.
+
+<a id="dsls" />

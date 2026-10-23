@@ -1,0 +1,394 @@
+---
+title: "Deciders"
+description: "Model your domain as a decider and run it through an ApplicationService."
+sidebar:
+  order: 8
+modules: [occurrent-decider]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+A [decider](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) is an object built from three functions: `initialState`, `decide`, and `evolve`. `initialState` returns the state a decider starts from, before any event has been applied. `decide` takes a command and the current state, checks your business rules and invariants, and returns the resulting events. `evolve` takes the current state and an event and returns the updated state. Together they give you a structured way to implement decision logic for a business entity (typically an aggregate) or a use case.
+
+First add the dependency:
+
+<Dependency artifact="occurrent-decider" />
+
+To use a decider, you model your commands, events and state as explicit data structures. (Elsewhere in Occurrent you can represent a command as a plain function instead, see [Command Philosophy](/docs/overview/commands/#command-philosophy).) Here's an order that can be placed and cancelled:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    sealed interface OrderCommand {
+        record PlaceOrder(String orderId, String productId, int quantity) implements OrderCommand {
+        }
+
+        record CancelOrder(String orderId) implements OrderCommand {
+        }
+    }
+
+    sealed interface OrderEvent {
+        record OrderPlaced(String orderId, String productId, int quantity) implements OrderEvent {
+        }
+
+        record OrderCancelled(String orderId) implements OrderEvent {
+        }
+    }
+
+    record OrderState(String orderId, String productId, int quantity, boolean cancelled) {
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    sealed interface OrderCommand {
+        data class PlaceOrder(val orderId: String, val productId: String, val quantity: Int) : OrderCommand
+        data class CancelOrder(val orderId: String) : OrderCommand
+    }
+
+    sealed interface OrderEvent {
+        data class OrderPlaced(val orderId: String, val productId: String, val quantity: Int) : OrderEvent
+        data class OrderCancelled(val orderId: String) : OrderEvent
+    }
+
+    data class OrderState(val orderId: String, val productId: String, val quantity: Int, val cancelled: Boolean)
+    ```
+  </TabItem>
+</Tabs>
+
+Pass your `decide` and `evolve` functions to `Decider.create(..)` and it builds a `Decider` for you:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // This example uses Java 21+
+    var orderDecider = Decider.<OrderCommand, OrderState, OrderEvent>create(
+            null,
+            (command, state) -> switch (command) {
+                case PlaceOrder c -> {
+                    if (state != null) {
+                        throw new IllegalStateException("Order " + c.orderId() + " has already been placed");
+                    }
+                    yield List.of(new OrderPlaced(c.orderId(), c.productId(), c.quantity()));
+                }
+                case CancelOrder c -> {
+                    if (state == null) {
+                        throw new IllegalStateException("Order " + c.orderId() + " has not been placed");
+                    }
+                    if (state.cancelled()) {
+                        throw new IllegalStateException("Order " + c.orderId() + " has already been cancelled");
+                    }
+                    yield List.of(new OrderCancelled(c.orderId()));
+                }
+            },
+            (state, event) -> switch (event) {
+                case OrderPlaced e -> new OrderState(e.orderId(), e.productId(), e.quantity(), false);
+                case OrderCancelled e -> new OrderState(state.orderId(), state.productId(), state.quantity(), true);
+            }
+    );
+
+    // You can pass an optional Predicate as a fourth argument to Decider.create(..), for example to stop evolving once an order is cancelled. It always returns false by default.
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Importing this extension function makes creating deciders nicer from Kotlin
+    import org.occurrent.dsl.decider.decider
+
+    val orderDecider = decider<OrderCommand, OrderState?, OrderEvent>(
+            initialState = null,
+            decide = { command, state ->
+                when (command) {
+                    is PlaceOrder -> {
+                        check(state == null) { "Order ${command.orderId} has already been placed" }
+                        listOf(OrderPlaced(command.orderId, command.productId, command.quantity))
+                    }
+                    is CancelOrder -> {
+                        checkNotNull(state) { "Order ${command.orderId} has not been placed" }
+                        check(!state.cancelled) { "Order ${command.orderId} has already been cancelled" }
+                        listOf(OrderCancelled(command.orderId))
+                    }
+                }
+            },
+            evolve = { state, event ->
+                when (event) {
+                    is OrderPlaced -> OrderState(event.orderId, event.productId, event.quantity, cancelled = false)
+                    is OrderCancelled -> state!!.copy(cancelled = true)
+                }
+            }
+    )
+
+    // You can also, optionally, define an "isTerminal" predicate as a fourth argument to the decider(..) function, for example to stop evolving once an order is cancelled. It always returns false by default.
+    ```
+  </TabItem>
+</Tabs>
+
+You now have a `Decider` instance. Call any of its default methods to get back the new state, the new events, or both:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // If you're using an event store to store the events, you can do like this:
+
+    List<OrderEvent> currentEvents = ... // typically loaded from an event store, or supplied directly in a test
+    OrderCommand command = new CancelOrder("order-1");
+
+    List<OrderEvent> newEvents = orderDecider.decideOnEventsAndReturnEvents(currentEvents, command);
+    OrderState newState = orderDecider.decideOnEventsAndReturnState(currentEvents, command);
+    // Return both the state and the new events
+    Decision<OrderState, List<OrderEvent>> decision = orderDecider.decideOnEvents(currentEvents, command);
+
+    // Or if you store state instead of events:
+
+    OrderState currentState = ... // typically loaded from a state store such as an RDBMS row, or supplied directly in a test
+    OrderCommand command = ...
+
+    List<OrderEvent> newEvents = orderDecider.decideOnStateAndReturnEvents(currentState, command);
+    OrderState newState = orderDecider.decideOnStateAndReturnState(currentState, command);
+    // Return both the state and the new events
+    Decision<OrderState, List<OrderEvent>> decision = orderDecider.decideOnState(currentState, command);
+
+    // You can even apply multiple commands at the same time:
+
+    List<OrderEvent> currentEvents = ... // typically loaded from an event store, or supplied directly in a test
+    OrderCommand command1 = new PlaceOrder("order-1", "product-42", 3);
+    OrderCommand command2 = new CancelOrder("order-1");
+
+    // Both commands will be applied atomically
+    List<OrderEvent> newEvents = orderDecider.decideOnEventsAndReturnEvents(currentEvents, command1, command2);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Import the Kotlin extension functions
+    import org.occurrent.dsl.decider.decide
+    import org.occurrent.dsl.decider.component1
+    import org.occurrent.dsl.decider.component2
+
+    val currentEvents : List<OrderEvent> = ... // typically loaded from an event store, or supplied directly in a test
+    val currentState : OrderState? = ... // typically loaded from a state store such as an RDBMS row, or supplied directly in a test
+    val command : OrderCommand = CancelOrder(orderId = "order-1")
+
+    // We use destructuring here to get the "newState" and "newEvents" from the Decision instance returned by decide
+    // This is the reason for importing the "component1" and "component2" extension functions above
+    val (newState, newEvents) = orderDecider.decide(events = currentEvents, command = command)
+
+    // You can also start the computation based on the current state
+    val (newState, newEvents) = orderDecider.decide(state = currentState, command = command)
+
+    // And you could of course also just use the actual "Decision" if you like
+    val decision : Decision<OrderState, List<OrderEvent>> = orderDecider.decide(events = currentEvents, command = command)
+
+    // The same works starting from state instead of events
+    val decisionFromState : Decision<OrderState, List<OrderEvent>> = orderDecider.decide(state = currentState, command = command)
+
+    // You can also supply multiple commands at the same time, then all of them will succeed or fail atomically
+    val command1 = PlaceOrder(orderId = "order-2", productId = "product-42", quantity = 1)
+    val command2 = CancelOrder(orderId = "order-2")
+    val (newState, newEvents) = orderDecider.decide(null, command1, command2)
+
+    // You can also use the Java <code>decide</code> methods, such as <code>decideOnStateAndReturnEvent</code>, from Kotlin, but usually it's enough to just use the <code>org.occurrent.dsl.decider.decide</code> extension function.
+    ```
+  </TabItem>
+</Tabs>
+
+Some benefits of using deciders:
+
+1. You write `evolve`, but not the loop that runs it across every event to rebuild state.
+2. Decide and evolve stay separate. `decide` enforces your business rules and invariants, and only returns the resulting events when a command doesn't violate them, while `evolve` just applies those events to state, so the two responsibilities don't get tangled together in one class the way a typical aggregate does.
+3. A decider can hand back just the new events, just the new state, or both (a `Decision`), so a caller gets exactly what it needs instead of always getting everything.
+4. A decider isn't only for event-sourced systems. One of its default methods, `decideOnStateAndReturnState`, runs entirely against state, so the same `decide`/`evolve` pair works just as well over a plain state store, an RDBMS row, for example.
+5. `evolve` is a pure function of state and event, so a cached state is always safe to resume replay from, which is what makes [snapshots](/docs/layer-1/snapshots/#snapshotting-a-decider) possible. When a long stream makes full replay slow, a snapshot caches the state at a version, so later commands only replay what was written after it.
+6. Multiple commands can be applied to a decider atomically, so a use case that issues more than one command either fully succeeds or fully fails, never half-applied. That atomicity comes from the event store's own conditional write (see [Write Condition](/docs/layer-0/write-conditions/)), not a database transaction or other infrastructure, so `decide` and `evolve` stay plain, pure functions.
+7. Deciders compose. Write one small decider per feature, then widen it to a shared type with `adapt` or combine several into one with `compose`, instead of building one large decider that handles every command and event type in your application (see [Combining Deciders](/docs/overview/deciders/#combining-deciders)).
+8. Deciders also handle invariants that span more than one stream. Occurrent's `DcbDecider` couples the same `decide`/`evolve` pair to a boundary instead of a single stream (see [Coupling a Decider to a Boundary](/docs/layer-1/dcb-with-domain-events/#coupling-a-decider-to-a-boundary)).
+
+## The `Decider` interface
+
+`Decider.create(..)` builds an implementation of `org.occurrent.dsl.decider.Decider` for you. Implement the interface directly if you'd rather write your own class:
+
+```java
+public interface Decider<C, S, E> {
+    S initialState();
+
+    @NotNull
+    List<E> decide(@NotNull C command, S state);
+
+    S evolve(S state, @NotNull E event);
+
+    default boolean isTerminal(S state) {
+        return false;
+    }
+}
+```
+
+In the `orderDecider` example above, `C` is `OrderCommand`, `S` is `OrderState`, and `E` is `OrderEvent`. The four methods:
+
+| Method name | Description |
+| - | - |
+| initialState | Returns the initial state of the decider, for example `null` or something like "`NotStarted`" (a domain specific state implemented by you), depending on your domain |
+| decide | Takes a command and the current state, and returns the new events produced by handling that command |
+| evolve | Takes the current state and an event, and returns the updated state after applying that event |
+| isTerminal | Optional. Override it to tell the decider to stop evolving once it reaches a terminal state |
+
+Read [this blog post](https://thinkbeforecoding.com/post/2021/12/17/functional-event-sourcing-decider) for the rationale behind deciders.
+
+## Using an ApplicationService with Deciders<HeadingBadge text="Layer 1" variant="tip" />
+
+It's possible to integrate [Deciders](/docs/overview/deciders/) with an [ApplicationService](/docs/layer-1/application-service/) to easily load existing events from an [event store](/docs/layer-0/eventstore/).
+
+### Java<a id="application-service-decider-java" />
+
+To use the existing [ApplicationService](/docs/layer-1/application-service/) infrastructure with Deciders from Java, wrap it in a `DeciderApplicationService`, the Java counterpart to the Kotlin `execute(streamId, command, decider)` extension:
+
+```java
+ApplicationService<Event> applicationService = ...
+Command command = ...
+Decider<Command, State, Event> decider = ...
+
+var deciderApplicationService = new DeciderApplicationService<>(applicationService);
+var writeResult = deciderApplicationService.execute("streamId", command, decider);
+```
+
+The decider's event type must match the application service's event type. If the decider only handles a subset of the events, for example one feature's events while the application service handles them all, convert it to the service's event type first with `Decider.adapt(...)`. If you would rather not introduce the facade, the decider works with a `List<Event>`, which is exactly what the `ApplicationService` expects, so you can pass the decision function straight to `execute`:
+
+```java
+var writeResult = applicationService.execute("streamId", events -> decider.decideOnEventsAndReturnEvents(events, command));
+```
+
+### Kotlin<a id="application-service-decider-kotlin" />
+
+The `org.occurrent:occurrent-decider` module contains Kotlin extension functions, located in the `org.occurrent.dsl.decider.ApplicationServiceDeciderExtensions.kt` file, that allow you to easily integrate deciders with existing [ApplicationService](/docs/layer-1/application-service/) infrastructure. Here's an example:
+
+```kotlin
+import org.occurrent.dsl.decider.execute
+
+// Create the application service and decider
+val applicationService = ...
+val decider = ... 
+
+// Then you can pass the decider and command to the application service instance 
+val command = ...
+val writeResult = applicationService.execute(streamId, command, decider)
+```
+
+It's also possible to return the decision, state or new events when calling execute:
+
+```kotlin
+import org.occurrent.dsl.decider.executeAndReturnDecision
+import org.occurrent.dsl.decider.executeAndReturnState
+import org.occurrent.dsl.decider.executeAndReturnEvents
+
+// Invoke the decider with the command and return both state and new events (decision) 
+val decision = applicationService.executeAndReturnDecision(streamId, command, decider)
+// Invoke the decider with the command and return the new state
+val state = applicationService.executeAndReturnState(streamId, command, decider)
+// Invoke the decider with the command and return the new events
+val newEvents = applicationService.executeAndReturnEvents(streamId, command, decider)
+```
+
+## Combining Deciders
+
+As of version 0.20.5 deciders are combinable. You can write one small decider per feature, each over its own command, state, and event types, and combine them into a larger decider without losing the type safety of the small ones. The combinators live in the `org.occurrent:occurrent-decider` module.
+
+### Widening a decider with `adapt`
+
+Use `adapt` when a feature decider needs to work with your application's broader command and event types, either to pass it straight to an `ApplicationService`, or as the widening step before combining it with other feature deciders (see [Combining with `compose`](/docs/overview/deciders/#combining-with-compose) below). A feature decider is usually written over its own narrow types, for example `Decider<CourseCommand, CourseState, CourseEvent>`, while an `ApplicationService` is over the broadest event type in your domain. `adapt` widens a decider to the shared supertypes, ignoring foreign events and treating foreign commands as no-ops.
+
+From Java you pass the narrow command and event types as `Class` tokens. In Kotlin it is a `reified` extension, so the narrow types come from the receiver and the broad types from the call site, and you just write `courseDecider.adapt()`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // courseDecider is a Decider<CourseCommand, CourseState, CourseEvent>, but the application service
+    // works with the whole domain's commands and events.
+    Decider<DomainCommand, CourseState, DomainEvent> widened =
+            Decider.adapt(courseDecider, CourseCommand.class, CourseEvent.class);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    import org.occurrent.dsl.decider.adapt
+
+    // courseDecider: Decider<CourseCommand, CourseState, CourseEvent>
+    val widened: Decider<DomainCommand, CourseState, DomainEvent> = courseDecider.adapt()
+    ```
+  </TabItem>
+</Tabs>
+
+### Combining with `compose`
+
+`compose` merges several feature deciders into one whose state is the product of the individual states. A command is routed to whichever decider recognizes it, each event updates only its own decider's state, and the composed decider is terminal once every part is.
+
+In Kotlin the two and three decider forms adapt each decider for you and return a typed `Pair` or `Triple`, so you can pass the feature deciders directly. In Java, and in Kotlin for four or more deciders, the state is a `CompositeState` and you widen each decider with `adapt` first and read each slice back by the order the deciders were passed in:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Widen each decider, then compose. The combined state is a CompositeState, read each slice back by position.
+    Decider<DomainCommand, CompositeState, DomainEvent> combined = Decider.compose(
+            Decider.adapt(courseDecider, CourseCommand.class, CourseEvent.class),
+            Decider.adapt(studentDecider, StudentCommand.class, StudentEvent.class));
+
+    CompositeState state = combined.initialState();
+    CourseState course = state.slice(0);
+    StudentState student = state.slice(1);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    import org.occurrent.dsl.decider.compose
+
+    // Two deciders, adapted for you, state is a Pair
+    val twoDeciders: Decider<DomainCommand, Pair<CourseState, StudentState>, DomainEvent> =
+            compose(courseDecider, studentDecider)
+
+    // Three deciders, adapted for you, state is a Triple
+    val threeDeciders: Decider<DomainCommand, Triple<CourseState, StudentState, EnrollmentState>, DomainEvent> =
+            compose(courseDecider, studentDecider, enrollmentDecider)
+
+    // The two decider case also has an infix form
+    val infix = courseDecider compose studentDecider
+
+    // Four or more: widen each with adapt yourself, state is a CompositeState, read a slice with slice(index)
+    val many: Decider<DomainCommand, CompositeState, DomainEvent> =
+            compose(courseDecider.adapt(), studentDecider.adapt(), enrollmentDecider.adapt(), roomDecider.adapt())
+    ```
+  </TabItem>
+</Tabs>
+
+The typed `Pair` and `Triple` results are Kotlin only. In Java `compose` always yields a `CompositeState`. `compose` requires at least two deciders and throws `IllegalArgumentException` if given fewer, since composing zero or one would build a degenerate decider that combines nothing.
+
+### Passing a feature decider to an ApplicationService
+
+The Kotlin `execute` extensions widen a decider's event type for you, so a feature decider over its own narrow event type can go straight to an `ApplicationService` over a broader event type, without calling `adapt` first. From Java you widen the decider with `adapt` and then use it the same way as the [Java decider example above](/docs/overview/deciders/#application-service-decider-java):
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // applicationService: ApplicationService<DomainEvent>, courseDecider: Decider<CourseCommand, CourseState, CourseEvent>
+    Decider<DomainCommand, CourseState, DomainEvent> widened =
+            Decider.adapt(courseDecider, CourseCommand.class, CourseEvent.class);
+    var writeResult = applicationService.execute("streamId", events -> widened.decideOnEventsAndReturnEvents(events, command));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    import org.occurrent.dsl.decider.execute
+
+    // applicationService: ApplicationService<DomainEvent>, courseDecider: Decider<CourseCommand, CourseState, CourseEvent>
+    // The execute extension widens the decider's event type for you, so no adapt is needed.
+    val writeResult = applicationService.execute(streamId, command, courseDecider)
+    ```
+  </TabItem>
+</Tabs>
+
+If you only need to widen the event type yourself, there is `adaptEvents`, the event-only counterpart to `adapt`.

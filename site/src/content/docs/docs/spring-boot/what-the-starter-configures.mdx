@@ -1,0 +1,112 @@
+---
+title: "What the starter configures"
+description: "What the Spring Boot starter sets up and turns on for you, compared with wiring the same parts yourself."
+sidebar:
+  order: 2
+layer: "spring-boot"
+stack: [spring-boot]
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+The [Spring Boot starter](/docs/spring-boot/starter/) wires the layer 0 and layer 1 parts for you, and turns on some behaviour that is off when you wire them yourself. This page collects those differences. Each section links to the page that explains the part itself, and [Configuration properties](/docs/spring-boot/configuration-properties/) lists every property mentioned here.
+
+## Subscriptions
+
+### How the subscription model is built
+
+The MongoDB starter builds, in order, a `SpringMongoSubscriptionModel`, wraps it in `DurableSubscriptionModel`, wraps that in `CatchupSubscriptionModel` when the store has stream or DCB history to replay, wraps that in `CompetingConsumerSubscriptionModel`, and, only under `occurrent.subscription.mode=manual`, wraps the whole thing one more time in `ManualStartSubscriptionModel`. See [`OccurrentMongoAutoConfiguration`](https://github.com/johanhaleby/occurrent/blob/occurrent-%OCCURRENT_VERSION%/framework/spring-boot-starter-mongodb/src/main/java/org/occurrent/springboot/mongo/blocking/OccurrentMongoAutoConfiguration.java). [Subscription model capabilities](/docs/layer-0/subscription-model-capabilities/) explains what each wrapper adds.
+
+It wires `CompetingConsumerCheckpointWriteVersionSource` (backed by `CompetingConsumerStrategy::fencingToken`) into `DurableSubscriptionModel` and `CatchupSubscriptionModel` where it constructs them, so that a node that lost its lock and kept writing can't overwrite a checkpoint a faster node already advanced.
+
+Because it builds a `CompetingConsumerSubscriptionModel` over a `CatchupSubscriptionModel`, a node that gets the lease of a subscription whose replay another node hadn't finished [resumes that replay](/docs/layer-0/catch-up-subscription/#resuming-a-replay-from-a-stored-checkpoint) from the position the other node stored.
+
+The reactive starter builds a durable model over a catch-up model for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top [delegates to them](/docs/layer-0/reactive-subscription-models/#delegating-to-a-named-wrapped-model) rather than driving their cold primitive itself.
+
+### Restarting when the oplog is lost
+
+Automatic restart when the oplog no longer has a subscription's history is off when you create a MongoDB subscription model yourself, see [Restart Subscription when Oplog Lost](/docs/layer-0/blocking-subscription-models/#restart-subscription-when-oplog-lost). The starter turns it on, for both the blocking and the reactive model. Set `occurrent.subscription.mongodb.restart-on-change-stream-history-lost=false` to turn it off there.
+
+### Starting when no start position can be recorded
+
+A durable subscription that can't record its start position is refused, see [Durable Subscriptions](/docs/layer-0/durable-subscriptions/). To start it anyway, set `occurrent.subscription.start-when-no-start-position-can-be-recorded=true`, which sets `startWhenNoStartPositionCanBeRecorded(true)` on the blocking and the reactive durable model the starter builds.
+
+### Catch-up subscriptions
+
+The blocking MongoDB starter has a position catch-up [store its position while it replays](/docs/layer-0/catch-up-subscription/#resuming-a-replay-from-a-stored-checkpoint) every 1000 events.
+
+The starter doesn't wait for a subscription that replays history unless its [`startupMode`](/docs/spring-boot/subscription-annotations/#subscription-startup-mode) says so, so a failed blocking replay shows up as the `ERROR` it logs.
+
+### Checkpoint fencing
+
+The MongoDB starter [fences checkpoints](/docs/layer-0/checkpoint-fencing/) for you without any wiring of your own. As long as subscriptions are not disabled it contributes a `SpringMongoLeaseCompetingConsumerStrategy` bean, and passes `strategy::fencingToken` everywhere it builds a model that writes checkpoints, whatever your `CheckpointStorage` bean is. Registering a `CompetingConsumerStrategy` bean yourself is the override, not the way to switch this on. Yours replaces the starter's at every injection point, including the fence's own lookup, whatever type yours is.
+
+If you register more than one `CompetingConsumerStrategy` bean of your own and mark none of them `@Primary`, the application does not start. Occurrent throws `AmbiguousCompetingConsumerStrategyException` while the context is being built, naming the beans it found. Give the one you want `@Primary`, so the others stay available for your own wiring while Occurrent knows which one fences.
+
+A `CheckpointStorage` of your own that can't evaluate a write condition answers `false` from `evaluatesWriteConditions()`. The starter reads that answer at startup and refuses to run a store like this next to a `CompetingConsumerStrategy`, throwing `CheckpointStorageCannotFenceException`, rather than letting the first checkpoint write fail once a node holds its lease. There are two ways out of that. Answer `true` from `evaluatesWriteConditions()` if your store really does accept and refuse `notOlderThan` and `ifAbsent`, or set `occurrent.subscription.competing-consumer.fence-checkpoints=false` to keep the store you have. Every checkpoint is then written unconditionally, exactly as in 0.32.0, so a node that has lost its lease can move the checkpoint backward and the events between the two positions are delivered again. That stays inside the at-least-once contract.
+
+Once every singleton exists, the fencing check also asks [`evaluatesWriteConditionsFor`](/docs/layer-0/checkpoint-fencing/), the per-id version, for the subscription ids you've registered, and throws `CheckpointStorageCannotFenceSubscriptionException`, naming the storage and every refused id, when the answer is `false` for at least one of them.
+
+That check belongs to the blocking stack only and has no reactor equivalent. `ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position instead, where a `false` answer keeps the unconditional write and gets a `WARN` saying so.
+
+### Manual start
+
+`occurrent.subscription.mode=manual` wraps the subscription model in a [`ManualStartSubscriptionModel`](/docs/layer-0/subscription-life-cycle/#starting-subscriptions-manually), so subscribing only registers a subscription and nothing runs until you start it. A health check or leader election can then call `start()`. The starter uses the three-argument `stoppedByDefault(SubscriptionModel, GlobalCheckpointSource, CheckpointStorage)` overload, which records a registration's start position at registration instead of at start.
+
+### Recording appends during a catch-up
+
+When a subscription model's [`listenForCatchup`](/docs/layer-0/subscription-life-cycle/) returns `false`, the starter polls `isCatchingUp` instead, for each projection that records its appends. The projection then records nothing for the whole catch-up, and a catch-up that starts and finishes between two polls goes unnoticed.
+
+## Synchronous subscriptions
+
+The starter wires a `SpringTransactionExecutor` (backed by `TransactionTemplate`, or `TransactionalOperator` on the reactive starter) by default, so a `@SynchronousSubscription` handler that writes to the same MongoDB commits atomically with the event write, without a call-site `@Transactional`.
+
+Annotate a handler method with `@SynchronousSubscription` (`org.occurrent.annotation.SynchronousSubscription`). It is the synchronous counterpart of [`@Subscription`](/docs/spring-boot/subscription-annotations/) and carries only an `id` and optional `eventTypes`, none of the asynchronous-only attributes (`startAt`, `resumeBehavior`, `startupMode`), which have no meaning for at-write-time dispatch.
+
+The starter's auto-configured `SynchronousSubscriptionModel` bean is wired with a `DataFieldReader` automatically when `occurrent-common-inmemory-filter-matching-jackson` is on the classpath, so a `@SynchronousSubscription` handler filtering on `Filter.data(...)` works without extra configuration. See [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data).
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @Component
+    public class OngoingGamesProjection {
+
+        // Runs on the writer thread, before execute() returns. With the starter's default
+        // transaction executor, it commits atomically with the event write.
+        @SynchronousSubscription(id = "ongoing-games")
+        public void on(GameStarted event) {
+            someDatabase.registerOngoing(event);
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @Component
+    class OngoingGamesProjection(private val someDatabase: Database) {
+
+        // Runs on the writer thread, before execute() returns. With the starter's default
+        // transaction executor, it commits atomically with the event write.
+        @SynchronousSubscription(id = "ongoing-games")
+        fun on(event: GameStarted) {
+            someDatabase.registerOngoing(event)
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Because the starter wires a Spring-backed `TransactionExecutor` by default, the handler above already commits atomically with the event write. Add `@Transactional` to the method to compose your own transaction on top. On the same MongoDB it joins the write's transaction, and on a different datastore it commits independently.
+
+## Filtering on payload data
+
+Add `occurrent-common-inmemory-filter-matching-jackson` to the classpath and the starter (both the blocking one and the [reactive](/docs/spring-boot/starter/#reactive-spring-boot-starter) one) contributes a `DataFieldReader` bean backed by `JacksonDataFieldReader`. The auto-configured `SynchronousSubscriptionModel` bean picks it up automatically, so a `data` filter on a [synchronous subscription](/docs/layer-1/synchronous-subscriptions/) works once the artifact is on the classpath. Define your own `DataFieldReader` bean instead to replace it. Without either, that same filter still refuses, naming the artifact to add. [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data) explains the `DataFieldReader` itself. A hand-built `PushSubscriptionModel` isn't managed by the starter, so pass the reader to its constructor yourself if you need one there too.
+
+## Command dispatch
+
+The starter registers a default [`StreamIdResolver`](/docs/layer-1/command-dispatch/) bean backed by `AnnotationStreamIdResolver`, scanning your commands for `@TargetStreamId`. Define your own `StreamIdResolver` bean when a command's stream id needs computing rather than reading off one field, and the starter uses that bean instead.
+
+## CloudEvent conversion
+
+The [generic CloudEventConverter](/docs/layer-1/cloudevent-conversion/) can truncate the event time, which matters when the event store uses `TimeRepresentation.DATE`. With the starter you set the precision through the `occurrent.cloud-event-converter.time-precision` property (a `ChronoUnit`, for example `millis`). When that property is unset and the event store `time-representation` is `DATE`, the converter defaults to truncating to `MILLIS`, so the common case needs no configuration.

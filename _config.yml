@@ -11,3 +11,19 @@ sass:
 plugins:
   - jekyll-sitemap
 host: 0.0.0.0
+
+# The new Starlight site lives in site/ until it replaces this one. The rest is the list GitHub Pages excludes by
+# default, which setting exclude would otherwise replace.
+exclude:
+  - site/
+  - CNAME
+  - .sass-cache/
+  - .jekyll-cache/
+  - gemfiles/
+  - Gemfile
+  - Gemfile.lock
+  - node_modules/
+  - vendor/bundle/
+  - vendor/cache/
+  - vendor/gems/
+  - vendor/ruby/

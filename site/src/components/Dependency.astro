@@ -1,0 +1,33 @@
+---
+// The dependency snippet for one Occurrent module, in every build tool, at the version the docs describe.
+// The chosen build tool is remembered across pages.
+import { Code, TabItem, Tabs } from "@astrojs/starlight/components";
+import { OCCURRENT_VERSION as version } from "../version.mjs";
+
+interface Props {
+    artifact: string;
+    scope?: "test";
+}
+
+const { artifact, scope } = Astro.props;
+const test = scope === "test";
+const snippets = [
+    ["Maven", "xml", `<dependency>\n    <groupId>org.occurrent</groupId>\n    <artifactId>${artifact}</artifactId>\n    <version>${version}</version>${test ? "\n    <scope>test</scope>" : ""}\n</dependency>`],
+    ["Gradle", "groovy", `${test ? "testImplementation" : "compile"} 'org.occurrent:${artifact}:${version}'`],
+    ["SBT", "scala", `libraryDependencies += "org.occurrent" % "${artifact}" % "${version}"${test ? " % Test" : ""}`],
+    ["Grape", "groovy", `@Grab(group='org.occurrent', module='${artifact}', version='${version}')`],
+    ["Leiningen", "clojure", `[org.occurrent/${artifact} "${version}"]`],
+    ["Buildr", "ruby", `'org.occurrent:${artifact}:jar:${version}'`],
+    ["Ivy", "xml", `<dependency org="org.occurrent" name="${artifact}" rev="${version}"${test ? ' conf="test"' : ""} />`],
+];
+---
+
+<Tabs syncKey="build-tool">
+    {
+        snippets.map(([label, lang, code]) => (
+            <TabItem label={label}>
+                <Code code={code} lang={lang} />
+            </TabItem>
+        ))
+    }
+</Tabs>

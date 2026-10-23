@@ -1,0 +1,15 @@
+---
+// A badge at the end of a heading, such as "Added in 0.31.0" or "Layer 1". Write it right after the heading text
+// with no space, or the space ends up in the heading's id. The hidden brackets keep the heading readable in the
+// page's Markdown copy, which drops the badge's styling.
+import { Badge } from "@astrojs/starlight/components";
+
+interface Props {
+    text: string;
+    variant?: "note" | "tip";
+}
+
+const { text, variant = "note" } = Astro.props;
+---
+
+<span class="heading-badge"><span class="heading-badge-separator"> (</span><Badge text={text} variant={variant} size="small" /><span class="heading-badge-separator">)</span></span>

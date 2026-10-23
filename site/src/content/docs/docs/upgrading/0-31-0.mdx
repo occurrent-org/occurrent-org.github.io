@@ -1,0 +1,8 @@
+---
+title: "Upgrading to 0.31.0"
+description: "What changes in 0.31.0."
+sidebar:
+  order: 4
+---
+
+The `org.occurrent.UpgradeToOccurrent_0_31` recipe rewrites the annotation `ResumeBehavior` and `StartupMode` enums into the shared top-level `org.occurrent.annotation.ResumeBehavior` and `org.occurrent.annotation.StartupMode` types, replacing the separate nested enums on `@Subscription`, `@StreamSubscription` and `@DcbSubscription`. It also updates the `EventMetadata` import, which moved from `org.occurrent.dsl.subscription` to `org.occurrent.cloudevents`. `@Projection` and `@Snapshot` are new in 0.31.0 and use the shared types from the start, so there is nothing to rewrite for them. See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.31.0.md) for the details.

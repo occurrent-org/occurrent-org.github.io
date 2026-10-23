@@ -1,0 +1,257 @@
+---
+title: "Catch-up subscription"
+description: "Replay history before switching to live events."
+sidebar:
+  order: 13
+layer: "0"
+model: [blocking]
+modules: [occurrent-subscription-catchup-blocking]
+addedIn: "0.1.1"
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+When starting a new subscription it's often useful to first replay historic events to get up-to-speed and then subscribing to new events as they arrive. A catch-up subscription allows for exactly this! It combines the [EventStoreQueries](/docs/layer-0/eventstore-queries/) API with a [subscription](/docs/layer-0/blocking-subscriptions/) and an optional [checkpoint storage](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage). It starts off by streaming historic events from the event store and then automatically switch to continuous streaming mode once the historic events have caught up.
+
+To get start you need to add the following dependency:
+
+<Dependency artifact="occurrent-subscription-catchup-blocking" />
+
+For example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Create the checkpoint storage. Note that if the CheckpointAwareSubscriptionModel
+    // is also storing the checkpoint, it's highly recommended to share the same CheckpointStorage instance.
+    CheckpointStorage storage = ...
+    // Create the subscription instance that will be used once the replay has caught up the latest event position
+    CheckpointAwareSubscriptionModel continuousSubscriptionModel = ...
+    // Instantiate an event store that implements the EventStoreQueries API
+    EventStoreQueries eventStoreQueries = ...
+
+
+    // Now combine the continuous subscription model and the checkpoint storage to allow
+    // handing over to the continuous subscription once catch-up phase is completed.
+    // In this example, we also store the checkpoint during catch-up for every third event.
+    // This is optional, but useful if you're reading a lot of events and don't want to risk restarting
+    // from the beginning if the application where to crash during the catch-up phase.
+    CatchupSubscriptionModel catchupSubscriptionModelModel = new CatchupSubscriptionModel(continuousSubscriptionModel, eventStoreQueries,
+                new CatchupSubscriptionModelConfig(useCheckpointStorage(storage)
+                        .andPersistCheckpointDuringCatchupPhaseForEveryNEvents(3)));
+
+    // Start a subscription that starts replaying events of type "GameEnded" from the beginning of time
+    catchupSubscriptionModelModel.subscribe("mySubscription", filter(type("GameEnded")), StartAtTime.beginningOfTime(), cloudEvent -> System.out.println(cloudEvent));
+
+    // Note that excluding "StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())" like below would still start at
+    // the beginning of time the first time, but on subsequent calls will start from the latest checkpoint stored in the storage.
+    // This is recommended if you want to continue using the CatchupSubscriptionModel later when no catch-up is required
+    // (since the subscription has already caught up).
+    catchupSubscriptionModelModel.subscribe("mySubscription", filter(type("GameEnded")), cloudEvent -> System.out.println(cloudEvent));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // is also storing the checkpoint, it's highly recommended to share the same CheckpointStorage instance.
+    val storage : CheckpointStorage = ...
+    // Create the subscription instance that will be used once the replay has caught up the latest event position
+    val continuousSubscription : CheckpointAwareSubscriptionModel= ...
+    // Instantiate an event store that implements the EventStoreQueries API
+    val eventStoreQueries : EventStoreQueries = ...
+
+
+    // Now combine the continuous subscription model and the checkpoint storage to allow
+    // handing over to the continuous subscription once catch-up phase is completed.
+    // In this example, we also store the checkpoint during catch-up for every third event.
+    // This is optional, but useful if you're reading a lot of events and don't want to risk restarting
+    // from the beginning if the application where to crash during the catch-up phase. If you don't
+    // use "andPersistCheckpointDuringCatchupPhaseForEveryNEvents" but just "useCheckpointStorage(storage)"
+    // then the CatchupSubscriptionModel will still start from the checkpoint in the storage, but not write to it.
+    // The continuous subscription (passed as first parameter to CatchupSubscriptionModel) might write to the store,
+    // which means that once the CatchupSubscriptionModel has caught up and the continuous subscription starts
+    // writing the checkpoint, the CatchupSubscriptionModel will just delegate to continuous subscription if it finds
+    // a checkpoint in the storage.
+    val catchupSubscriptionModel = CatchupSubscriptionModel(continuousSubscription, eventStoreQueries,
+                CatchupSubscriptionModelConfig(useCheckpointStorage(storage)
+                        .andPersistCheckpointDuringCatchupPhaseForEveryNEvents(3)))
+
+    // Start a subscription that starts replaying events of type "GameEnded" from the beginning of time
+    catchupSubscriptionModel.subscribe("mySubscription", filter(type("GameEnded")), StartAtTime.beginningOfTime()) { cloudEvent ->
+        println(cloudEvent)
+    }
+
+    // Note that excluding "StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())" like below would still start at
+    // the beginning of time the first time, but on subsequent calls will start from the latest checkpoint stored in the storage.
+    // This is recommended if you want to continue using the CatchupSubscriptionModel later when no catch-up is required
+    // (since the subscription has already caught up).
+    catchupSubscriptionModel.subscribe("mySubscription", filter(type("GameEnded"))) { cloudEvent ->
+        println(cloudEvent)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+To reduce the likelihood of duplicate events when switching from replay mode to continuous mode, a `CatchupSubscriptionModel` maintains an in-memory cache that identifies each event by its id and source together, since CloudEvents only guarantees that the combination is unique. The size of this cache is configurable using a `CatchupSubscriptionModelConfig` but it defaults to 100,000. Otherwise, there would be a chance that event written _exactly_ when the switch from replay mode to continuous mode takes places, can be lost. To prevent this, the continuous mode subscription starts at a position before the last event read from the history. The purpose of the cache is thus to filter away events that are detected as duplicates during the switch. If the cache is too small, duplicate events will be sent to the continuous subscription. Typically, you want your application to be idempotent anyways and if so this shouldn't be a problem.
+
+As of 0.30.0 a catch-up that starts from the beginning or from a position reconciles the handover on the global `position` rather than on wall-clock time, which closes a class of silent event loss during the switch. Starting from a specific point in time still uses time-based catch-up, since a timestamp has no position to map to. Catch-up also fails loud now: `StreamCatchupSubscriptionModel` and `DcbCatchupSubscriptionModel` throw an `IllegalStateException` instead of silently falling back to a start position that could drop events, so make sure to configure a valid start position.
+
+A `CatchupSubscriptionModel` can be configured to store the checkpoint in the supplied storage (see example above) so that, if the application crashes during replay mode, it doesn't need to start replaying from the beginning again. Note that if you don't want checkpoint persistence during replay, you can disable this by doing `new CatchupSubscriptionModelConfig(dontUseCheckpointStorage())`.
+
+It's also possible to change how the `CatchupSubscriptionModel` sorts events read from the event store during catch-up phase. For example:
+
+```java
+var subscriptionModel = ...
+var eventStore = ..
+var cfg = new CatchupSubscriptionModelConfig(100).catchupPhaseSortBy(SortBy.descending(TIME));
+var catchupSubscriptionModel = new CatchupSubscriptionModel(subscriptionModel, eventStore, cfg);  
+```
+
+By default, events are sorted by time and then stream version (if two or more events have the same time).
+
+## Interrupting a Replay in Progress<HeadingBadge text="Added in 0.32.0" />
+
+`stop()` now reaches a catch-up replay that's already running, not just the live subscription behind it. Before, stopping the model while a subscription was still replaying history left that replay running to completion regardless, since only the live delegate was told to stop. Now `stop()` interrupts it at the next event, so a shutdown or a deliberate stop no longer waits for the whole backlog to be delivered.
+
+The model keeps the replay that `stop()` cut short. Until it runs again, the subscription counts as paused, so `isPaused(id)` returns `true` and `isRunning(id)` returns `false`. The same goes for a subscription made while the model is stopped.
+
+`start(true)` or `resumeSubscription(id)` runs the replay again, from the last position it stored, or from where it started when it stored none. It stores positions only when you configured checkpoint persistence during replay (see above). The events it delivered after that position are delivered again.
+
+After `start(false)` the subscription usually stays paused. A `start(false)` right after `stop()`, before the model has finished keeping the cut-short replay for later, runs that replay. Its events can then reach your action although nothing resumed the subscription.
+
+:::caution
+Issue [#1225](https://github.com/johanhaleby/occurrent/issues/1225) tracks this.
+:::
+
+When the model is stopped and `start(..)` throws because the wrapped model failed to start, the model stays stopped and the subscription stays paused, as after `stop()`. That's not the case when the wrapped model runs anyway, or when another `start(..)` or `resumeSubscription(..)` call came while the wrapped model was starting.
+
+## Resuming a Replay from a Stored Checkpoint
+
+This applies to a position catch-up that stores its position while it replays. The position catch-ups are:
+
+* `StreamCatchupSubscriptionModel` and `DcbCatchupSubscriptionModel`
+* on the reactor stack, `ReactorStreamCatchupSubscriptionModel` and `ReactorDcbCatchupSubscriptionModel`
+
+Before its replay, the catch-up reads the live start, the change-stream position that live delivery picks up from. The checkpoint it stores during the replay holds that live start next to the position. The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.34.0.md) shows what the stored checkpoint looks like in MongoDB and in a storage that keeps strings.
+
+A MongoDB event store reserves an event's position before the transaction that writes it commits. So the event at position 1 can commit after the event at position 2.
+
+A catch-up restarted after it stored `position:2` replays from position 3 up to the head of the event store as the earlier run read it. It then goes live from the stored live start, so the event at position 1 reaches the subscription even when it committed late.
+
+A resume can deliver some events a second time, because live delivery starts from the stored live start. If your action isn't safe to run twice on the same event, use the CloudEvent id to recognize an event you've already handled.
+
+MongoDB keeps a limited oplog, so a stored live start can be gone. The catch-up calls `canResumeFrom(checkpoint)` on the wrapped model, the subscription model it delivers live events through. It calls it when it resumes, and again once its replay is done, before it goes live.
+
+When `canResumeFrom` returns `false`, the catch-up logs a warning and reads a new live start. It then replays again from the position its replay first started from, which delivers that part of the history a second time. When the live start is gone after 4 replays in a row, the catch-up fails with an `IllegalStateException` that names the subscription, and nothing reaches live delivery.
+
+Make the oplog big enough to cover the longest rebuild, and the longest time a catch-up can be stopped in the middle of a replay.
+
+The oplog can also drop the live start after the `canResumeFrom` check once the replay is done, and before the MongoDB subscription model has opened its change stream there. The model then asks the catch-up what to do before it does anything else, whether or not `restartSubscriptionsOnChangeStreamHistoryLost` is set. The catch-up takes the subscription over, so the model pauses it instead of going live from the present or removing it.
+
+The catch-up then replays again from the position its replay first started from, with a new live start, and resumes the paused subscription there. That replay counts toward the 4 replays in a row after which the catch-up fails, and it delivers what the earlier replay delivered a second time.
+
+`SpringMongoSubscriptionModel`, `NativeMongoSubscriptionModel` and `ReactorMongoSubscriptionModel` ask the catch-up this way, also with a `DurableSubscriptionModel` or `ReactorDurableSubscriptionModel` between them and the catch-up. A subscription model of your own gets the same handling when it implements both `HistoryLossReportingSubscriptions` and `RepositionableSubscriptions`. Otherwise it handles a lost live start as it would without the catch-up.
+
+The replay after a takeover has no caller to throw to when it fails. The blocking catch-up logs the failure at `ERROR` and replays again after up to 2 seconds. The reactor catch-up logs it at `ERROR`, and a subscription the MongoDB model holds paused stays paused until you resume it, which replays again.
+
+On the reactor stack the checkpoint from the replay stays stored after the catch-up goes live, until `ReactorDurableSubscriptionModel` stores the position of a live event or saves a quiet position. A restart before that replays up to the same head again and goes live from the stored live start.
+
+A `position:N` checkpoint stored by 0.33.0 has no live start. It resumes with a live start read after the restart, so an event that committed late, like the one at position 1 above, isn't delivered. It also logs a warning that names the subscription.
+
+A blocking catch-up whose replay fails logs the failure at `ERROR`, as well as throwing it from `waitUntilStarted()`. So a caller that never calls `waitUntilStarted()` still learns about it. A catch-up that was cancelled, stopped, shut down or replaced by a newer subscribe for the same id isn't logged. On the reactor stack the subscription fails with the error.
+
+## Resuming a Time-based Replay
+
+The blocking `StreamCatchupSubscriptionModel`, also behind `CatchupSubscriptionModel`, replays by event time when it starts from `StartAtTime.offsetDateTime(..)` or resumes from a stored time. On an event store that doesn't write a position, it also replays by time from `StartAtTime.beginningOfTime()`. The reactor catch-ups don't replay by time.
+
+The application that writes an event sets its time, so an event with an earlier time can commit after an event with a later time. The time catch-up reads its live start before the replay too, so live delivery picks up such an event even when the replay has already read past its time.
+
+The checkpoint it stores during the replay is a `CatchupTimeCheckpoint`, which holds the time, the live start, and the time the replay first started from. A catch-up restarted after it stored one replays from the stored time up to the present, and then goes live from the stored live start.
+
+A time replay can deliver more events twice than a position replay, because a time doesn't tell which events committed after the live start. Every matching event written after the live start arrives live, including what was written while the catch-up was stopped, and the replay can read the same event too. Use the CloudEvent id to recognize an event you've already handled.
+
+The oplog has to reach back to the live start for the whole time replay. When it doesn't, the catch-up replays again from the time its replay first started from, the same way as a [position catch-up](/docs/layer-0/catch-up-subscription/#resuming-a-replay-from-a-stored-checkpoint). It does the same when the MongoDB model loses the live start as it opens the change stream. After 4 replays in a row it fails with an `IllegalStateException`.
+
+A time stored by 0.33.0 has no live start. It resumes with a live start read at the resume, so an event with an earlier time that committed after the earlier replay read past that time isn't delivered. It also logs a warning that names the subscription.
+
+## Resuming a Subscription Another Node's Catch-up Started
+
+On the blocking stack, `resumeSubscription(id)` and `start(true)` on `CatchupSubscriptionModel` or `StreamCatchupSubscriptionModel` replay from a position a catch-up stored for a paused subscription, also when another node's catch-up stored it. That's the case when a [competing consumer](/docs/layer-0/competing-consumers/) gets the lease of a subscription whose replay another node hadn't finished.
+
+The catch-up replays from the stored position and then resumes the subscription in the wrapped model. Events the other node had already delivered after that position arrive again.
+
+The wrapped model has to resume a subscription from a given position, so it implements `RepositionableSubscriptions` or wraps a model that does. `DurableSubscriptionModel` over either MongoDB model does. Over any other wrapped model, a resume that would replay throws an `IllegalStateException`. `resumeSubscription(id, startAt)` resumes at `startAt` and never replays.
+
+## Catch-up Subscription Usage
+
+The subscription model will only stream historic events if started with a `StartAt` instance that points to a checkpoint in the history, either a so called `TimeBasedCheckpoint` or a `GlobalCheckpoint`, for example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())) { e ->
+        println("Event: $e")
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+If you don't specify a `StartAt` position (or specify `StartAt.subscriptionModelDefault()` explicitly), the `CatchupSubscriptionModel` will just delegate to the parent subscription model and replay of old events will not happen. This means that for a subscription you can start it off by e.g. replaying from beginning of time then change the code and remove the `StartAt` position. It'll then resume from the position of the last consumed event.
+
+There are also some "shortcuts" to make it a bit more concise to start replay from beginning of time:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    var subscriptionModel = new CatchupSubscriptionModel(..);
+    // All examples below are equivalent:
+    subscriptionModel.subscribeFromBeginningOfTime("subscriptionId", e -> System.out.println("Event: " + e));
+    subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime(), e -> System.out.println("Event: " + e));
+    subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime()), e -> System.out.println("Event: " + e));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val subscriptionModel = CatchupSubscriptionModel(..)
+    // All examples below are equivalent:
+    subscriptionModel.subscribeFromBeginningOfTime("subscriptionId") { e -> println("Event: $e") }
+    subscriptionModel.subscribe("subscriptionId", StartAtTime.beginningOfTime()) { e -> println("Event: $e") }
+    subscriptionModel.subscribe("subscriptionId", StartAt.checkpoint(TimeBasedCheckpoint.beginningOfTime())) { e -> println("Event: $e") }
+    // beginningOfTime is an extension function imported from org.occurrent.subscription.blocking.durable.catchup.CatchupSubscriptionModelExtensions.kt
+    subscriptionModel.subscribe("subscriptionId", StartAt.beginningOfTime()) { e -> println("Event: $e") }
+    ```
+  </TabItem>
+</Tabs>
+
+It's also possible to start from a specific `java.time.OffsetDateTime`, for example:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    var offsetDateTime = OffsetDateTime.of(2024, 2, 3, 10, 4, 2, 0, ZoneOffset.UTC);
+    subscriptionModel.subscribe("subscriptionId", StartAtTime.offsetDateTime(offsetDateTime), e -> System.out.println("Event: " + e));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val offsetDateTime = OffsetDateTime.of(2024, 2, 3, 10, 4, 2, 0, ZoneOffset.UTC)
+    subscriptionModel.subscribe("subscriptionId", StartAtTime.offsetDateTime(offsetDateTime)) { e -> println("Event: $e") }
+    ```
+  </TabItem>
+</Tabs>
+
+Several events can share a time, so the replay includes the events stored at exactly that time. If you pass the time of the last event you handled, to continue where you left off, that event is delivered again.
+
+:::tip[Using Spring Boot?]
+[What the starter configures](/docs/spring-boot/what-the-starter-configures/#catch-up-subscriptions) says how the starter builds and starts catch-up subscriptions.
+:::

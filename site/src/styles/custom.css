@@ -1,0 +1,182 @@
+/* Occurrent's brand blue (#027aa3, from the current site) as Starlight's accent, in both themes. */
+:root {
+    --sl-color-accent-low: #062a38;
+    --sl-color-accent: #1d9bc7;
+    --sl-color-accent-high: #b7e4f4;
+}
+
+:root[data-theme="light"] {
+    --sl-color-accent-low: #cdeaf5;
+    --sl-color-accent: #027aa3;
+    --sl-color-accent-high: #013f55;
+}
+
+.page-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+    font-size: var(--sl-text-sm);
+}
+
+.page-meta a {
+    text-decoration: none;
+}
+
+.page-meta-badge {
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 999px;
+    padding: 0.05rem 0.6rem;
+    color: var(--sl-color-gray-2);
+}
+
+.page-meta-layer {
+    border-color: var(--sl-color-accent);
+    background: var(--sl-color-accent-low);
+    color: var(--sl-color-accent-high);
+}
+
+.page-meta-added {
+    border-color: var(--sl-color-blue);
+    background: var(--sl-color-blue-low);
+    color: var(--sl-color-blue-high);
+}
+
+.page-meta-modules {
+    flex-basis: 100%;
+    color: var(--sl-color-gray-3);
+}
+
+.page-meta-separator {
+    display: none;
+}
+
+/* HeadingBadge: a badge at the end of a heading. Its brackets are only for the page's Markdown copy. */
+.sl-markdown-content .heading-badge .sl-badge {
+    margin-inline-start: 0.5rem;
+    vertical-align: middle;
+}
+
+.heading-badge-separator {
+    display: none;
+}
+
+/* The landing page. The hero gets the gradient band of the old landing page, and each section below is centred. */
+.hero {
+    margin-inline: calc(-1 * var(--sl-content-pad-x, 1.5rem));
+    padding-inline: var(--sl-content-pad-x, 1.5rem);
+    margin-top: 1rem;
+    border-radius: 1.5rem;
+    background: radial-gradient(circle at 70% 40%, #7fbab4 0%, #0f6679 75%);
+    color: #fff;
+}
+
+.hero h1,
+.hero .tagline {
+    color: #fff;
+}
+
+.hero .tagline {
+    opacity: 0.92;
+}
+
+.hero .sl-link-button.secondary {
+    color: #fff;
+    border-color: #fff;
+}
+
+.hero .sl-link-button.minimal {
+    color: #fff;
+}
+
+.hero {
+    padding-block: 2.25rem;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+}
+
+.hero > .sl-flex {
+    gap: 1.25rem;
+}
+
+.hero h1 {
+    font-size: clamp(var(--sl-text-3xl), 4vw, var(--sl-text-4xl));
+}
+
+.hero .tagline {
+    font-size: var(--sl-text-lg);
+}
+
+.hero > .sl-flex {
+    align-items: center;
+    text-align: center;
+    max-width: 48rem;
+    margin-inline: auto;
+}
+
+.hero .sl-flex .sl-flex {
+    justify-content: center;
+}
+
+.landing-section {
+    max-width: 64rem;
+    margin-inline: auto;
+    padding-block: 2rem;
+}
+
+.landing-section > .sl-heading-wrapper {
+    justify-content: center;
+    text-align: center;
+}
+
+.landing-section > .sl-heading-wrapper + p {
+    max-width: 48rem;
+    margin-inline: auto;
+    text-align: center;
+    color: var(--sl-color-gray-2);
+}
+
+.landing-compare {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+    gap: 1.5rem;
+}
+
+.sl-markdown-content .landing-compare > div,
+.sl-markdown-content .landing-compare .sl-heading-wrapper {
+    margin-top: 0;
+}
+
+.landing-compare h3 {
+    width: 100%;
+    text-align: center;
+}
+
+.landing-chips {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.75rem;
+}
+
+.landing-chips a {
+    border: 1px solid var(--sl-color-gray-5);
+    border-radius: 999px;
+    padding: 0.4rem 1rem;
+    color: var(--sl-color-white);
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.landing-chips a:hover {
+    border-color: var(--sl-color-accent);
+    color: var(--sl-color-accent-high);
+}
+
+.landing-release {
+    text-align: center;
+}
+
+.landing-release .star-us {
+    justify-content: center;
+}

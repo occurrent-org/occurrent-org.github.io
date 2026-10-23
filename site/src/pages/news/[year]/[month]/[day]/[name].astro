@@ -1,0 +1,34 @@
+---
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+import { render } from "astro:content";
+import { formatDate, newsPosts, postParams, type NewsPost } from "../../../../../lib/news";
+
+export async function getStaticPaths() {
+    return (await newsPosts()).map((post) => ({ params: postParams(post), props: { post } }));
+}
+
+const { post } = Astro.props as { post: NewsPost };
+const { Content, headings } = await render(post);
+---
+
+<StarlightPage frontmatter={{ title: `Occurrent ${post.data.version} released`, description: post.data.summary }} headings={headings} hasSidebar={false}>
+    <p class="news-date">
+        <time datetime={post.data.date.toISOString().slice(0, 10)}>{formatDate(post.data.date)}</time> · <a href="/news/">All news</a>
+    </p>
+    {
+        !post.data.hidewhatsoccurrent && (
+            <aside class="starlight-aside starlight-aside--note">
+                <div class="starlight-aside__content">
+                    Occurrent is a set of event sourcing utilities for the JVM based on the CloudEvents specification. Read more on the <a href="/">landing page</a>.
+                </div>
+            </aside>
+        )
+    }
+    <Content />
+</StarlightPage>
+
+<style>
+    .news-date {
+        color: var(--sl-color-gray-3);
+    }
+</style>

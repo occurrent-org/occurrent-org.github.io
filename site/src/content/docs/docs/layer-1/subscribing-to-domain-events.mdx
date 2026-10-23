@@ -1,0 +1,100 @@
+---
+title: "Subscribing to domain events"
+description: "Subscribe to domain events with the subscription DSL."
+sidebar:
+  order: 9
+layer: "1"
+modules: [occurrent-subscription-dsl-blocking]
+addedIn: "0.5.0"
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+The subscription DSL is a utility that you can use to easier create subscriptions by using a [CloudEventConverter](/docs/layer-1/cloudevent-conversion/). There's a both a Kotlin DSL and Java DSL. First you need to depend on the `subscription-dsl` module:
+
+<Dependency artifact="occurrent-subscription-dsl-blocking" />
+
+As of version %OCCURRENT_VERSION% this DSL comes in three flavors that mirror the [subscription annotations](/docs/spring-boot/subscription-annotations/): `subscriptions(...)` builds a capability-neutral `Subscriptions` that delivers both stream and DCB events, `streamSubscriptions(...)` builds a stream-only `StreamSubscriptions`, and [`DcbSubscriptions`](/docs/layer-1/dcb-with-domain-events/#subscribing-to-dcb-events) (from the `dcb-dsl` module) subscribes to DCB events by tags and event types. The examples below use the neutral `subscriptions(...)`.
+
+Which one to use: `subscriptions(...)` is the default, for a read model or policy that reacts to events by type and does not care which write model produced them. On a store that has both capabilities it is the only flavor that sees stream-written and DCB-appended events together, filtered by type alone. Use `streamSubscriptions(...)` when a subscription must stay scoped to stream events, because it excludes DCB-appended events even on a store that has both, which matters when the consumer relies on classic stream and version semantics. Use [`DcbSubscriptions`](/docs/layer-1/dcb-with-domain-events/#subscribing-to-dcb-events) when you want DCB events selected by tags, for a short-lived, per-connection subscription you start and cancel yourself (such as a Server-Sent-Events feed), and use the [`@DcbSubscription`](/docs/layer-1/dcb-with-domain-events/#subscribing-to-dcb-events) annotation instead for a durable, framework-managed read model that catches up from history on startup.
+
+The same DSL also builds [synchronous subscriptions](/docs/layer-1/synchronous-subscriptions/). Pass a `SynchronousSubscriptionModel` as the `Subscribable` instead of an asynchronous subscription model, and the handlers you register run inline on the writer thread, before `execute` returns, rather than off a change stream.
+
+If you're using Kotlin you can then define subscriptions like this:
+
+```kotlin
+val subscriptionModel = SpringMongoSubscriptionModel(..)
+val cloudEventConverter = GenericCloudEventConverter<DomainEvent>(..)
+
+subscriptions(subscriptionModel, cloudEventConverter) {
+    subscribe<GameStarted>("id1") { gameStarted ->
+        log.info("Game was started $gameStarted")
+    }
+    subscribe<GameWon, GameLost>("id2") { domainEvent ->
+        log.info("Game was either won or lost: $domainEvent")
+    }
+    subscribe("everything") { domainEvent ->
+        log.info("I subscribe to every event: $domainEvent")
+    }
+} 
+```
+
+Note that as of version 0.6.0 you can also do:
+
+```kotlin
+subscribe<GameStarted> { gameStarted ->
+    log.info("Game was started $gameStarted")
+}
+```
+
+i.e. you don't need to specify an id explicitly. Be careful here though, since the name of the subscription will be generated from the event name (the unqualified name, in this case the subscription id would be "GameStarted"). This can lead to trouble if you rename your event because then the id of your subscription will change as well, and it won't continue from the previous checkpoint in the checkpoint storage.
+
+If using Java you can do:
+
+```java
+SpringMongoSubscriptionModel subscriptionModel = new SpringMongoSubscriptionModel(..);
+GenericCloudEventConverter<DomainEvent> cloudEventConverter = new GenericCloudEventConverter<DomainEvent>(..);
+
+Subscriptions<DomainEvent> subscriptions = new Subscriptions<DomainEvent>(subscriptionModel, cloudEventConverter); 
+        
+subscriptions.subscribe("gameStarted", GameStarted.class, gameStarted -> {
+    log.info("Game was started {}", gameStarted);
+});
+```
+
+For this to work, your domain events must all "implement" a `DomainEvent` interface (or a sealed class in Kotlin). Note that `DomainEvent` is something you create yourself, it's not something that is provided by Occurrent.
+
+`subscribe(..)` derives the subscription filter from the event types you name, as described in [Deriving the Event Filter](/docs/layer-1/deriving-the-event-filter/). If you name a type listed as refused in that section, `subscribe(..)` throws.
+
+As of version 0.17.0 you can also get metadata (such as stream version, stream id and all other cloud event extension properties) when consuming an event:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    subscriptions.subscribe("gameStarted", GameStarted.class, (metadata, gameStarted) -> {
+        long streamVersion = metadata.getStreamVersion();
+        String streamId = metadata.getStreamId();
+        Map<String, Object> allData = metadata.getData();
+        var custom = allData.get("extensionPropertyDefinedInCloudEvent");
+
+        // Do stuff
+    });
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    subscribe<GameStarted> { metadata, event ->
+        val streamVersion = metadata.streamVersion
+        val streamId = metadata.streamId
+        val allData = metadata.data
+        val custom = allData["extensionPropertyDefinedInCloudEvent"]
+
+        // Do stuff
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+`Subscriptions` and `subscriptions(...)` accept any `Subscribable`. That includes a [`PushSubscriptionModel`](/docs/layer-0/push-subscription/) (or its [reactive counterpart](/docs/layer-0/reactive-push-subscription/)), which feeds events from a broker such as RabbitMQ or Kafka instead of reading a MongoDB change stream.

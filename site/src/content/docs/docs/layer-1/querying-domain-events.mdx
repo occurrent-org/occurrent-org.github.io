@@ -1,0 +1,77 @@
+---
+title: "Querying domain events"
+description: "Query events as domain events with the Query DSL, including DCB queries."
+sidebar:
+  order: 8
+layer: "1"
+addedIn: "0.14.0"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+The "Query DSL" (or "domain query DSL") is a small wrapper around the [EventStoreQueries](/docs/layer-0/eventstore-queries/) API that lets you query for domain events instead of CloudEvents. Depend on the `org.occurrent:occurrent-query-dsl-blocking` module and create an instance of `org.occurrent.dsl.query.blocking.DomainEventQueries`. For example:
+
+```java
+EventStoreQueries eventStoreQueries = .. 
+CloudEventConverter<DomainEvent> cloudEventConverter = ..
+DomainEventQueries<DomainEvent> domainEventQueries = new DomainEventQueries<DomainEvent>(eventStoreQueries, cloudEventConverter);
+ 
+Stream<DomainEvent> events = domainEventQueries.query(Filter.subject("someSubject"));
+```
+
+There's also support for skip, limits and sorting and convenience methods for querying for a single event:
+
+```java
+Stream<DomainEvent> events = domainEventQueries.query(GameStarted.class, GameEnded.class); // Find only events of this type
+GameStarted event1 = domainEventQueries.queryOne(GameStarted.class); // Find the first event of this type
+GamePlayed event2 = domainEventQueries.queryOne(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")); // Find event with this id
+```
+
+`query(GameStarted.class, GameEnded.class)` and the `Collection` overloads derive a filter from the types you list, as described in [Deriving the Event Filter](/docs/layer-1/deriving-the-event-filter/). If a query names a type listed as refused in that section, the query throws.
+
+Given a `null` or empty collection, these overloads return no events. [An empty list of types selects nothing on a query](/docs/layer-1/deriving-the-event-filter/#an-empty-list-of-types-selects-nothing-on-a-query) says how that differs from a projection.
+
+There are also some Kotlin extensions that you can use to query for a `Sequence` of events instead of a `Stream`:
+
+```kotlin
+val events : Sequence<DomainEvent> = domainEventQueries.queryForSequence(GamePlayed::class, GameWon::class, skip = 2) // Find only events of this type and skip the first two events
+val event1 = domainEventQueries.queryOne<GameStarted>() // Find the first event of this type
+val event2 = domainEventQueries.queryOne<GamePlayed>(Filter.id("d7542cef-ac20-4e74-9128-fdec94540fda")) // Find event with this id
+```
+
+`DomainEventQueries` also wraps `PositionOrderedReader.readInPositionOrder(..)`, the global-position-ordered read a push catch-up replays from. The `Stream` that read returns holds a database cursor on a MongoDB-backed store rather than a decoded list, which is what lets a large history stream instead of being loaded into memory up front, so close it when you are done, in a try-with-resources or Kotlin's `use`.
+
+## DCB Query DSL
+
+The Query DSL has a DCB counterpart, `org.occurrent.dsl.dcb.blocking.DcbDomainEventQueries`, that queries by a [`DcbCriteria`](/docs/layer-0/dcb-event-store/#the-dcb-event-store) (event types and tags) instead of a `Filter`, and returns domain events. Depend on `org.occurrent:occurrent-dcb-dsl-blocking` and wrap a regular `DomainEventQueries`. The [Spring Boot starter](/docs/spring-boot/starter/) registers one for you when the DCB capability is enabled, so you normally just inject it.
+
+Which one to pick: use [`DomainEventQueries`](/docs/layer-1/querying-domain-events/) for ordinary queries by `Filter` and event type. It is capability-neutral, so on a store that has both capabilities it returns stream-written and DCB-appended events alike, exactly like the underlying [`EventStoreQueries`](/docs/layer-0/eventstore-queries/). Use `DcbDomainEventQueries` when a query needs DCB tags or a `DcbCriteria`, or when you need the read's consistency token and position for a later conditional append. It only adds the DCB queries on top, so the plain ones are still there through `domainEventQueries()`.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    DomainEventQueries<CourseEvent> domainEventQueries = ..
+    DcbDomainEventQueries<CourseEvent> dcbQueries = new DcbDomainEventQueries<>(domainEventQueries);
+
+    // All events tagged with this course
+    Stream<CourseEvent> events = dcbQueries.query(DcbCriteria.tags(Tag.of("course", courseId)));
+
+    // Restrict the position range with DcbReadOptions, and read each event's position too
+    DcbDomainEventStream<CourseEvent> recent = dcbQueries.queryWithPosition(DcbCriteria.all(), DcbReadOptions.afterPosition(1000));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val dcbQueries = DcbDomainEventQueries(domainEventQueries)
+
+    // All events tagged with this course (tags are all-of), or use queryForListAnyOf for any-of
+    val events: List<CourseEvent> = dcbQueries.queryForList(Tag.of("course", courseId))
+
+    // Restrict the position range with DcbReadOptions
+    val recent: List<CourseEvent> = dcbQueries.queryForList(DcbCriteria.all(), DcbReadOptions.afterPosition(1000))
+    ```
+  </TabItem>
+</Tabs>
+
+Use `DcbReadOptions` (`fromBeginning`, `afterPosition`, `upToPosition`, `between`) to restrict the position range, and `queryWithPosition` (Kotlin `queryForListWithPosition`) when you also need each event's global position. Call `domainEventQueries()` to drop back to the regular stream [Query DSL](/docs/layer-1/querying-domain-events/).

@@ -1,0 +1,44 @@
+---
+title: "Your own framework"
+description: "Combine the layer 1 parts into a framework shaped after your business."
+sidebar:
+  order: 1
+layer: "3"
+---
+
+:::note
+This layer is experimental. Occurrent doesn't ship a framework you should depend on yet.
+:::
+
+The parts in [layer 1](/docs/layer-1/) are small on purpose, so that you can combine them into a framework of your own, shaped after the way your business works. A framework like that decides things for your team once (how a command finds its stream, how a reaction turns an event into a new command, how a query reads events) and leaves only the domain code to write.
+
+Here's a small example. It sends each command to a pure domain function through the [ApplicationService](/docs/layer-1/application-service/), and lets a reaction to an event send a new command through a [subscription](/docs/layer-1/subscribing-to-domain-events/):
+
+```kotlin
+class BoundedContext<C : Any, E : Any>(
+    private val applicationService: ApplicationService<E>,
+    private val subscriptions: Subscriptions<E>,
+    private val streamIdOf: (C) -> String,
+    private val decide: (List<E>, C) -> List<E>,
+) {
+    fun dispatch(command: C) {
+        applicationService.execute(streamIdOf(command)) { history -> decide(history, command) }
+    }
+
+    fun <E1 : E> react(reactionId: String, eventType: Class<E1>, reaction: (E1) -> C?) {
+        subscriptions.subscribe(reactionId, eventType) { event -> reaction(event)?.let(::dispatch) }
+    }
+}
+```
+
+Your team then writes only the domain code:
+
+```kotlin
+val game = BoundedContext(applicationService, subscriptions, GameCommand::gameId, ::decide)
+game.react("start-next-round", RoundEnded::class.java) { event -> StartRound(event.gameId) }
+game.dispatch(StartGame(gameId))
+```
+
+A real framework has more to decide, for example what happens when a reaction fails, which [subscription model](/docs/layer-0/subscriptions/) makes reactions survive a restart, and how commands are [retried](/docs/stores/retry/). Those are the choices that should follow your business, which is why Occurrent leaves them to you.
+
+The `occurrent-hederlig` module ([source](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/library/hederlig)) is an early experiment with this idea. It defines a module as a set of features, each with commands, subscriptions and queries, and runs it on the `ApplicationService`, `Subscriptions` and `DomainEventQueries`. It is unfinished and not ready for use.

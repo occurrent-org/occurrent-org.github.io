@@ -1,0 +1,203 @@
+---
+title: "Saga correlation and filters"
+description: "Correlation, event types, filters, metadata and effects in a saga."
+sidebar:
+  order: 17
+layer: "1"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+A saga is not one process, it is many instances of the same process, one per order or game or auction. Correlation is how an incoming event finds its instance. For every event the saga is handed, it derives a `String` id, and that id is the key the state store loads and saves under. Two events that produce the same id are the same running saga. The id is a plain `String` so it survives being persisted and read back unchanged, and it is yours to choose, usually the domain id already on the event.
+
+Two declarations do the correlating, and both are available on the core and the flow DSL. A third names the starting event:
+
+`startsOn` names the event type that creates an instance and optionally what to issue when it does, and correlation for that type comes from `correlate` or `correlateAll` like any other type.
+
+`correlate<T>` registers one event type's correlation. Use it when the types key differently, say an event that carries `paymentId` in a saga otherwise keyed by `orderId`, and when you want adding an event type to a step to be a decision you have to make rather than one the fallback makes for you.
+
+`correlateAll` registers a fallback used for every type that has no `correlate` correlation of its own. It fits a sealed event hierarchy exposing one shared id, `correlateAll { it.orderId }`, which is the common case and is what the examples above use. It can be set only once.
+
+The builder checks the rules rather than trusting you to follow them. Every event type the saga handles has to be correlated, by its own `correlate` or by the fallback, and `build()` throws naming the type if one is not. Registering the same type through `correlate` twice throws instead of silently overwriting the first, and so does setting `correlateAll` twice.
+
+Two things happen at run time rather than at build time, and both are deliberately quiet. A correlator that returns `null` means "this event belongs to no instance", and the event is skipped. So is an event that correlates to an instance that does not exist yet, unless its type is a start type, which is what stops a mid-process event from starting a saga at the wrong point.
+
+## Declared Event Types<HeadingBadge text="Added in 0.33.0" />
+
+A saga's event types are also its subscription filter. Occurrent takes the types you registered through `startsOn`, `evolve`, `react`, a step's `on(...)` and an `event(...)` condition, asks the `CloudEventTypeMapper` for the CloudEvent type of each one, and subscribes on those.
+
+The types are expanded and checked as described in [Deriving the Event Filter](/docs/layer-1/deriving-the-event-filter/). A saga declaring a sealed `OrderEvent` receives the concrete events stored under it.
+
+If a saga declares a type listed as refused in [Deriving the Event Filter](/docs/layer-1/deriving-the-event-filter/), `build()` throws `IllegalArgumentException` naming the type.
+
+To fix a refused declaration, [seal the hierarchy](/docs/layer-1/deriving-the-event-filter/#seal-the-hierarchy) or [declare the concrete types](/docs/layer-1/deriving-the-event-filter/#declare-the-concrete-event-types). On a saga, declaring the concrete types means one `react` or one `on(...)` per type. Handler lookup falls back through superclasses and interfaces, so you can register one shared method under each concrete type rather than writing a handler per type.
+
+Sealing the hierarchy and declaring the concrete types both keep events arriving under a `CloudEventTypeMapper` of your own that maps a whole hierarchy onto one CloudEvent type string, since the saga then subscribes on that string. If a class you need to handle is neither final nor sealed and you can't change it, use `replacementFilter(..)` instead, as [Setting an Explicit Filter](/docs/layer-1/saga-correlation/#setting-an-explicit-filter) shows.
+
+## Setting an Explicit Filter<HeadingBadge text="Added in 0.33.0" />
+
+A saga can also select on more than its declared event types, or subscribe on something a derived selector cannot express at all. Two builder members cover the two cases: `narrowingFilter(Filter)` adds a condition on top of the derived selector, `replacementFilter(Filter)` replaces it outright. `FlowSaga.Builder` has both, both Kotlin `saga { }` blocks expose them under the same names, and the lower-level `Saga.create(...)` factory takes a replacement only, as its trailing argument.
+
+`narrowingFilter(Filter)` is combined (ANDed) with the selector `eventTypes()` derives, so the saga keeps asking for its own declared types and also requires your condition, on subject, source, data or time:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga.<OrderEvent, OrderState, OrderCommand>builder()
+            .correlateAll(OrderEvent::orderId)
+            .startsOn(OrderEvent.class)
+            .react(OrderEvent.class, (state, event) -> ...)
+            .narrowingFilter(Filter.subject("order-1"))
+            .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    saga<OrderEvent, OrderCommand> {
+        correlateAll { it.orderId }
+        startsOn<OrderEvent>()
+        react<OrderEvent> { state, event -> ... }
+        narrowingFilter(Filter.subject("order-1"))
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Because a selector is still derived, the hierarchy check from [Declared Event Types](/docs/layer-1/saga-correlation/#declared-event-types) still runs under a narrowing.
+
+`replacementFilter(Filter)` replaces the derived selector, so the saga subscribes on exactly what you set, whatever the hierarchy below the declared types looks like. Use it when a `CloudEventTypeMapper` of your own maps a whole hierarchy onto one CloudEvent type string, as [Set an explicit filter](/docs/layer-1/deriving-the-event-filter/#set-an-explicit-filter) explains:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga.<OrderEvent, OrderState, OrderCommand>builder()
+            .correlateAll(OrderEvent::orderId)
+            .startsOn(OrderEvent.class)
+            .react(OrderEvent.class, (state, event) -> ...)
+            .replacementFilter(Filter.type("order-event"))
+            .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    saga<OrderEvent, OrderCommand> {
+        correlateAll { it.orderId }
+        startsOn<OrderEvent>()
+        react<OrderEvent> { state, event -> ... }
+        replacementFilter(Filter.type("order-event"))
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Setting a replacement switches off the hierarchy check for every event type the saga declares, not only for one whose concrete types you could not enumerate. An array or a primitive declared type is still refused. The check belongs to `Saga.Builder`, `FlowSaga.Builder` and `Saga.create(...)` alone, so a saga you implement directly by hand, rather than through a builder or the factory, never runs it at any `eventTypes()`, and a declared type whose concrete types cannot all be found then leaves it subscribing on a filter that misses events its own handlers would take. Declare the concrete types there, the same thing a builder would otherwise have insisted on. `Saga.create(...)` takes a replacement but not a narrowing, since the saga it returns is an anonymous implementation with nothing left to set afterwards. Implement `Saga` yourself for a narrowing, the same route the factory's own javadoc already sends you down for `onStart` and `isTerminal`.
+
+Neither member checks the condition you give it. Make sure it admits:
+
+* the saga's start events, because a condition that excludes them means no instance is ever created
+* the events that move an instance on, because an instance whose later events are excluded never reaches `isTerminal` and keeps its timers running
+
+Two more things apply to a `replacementFilter`:
+
+* Every CloudEvent it admits is converted to a domain event before the saga sees it. Keep it inside what your `CloudEventConverter` can convert, since an event the converter can't convert fails that delivery instead of being skipped.
+* A flow saga appends every correlated event it receives to the instance's retained history before it looks at which branch handles it. So a replacement wider than the flow's own types grows that history.
+
+An event of a type the flow doesn't declare never counts toward a `stepWindow` cap. [Delivery Contract](/docs/layer-1/saga-delivery/) explains when the cap drops such an event, and why a step that only receives such events has no limit from `stepWindow`.
+
+A saga that declares no event types and sets no replacement gets a selector that matches every event. A narrowing on such a saga then becomes the whole selector, so it has to stay inside what your `CloudEventConverter` can convert, the same as a `replacementFilter`.
+
+On a flow saga, either member can also change what a guard sees. A guard's `onlyIf` reads `ReceivedEvents`, so a selector that excludes an event type changes what `received.none(Rejected.class)` or `received.any(Rejected.class)` answers, and a branch can fire that would not have fired otherwise. This is not a narrowing-only risk. A narrowing can only remove matches, so that is the only direction it can move the answer. A replacement can be wider or narrower than the declared types, and does the same thing whenever it is narrower.
+
+## Event Metadata
+
+`evolve`, `react`, and `onStart` can also see the delivering event's metadata, its stream id and version, the global position, and any CloudEvent extension, through metadata-carrying overloads. This is the same [`EventMetadata`](/docs/spring-boot/subscription-annotations/#event-metadata) a plain subscription already hands a subscriber. A flow step's `on(...)` branch gets the same for its triggering event:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    .react(PaymentReserved.class, (state, metadata, e) -> {
+        Long position = metadata.getPosition();
+        String streamId = metadata.getStreamId();
+        // Do stuff
+        return List.of(
+                SagaEffect.issue(new ShipOrder(e.orderId())),
+                SagaEffect.cancelTimeout("payment"));
+    })
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    react<PaymentReserved> { _, metadata, e ->
+        val position = metadata.position
+        val streamId = metadata.streamId
+        // Do stuff
+        issue(ShipOrder(e.orderId))
+        cancelTimeout("payment")
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+A flow branch takes the metadata first, the same order the subscription DSL uses:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    .on(PaymentReserved.class, Continuation.end(),
+            (metadata, payment) -> List.of(new ShipOrder(payment.orderId())))
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    on<PaymentReserved>(then = end) { metadata, payment ->
+        issue(ShipOrder(payment.orderId))
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Every event-only `evolve`, `react`, `onStart`, and flow `on(...)` keeps working unchanged, plain code never has to opt in to metadata. A saga does not persist metadata itself, only the events it applies to its own state, so if a reaction needs to remember something from the metadata beyond the current step, keep that slice in the saga's own state rather than relying on it being there later.
+
+## Effects Are Data
+
+A reaction never performs an effect. It returns a list of `SagaEffect` values and the runner interprets them. There are four:
+
+* `issue(command)` hands a command to the dispatcher. It carries no routing information, because a command already carries the id of whatever it targets.
+* `startTimeout(name, Duration)` arms (or re-arms) a named timer to fire after a relative duration.
+* `startTimeoutAt(name, Instant)` arms a timer for an absolute, data-derived instant.
+* `cancelTimeout(name)` cancels a running timer, a no-op if none is running.
+
+Timers use `Duration` and `Instant`, never the [deadline module](/docs/stores/deadlines/). Keeping effects as plain data is what makes a reaction pure. A relative `Duration` is resolved against the clock by the runner when it stores the timer, not inside `react`, so the same reaction returns the same effect values every time and you can assert on them with plain equality.
+
+Here are three of them in play. Reserving payment issues a command and arms the payment timer, and reserving it successfully issues another command and disarms that same timer:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    .react(OrderPlaced.class, (state, e) -> List.of(
+            SagaEffect.issue(new ReservePayment(e.orderId(), e.amount())),
+            SagaEffect.startTimeout("payment", Duration.ofMinutes(30))))
+    .react(PaymentReserved.class, (state, e) -> List.of(
+            SagaEffect.issue(new ShipOrder(e.orderId())),
+            SagaEffect.cancelTimeout("payment")))
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    react<OrderPlaced> { _, e ->
+        issue(ReservePayment(e.orderId, e.amount))
+        startTimeout("payment", Duration.ofMinutes(30))
+    }
+    react<PaymentReserved> { _, e ->
+        issue(ShipOrder(e.orderId))
+        cancelTimeout("payment")
+    }
+    ```
+  </TabItem>
+</Tabs>

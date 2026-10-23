@@ -1,0 +1,124 @@
+---
+title: "Configuration properties"
+description: "Every occurrent.* property the starters read, with its default."
+sidebar:
+  order: 9
+layer: "spring-boot"
+stack: [spring-boot]
+---
+
+This page lists every `occurrent.*` property the starters read. Your IDE can also code-complete them, and the core ones are defined in [`OccurrentProperties`](https://github.com/johanhaleby/occurrent/blob/occurrent-%OCCURRENT_VERSION%/framework/spring-boot-autoconfigure/common/src/main/java/org/occurrent/springboot/common/OccurrentProperties.java). A property marked **blocking only** is read by the blocking starter and ignored by the [reactive starter](/docs/spring-boot/starter/#reactive-spring-boot-starter).
+
+## Event store
+
+| Property | Default | What it does |
+| :- | :- | :- |
+| `occurrent.event-store.enabled` | `true` | Whether the starter creates the `EventStore` bean. `false` also turns off the `ApplicationService` and `DomainEventQueries` beans. |
+| `occurrent.event-store.capabilities` | `[STREAM]` | Which capabilities the event store has, `STREAM`, `DCB` or both. Adding `DCB` turns on the [Dynamic Consistency Boundary](/docs/layer-0/dcb-event-store/#enabling-dcb) beans. The set can't be empty. |
+| `occurrent.event-store.mongodb.collection` | `events` | The MongoDB collection events are stored in. |
+| `occurrent.event-store.mongodb.time-representation` | `DATE` | How time is stored in the CloudEvents, `DATE` or `RFC_3339_STRING`. |
+| `occurrent.event-store.stream.position` | on | Whether events written to a stream carry a global [`position`](/docs/layer-0/cloudevents/#occurrent-cloudevent-extensions). Unset means on, unless the store finds an existing collection without positions and turns it off. `true` keeps it on even then, and `false` turns it off for a store without `DCB`. A store with `DCB` always writes it. |
+
+## Application service and CloudEvent conversion
+
+| Property | Default | What it does |
+| :- | :- | :- |
+| `occurrent.application-service.enabled` | `true` | Whether the starter creates the [`ApplicationService`](/docs/layer-1/application-service/) beans. A missing key counts as `true`. |
+| `occurrent.application-service.enable-default-retry-strategy` | `true` | Whether the application service retries when a write condition is not fulfilled. It backs off exponentially from 100 ms up to 2 s, and rethrows the original exception after 5 retries. |
+| `occurrent.cloud-event-converter.cloud-event-source` | none | The CloudEvent `source` the [converter](/docs/layer-1/cloudevent-conversion/) writes, a URN such as `urn:mycompany:mygame:game`. Think of it as the stream type or category. |
+| `occurrent.cloud-event-converter.time-precision` | `MILLIS` with `DATE` | A `ChronoUnit` the converter truncates the event time to. When it's unset and the time representation is `DATE`, which can't store more than milliseconds, the converter truncates to `MILLIS`. Otherwise it leaves the time alone. See [CloudEvent conversion](/docs/spring-boot/what-the-starter-configures/#cloudevent-conversion). |
+
+## Subscriptions
+
+| Property | Default | What it does |
+| :- | :- | :- |
+| `occurrent.subscription.mode` | `AUTO` | How much of the subscription machinery the starter creates. `AUTO` creates subscriptions and starts them, `MANUAL` creates them and lets you [start them yourself](/docs/spring-boot/what-the-starter-configures/#manual-start), and `DISABLED` creates none. |
+| `occurrent.subscription.mongodb.collection` | `subscriptions` | The MongoDB collection checkpoints are stored in. |
+| `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` | `true` | Whether a subscription restarts from the current time when the MongoDB oplog no longer has the history it needs to resume. It is not completely safe, see [Restarting when the oplog is lost](/docs/spring-boot/what-the-starter-configures/#restarting-when-the-oplog-is-lost). |
+| `occurrent.subscription.start-when-no-start-position-can-be-recorded` | `false` | Whether a durable subscription with no checkpoint starts anyway when the subscription model can't tell it where the event store is right now, for example on a shared MongoDB Atlas cluster. Without it, the subscription is refused when you create it. See [Starting when no start position can be recorded](/docs/spring-boot/what-the-starter-configures/#starting-when-no-start-position-can-be-recorded). |
+| `occurrent.subscription.competing-consumer.fence-checkpoints` | `true` | **Blocking only.** Whether a checkpoint write carries the competing-consumer lease version, so that a node that has lost its lease can't move the checkpoint backward. It needs a `CheckpointStorage` that evaluates write conditions. See [Checkpoint fencing](/docs/spring-boot/what-the-starter-configures/#checkpoint-fencing). |
+| `occurrent.subscription.catchup-then-live.dedup-cache-size` | `10000` | How many recently delivered event ids a [`@Projection(source = PUSH)`](/docs/spring-boot/projection-annotation/#fed-by-a-push-source) remembers, to remove the duplicates where the catch-up and the live feed overlap. |
+| `occurrent.subscription.catchup-then-live.max-buffered-events` | `100000` | How many events from the push feed may wait to be delivered before the projection fails. It is a ceiling, not a throttle. |
+
+## Projections
+
+These configure the store that records applied appends for [`@Projection(recordAppliedAppends = true)`](/docs/spring-boot/projection-annotation/#read-your-writes-for-an-asynchronous-projection). That page has the [details](/docs/spring-boot/projection-annotation/#properties).
+
+| Property | Default | What it does |
+| :- | :- | :- |
+| `occurrent.projection.applied-append.collection` | `appliedAppends` | The MongoDB collection recorded appends are stored in. |
+| `occurrent.projection.applied-append.retention` | `7d` | How long a recorded append is kept before a MongoDB TTL index deletes it. |
+| `occurrent.projection.applied-append.max-attempts` | `10` | How many times the store calls MongoDB for one read or write before it fails, at most 1000. |
+| `occurrent.projection.applied-append.wait-backoff.initial` | `25ms` | How long `waitUntilApplied` waits before it checks again the first time. |
+| `occurrent.projection.applied-append.wait-backoff.max` | `250ms` | The longest wait between two checks. |
+| `occurrent.projection.applied-append.wait-backoff.multiplier` | `2.0` | What the wait is multiplied by after each check that found the append not yet applied. |
+| `occurrent.projection.applied-append.replay-poll.initial` | `200ms` | How often the starter checks a projection that just registered, or that still has a clear or a catch-up pending. |
+| `occurrent.projection.applied-append.replay-poll.max` | `5s` | The longest interval between two checks. |
+| `occurrent.projection.applied-append.replay-poll.multiplier` | `2.0` | What the interval is multiplied by after each check that found nothing to do. |
+
+## Sagas
+
+All of these are **blocking only**.
+
+| Property | Default | What it does |
+| :- | :- | :- |
+| `occurrent.saga.timer-poll-interval` | `15s` | How often a saga's timer poller looks for timeouts that are due. See [Running across multiple instances](/docs/layer-1/saga-delivery/#running-across-multiple-instances). |
+| `occurrent.saga.competing-consumer.enabled` | `true` | Whether only one instance of the application polls for due timers, using the shared competing-consumer lease. See [Several instances of a `@Saga`](/docs/spring-boot/saga-annotation/#several-instances-of-a-saga). |
+| `occurrent.saga.quarantine-after` | none | How long one saga instance may keep failing before it can be quarantined. Unset means quarantine is off. Zero or a negative duration stops the application from starting when it has a `@Saga`. See [Observing `@Saga` instances](/docs/spring-boot/saga-annotation/#observing-saga-instances). |
+
+## Kafka broker starter
+
+`occurrent-broker-kafka-spring-boot-starter` reads these. See [Brokers with Spring Boot](/docs/spring-boot/brokers/).
+
+| Property | Default | What it does |
+| :- | :- | :- |
+| `occurrent.broker.kafka.bootstrap-servers` | none | Kafka's `bootstrap.servers`, as a comma-separated string or a list. The sink and source factories are only created when it is set. |
+| `occurrent.broker.kafka.topic` | none | The topic the auto-configured `KafkaSharedTopicDestinationResolver` publishes to and subscribes to. You don't need it when you declare your own `DestinationResolver<KafkaDestination>`. |
+| `occurrent.broker.kafka.producer.additional-properties.<name>` | none | Any other Kafka producer setting, TLS and SASL included. The serializers are always overwritten, `acks` defaults to `all`, and any `acks` other than `all` or `-1` is refused. |
+| `occurrent.broker.kafka.consumer.additional-properties.<name>` | none | Any other Kafka consumer setting. `enable.auto.commit` defaults to `false` and any other value is refused. A `group.id` set here is ignored. |
+| `occurrent.broker.kafka.sink.acknowledgement-timeout` | `5s` | How long the sink waits for Kafka to acknowledge a write. |
+| `occurrent.broker.kafka.sink.retry.initial` | `100ms` | The first delay when the sink retries a write. |
+| `occurrent.broker.kafka.sink.retry.max` | `2s` | The longest delay between two retries. |
+| `occurrent.broker.kafka.sink.retry.multiplier` | `2.0` | What the delay is multiplied by after each retry. |
+| `occurrent.broker.kafka.source.poll-timeout` | `1s` | How long one poll of a source waits for records. |
+| `occurrent.broker.kafka.source.close-timeout` | `30s` | How long closing a source may take. |
+| `occurrent.broker.kafka.source.on-delivery-failure` | `REDELIVER` | The `DeliveryFailurePolicy` of a source when a handler fails, `REDELIVER` or `PARK`. |
+| `occurrent.broker.kafka.source.parking-destination.topic` | none | The topic `PARK` publishes a failed record to. It's only needed with `PARK`. |
+| `occurrent.broker.kafka.source.commit-retry.initial` | `100ms` | The first delay when a source retries an offset commit. |
+| `occurrent.broker.kafka.source.commit-retry.max` | `2s` | The longest delay between two retries. |
+| `occurrent.broker.kafka.source.commit-retry.multiplier` | `2.0` | What the delay is multiplied by after each retry. |
+
+## RabbitMQ broker starter
+
+`occurrent-broker-rabbitmq-spring-boot-starter` reads these. See [Brokers with Spring Boot](/docs/spring-boot/brokers/).
+
+| Property | Default | What it does |
+| :- | :- | :- |
+| `occurrent.broker.rabbitmq.exchange` | none | The exchange the auto-configured `RabbitMqTopicExchangeDestinationResolver` publishes to and binds against. You don't need it when you declare your own `DestinationResolver<RabbitMqDestination>`. |
+| `occurrent.broker.rabbitmq.sink.acknowledgement-timeout` | `5s` | How long the sink waits for RabbitMQ to confirm a publish. |
+| `occurrent.broker.rabbitmq.sink.retry.initial` | `100ms` | The first delay when the sink retries a publish. |
+| `occurrent.broker.rabbitmq.sink.retry.max` | `2s` | The longest delay between two retries. |
+| `occurrent.broker.rabbitmq.sink.retry.multiplier` | `2.0` | What the delay is multiplied by after each retry. |
+| `occurrent.broker.rabbitmq.source.poll-interval` | `1s` | How often a source polls its queue. |
+| `occurrent.broker.rabbitmq.source.prefetch-count` | `1` | How many unacknowledged messages RabbitMQ sends a source at a time. |
+| `occurrent.broker.rabbitmq.source.close-timeout` | `30s` | How long closing a source may take. |
+| `occurrent.broker.rabbitmq.source.declare-topology` | `true` | Whether a source declares its queue and bindings. Set it to `false` when your platform team owns them. |
+| `occurrent.broker.rabbitmq.source.on-delivery-failure` | `REDELIVER` | The `DeliveryFailurePolicy` of a source when a handler fails, `REDELIVER` or `PARK`. |
+| `occurrent.broker.rabbitmq.source.parking-destination.exchange` | none | The exchange `PARK` publishes a failed message to. It's only needed with `PARK`, together with the routing key. |
+| `occurrent.broker.rabbitmq.source.parking-destination.routing-key` | none | The routing key `PARK` publishes a failed message with. |
+| `occurrent.broker.rabbitmq.source.retry.initial` | `100ms` | The first delay when building a source retries. |
+| `occurrent.broker.rabbitmq.source.retry.max` | `2s` | The longest delay between two retries. |
+| `occurrent.broker.rabbitmq.source.retry.multiplier` | `2.0` | What the delay is multiplied by after each retry. |
+| `occurrent.broker.rabbitmq.source.retry.max-attempts` | `10` | How many times building a source tries before it fails. |
+
+## Deprecated properties
+
+These still work, and will be removed two releases after 0.34.0. You can set a deprecated key and its replacement together as long as they have the same value. The [Spring Boot starter](/docs/spring-boot/starter/) page says how to migrate.
+
+| Deprecated property | Use instead |
+| :- | :- |
+| `occurrent.event-store.collection` | `occurrent.event-store.mongodb.collection` |
+| `occurrent.event-store.time-representation` | `occurrent.event-store.mongodb.time-representation` |
+| `occurrent.subscription.collection` | `occurrent.subscription.mongodb.collection` |
+| `occurrent.subscription.restart-on-change-stream-history-lost` | `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` |
+| `occurrent.subscription.enabled` | `occurrent.subscription.mode`, where `false` is `DISABLED` and `true` is `AUTO` |

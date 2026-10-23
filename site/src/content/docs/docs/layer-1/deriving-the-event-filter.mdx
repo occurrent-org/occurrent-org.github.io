@@ -1,0 +1,158 @@
+---
+title: "Deriving the event filter"
+description: "How Occurrent works out which events a query or subscription reads."
+sidebar:
+  order: 10
+layer: "1"
+addedIn: "0.34.0"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+A projection, a snapshot view, a saga, a subscription and a query all say which event types they handle, and Occurrent turns that list into the filter that selects events for them. An application service's `ExecuteFilter` and a `DcbCriteriaBuilder` criterion name event types the same way. There is no separate list of subscribed types to keep in sync with the handlers.
+
+A sealed type is expanded into every concrete type it permits, all the way down, so it selects more than the type you named. A projection with one handler on a sealed `OrderEvent` asks for `OrderEvent`, `OrderPlaced` and `PaymentReserved`, and receives the concrete events stored under that hierarchy:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    public sealed interface OrderEvent permits OrderPlaced, PaymentReserved {
+        String orderId();
+    }
+    public record OrderPlaced(String orderId) implements OrderEvent { }
+    public record PaymentReserved(String orderId) implements OrderEvent { }
+
+    // One handler, and both OrderPlaced and PaymentReserved arrive
+    Projection<Integer, OrderEvent, String> orderCount =
+            Projection.<Integer, OrderEvent, String>builder(0)
+                    .id(OrderEvent::orderId)
+                    .on(OrderEvent.class, (count, event) -> count + 1)
+                    .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    sealed interface OrderEvent {
+        val orderId: String
+    }
+    data class OrderPlaced(override val orderId: String) : OrderEvent
+    data class PaymentReserved(override val orderId: String) : OrderEvent
+
+    // One handler, and both OrderPlaced and PaymentReserved arrive
+    val orderCount = projection<Int, OrderEvent, String>(initialState = 0) {
+        id { event -> event.orderId }
+        on<OrderEvent> { count, _ -> count + 1 }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+When Occurrent can't find the concrete types, it refuses the declaration with an `IllegalArgumentException` that names the type. That happens for these declared types:
+
+| Declared type | Java | Kotlin |
+| - | - | - |
+| An interface that is not sealed | `interface OrderEvent` | `interface OrderEvent` |
+| An abstract class that is not sealed | `abstract class OrderEvent` | `abstract class OrderEvent` |
+| A sealed hierarchy reopened below the declared type | `non-sealed class Payment implements OrderEvent` | `open class Payment : OrderEvent` or `abstract class Payment : OrderEvent` |
+| A concrete class that is neither final nor sealed | `class OrderPlaced` | `open class OrderPlaced` |
+| An array type | `OrderEvent[]` | `Array<OrderEvent>` |
+| A primitive class literal | `int.class` | `Int::class` |
+
+A final class is accepted, and so is a sealed type whose subtypes are all sealed or final, all the way down. Java records and Kotlin data classes are final already, so an ordinary sealed hierarchy of records needs nothing from you.
+
+A `sealed class` you can instantiate is accepted too. Its filter names the class itself as well as every type it permits.
+
+Enums are accepted as well, including ones whose constants have bodies, and so is a sealed interface that permits an enum. A constant with a body is stored under its own class, `PaymentEvent$Reserved` for example, while a constant without one is stored under the enum class itself. Decide whether a constant has a body before you have events in the store.
+
+A refusal is thrown when the filter is derived, and each place derives it at a different moment. None of them waits until an event is delivered.
+
+| Where you declared the types | Where a refusal is thrown |
+| - | - |
+| A `Projection` started by `ProjectionRunner.project(..)` | that call |
+| A `Projection` given to `DomainEventFeed.register(..)` or `CatchupProjectionFeed.create(..)` | that call |
+| A `Projection` read on demand with `Projections.project(projection, queries)` | that read |
+| A `@Projection` or `@Snapshot` factory method | Spring Boot startup, while the bean is processed |
+| `@Subscription`, `@StreamSubscription`, `@SynchronousSubscription` and `@DcbSubscription` | Spring Boot startup |
+| The [subscription DSL](/docs/layer-1/subscribing-to-domain-events/)'s `subscribe(..)`, and `filterFromEventTypes` under it | that call |
+| `DomainEventQueries.query(Class..)` and `query(Collection)` | each query |
+| A saga built with `Saga.Builder` or `FlowSaga.Builder` | `build()` |
+| A saga made with the `Saga.create(..)` factory | that call |
+| `ExecuteFilter.type(..)` or `includeTypes(..)`, and Kotlin's `ExecuteFilters` equivalents | each application service `execute(..)` call given that filter |
+| `DcbCriteriaBuilder.type(..)` or `types(..)` | that call |
+
+`ExecuteFilter.excludeTypes(..)` excludes more instead of refusing, because excluding a supertype has to exclude everything under it. It excludes the declared type and every concrete type it can find below it by following `permits` clauses. A type it can't reach that way stays in the read.
+
+`excludeTypes(..)` refuses an array or a primitive type. It also refuses an interface or a non-sealed abstract class with nothing concrete found below it, since no event is stored under that type's own name with the mappers Occurrent ships.
+
+`excludeTypes(..)` doesn't refuse a sealed type that permits an interface or abstract class that is not sealed. With `ReflectionCloudEventTypeMapper` it excludes nothing below that interface or abstract class, so seal the hierarchy or exclude the concrete types.
+
+A `DcbCriteriaBuilder` seeded with a boundary that excludes types can fail in one more way. A sealed type passed to `type(..)` or `types(..)` expands to its concrete types, and when one of them is a type the boundary excludes, the call throws `IllegalArgumentException` saying types and excluded types cannot overlap.
+
+A criterion built from a sealed type also matches every concrete type it permits when you use it in `DcbAppendCondition.failIfEventsMatch(..)`, so the append fails on a concurrent write of any of them.
+
+There are three ways to fix a refused declaration, and which one fits depends on who owns the events.
+
+## Seal the hierarchy
+
+Prefer this when you own the events, because the declaration then keeps working as you add event types under it:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Before, refused, since Payment reopens the hierarchy and nothing below it can be found
+    public sealed interface OrderEvent permits Payment { }
+    public non-sealed class Payment implements OrderEvent { }
+
+    // After
+    public sealed interface OrderEvent permits Payment { }
+    public sealed class Payment implements OrderEvent permits PaymentReserved { }
+    public final class PaymentReserved extends Payment { }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    sealed interface OrderEvent
+    sealed class Payment : OrderEvent          // was open class or abstract class
+    data class PaymentReserved(val orderId: String) : Payment()
+    ```
+  </TabItem>
+</Tabs>
+
+For a concrete class that is neither final nor sealed, marking it `final` is the smaller fix when nothing extends it. In Kotlin that means dropping `open`, since a Kotlin class is final unless it says otherwise.
+
+## Declare the concrete event types
+
+Use this when the hierarchy is not yours to seal, or is deliberately open. List the concrete types where you would have named the supertype:
+
+* One handler per concrete type on a `Projection`, a `SnapshotView` or a saga, in place of a single handler on the supertype.
+* `filterFromEventTypes(converter, arrayOf(OrderPlaced::class, PaymentReserved::class))` on the [subscription DSL](/docs/layer-1/subscribing-to-domain-events/).
+* `domainEventQueries.query(OrderPlaced.class, PaymentReserved.class)` on the [query DSL](/docs/layer-1/querying-domain-events/).
+* The concrete types in the `eventTypes` attribute of `@Subscription` and the other subscription annotations.
+* `ExecuteFilter.includeTypes(OrderPlaced.class, PaymentReserved.class)` on an [application service](/docs/layer-1/application-service/#stream-filtering-and-execute-options).
+* `types(OrderPlaced.class, PaymentReserved.class)` on a `DcbCriteriaBuilder`.
+
+## Set an explicit filter
+
+An explicit filter is used instead of deriving one, so nothing is expanded for that declaration and nothing is refused. Where you set it depends on where you declared the types:
+
+* `Projection`'s builder and `SnapshotView`'s builder both take a `filter(Filter)`.
+* A saga takes [`replacementFilter(Filter)`](/docs/layer-1/saga-correlation/#setting-an-explicit-filter). Its `narrowingFilter(Filter)` doesn't work for this, because a filter is still derived underneath it.
+* `DomainEventQueries` has no override on its `Class` and `Collection` overloads, so call `query(Filter, ..)` directly.
+* The subscription DSL has none on `filterFromEventTypes`, so build the `Filter` yourself and pass it to the `subscribe(..)` overload that takes a `StreamSubscriptionFilter` or an `AgnosticSubscriptionFilter`.
+* `@Subscription` and the other subscription annotations have none, so declare the concrete types there instead.
+* An application service takes `ExecuteFilter.from(StreamReadFilter)` in place of `type(..)` or `includeTypes(..)`.
+* `DcbCriteriaBuilder` has none, so build the criterion from CloudEvent type strings with `DcbCriteria.type(String)` or `DcbCriteria.types(String, ..)`.
+
+If you wrote a `CloudEventTypeMapper` that maps a whole hierarchy onto one CloudEvent type string, use an explicit filter. Under such a mapper:
+
+* A declaration the table above refuses is still refused, because the check reads the class hierarchy and never asks the mapper.
+* A concrete class that is neither final nor sealed is one of the refused declarations, so if you can't change such a class, set an explicit filter.
+* Declaring the concrete types still selects their events. The filter it derives matches the whole hierarchy rather than only the types you listed, because every one of them maps to that same string.
+
+## An empty list of types selects nothing on a query
+
+`DomainEventQueries.query(Collection)` and its sibling overloads return no events for a `null` or empty collection.
+
+A projection or a `SnapshotView` with no handlers, and `filterFromEventTypes` given no types, do the opposite and match every event.

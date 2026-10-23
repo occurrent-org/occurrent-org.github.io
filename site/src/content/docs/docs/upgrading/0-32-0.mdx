@@ -1,0 +1,14 @@
+---
+title: "Upgrading to 0.32.0"
+description: "What changes in 0.32.0."
+sidebar:
+  order: 3
+---
+
+The `org.occurrent.UpgradeToOccurrent_0_32` recipe rewrites the renames below for you. Run it before making any of the changes by hand.
+
+A few behavior changes affect already-running code, with no compiler error to point at them. Starting a subscription model that is already started is now accepted everywhere, where `CompetingConsumerSubscriptionModel` used to throw. A catch-up failure on the blocking push model's replay now surfaces from the handle that started it instead of from `subscribe(...)`. A synchronous subscription keeps handling an event even when another subscription's handler throws on the same dispatch, instead of the first exception ending delivery for every subscription. A push subscription model or `DomainEventFeed` now refuses a second projection or saga registered against it, because sharing one broker acknowledgement between two consumers let one failing consumer hold up the other. With more than one delivering thread, a live push handler can be invoked concurrently and has to tolerate that, though a single-threaded caller sees no change. A saga now refuses an event it cannot recognize as a redelivery of, and `@Saga` defaults to a background startup so a replaying saga no longer blocks application startup.
+
+A few types and packages also moved. The reactor `SubscriptionModel`, the interface whose `subscribe` returns a `Flux<CloudEvent>`, is renamed to `FluxSubscriptionModel`, freeing `SubscriptionModel` to mean the same lifecycle-managed subscription on both stacks. `NativeMongoLeaseCompetingConsumerStrategy` moved out of the Spring package it never belonged in and into the native-driver one. Several refusals that used to throw a general `IllegalArgumentException` or `IllegalStateException` now throw a dedicated type instead, such as `DuplicateSubscriptionIdException` or `SagaRedeliveryDetectionException`, though catching the old general types still compiles. MongoDB's `RFC_3339_STRING` time representation now writes one canonical shape so events from different writers compare correctly with `Filter.time(..)`. And `occurrent-command-composition` no longer leaks the in-memory event store onto your compile classpath, a side effect of a missing test scope on one of its dependencies.
+
+See the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) for the full details and the steps the recipe cannot make for you.

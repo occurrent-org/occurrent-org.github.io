@@ -1,0 +1,160 @@
+---
+title: "Getting started with Spring Boot"
+description: "Let the Spring Boot starter wire the event store, subscriptions and converter for you."
+sidebar:
+  order: 4
+stack: [spring-boot]
+modules: [occurrent-mongodb-spring-boot-starter]
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+import Dependency from "../../../../components/Dependency.astro";
+
+:::caution
+Occurrent %OCCURRENT_VERSION% requires **Java 21** or later, and the starter requires Spring Boot 4.
+:::
+
+With Spring Boot and MongoDB, the [Spring Boot starter](/docs/spring-boot/starter/) sets up what [Getting started](/docs/overview/getting-started/) wires by hand. It gives you `ApplicationService`, `Subscriptions` and `DomainEventQueries` beans to inject. Your domain model stays the same, a plain function from past events to new events.
+
+## 1. Add the starter
+
+<Dependency artifact="occurrent-mongodb-spring-boot-starter" />
+
+There's also a [reactive starter](/docs/spring-boot/starter/#reactive-spring-boot-starter) for Project Reactor.
+
+## 2. Turn it on
+
+Add `@EnableOccurrent` (from `org.occurrent.springboot.mongo.blocking`) next to `@SpringBootApplication`, and declare how your domain events are named in the event store:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @SpringBootApplication
+    @EnableOccurrent
+    public class Application {
+
+        public static void main(String[] args) {
+            SpringApplication.run(Application.class, args);
+        }
+
+        @Bean
+        public CloudEventTypeMapper<GameEvent> cloudEventTypeMapper() {
+            return ReflectionCloudEventTypeMapper.simple(GameEvent.class);
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @SpringBootApplication
+    @EnableOccurrent
+    class Application {
+
+        @Bean
+        fun cloudEventTypeMapper(): CloudEventTypeMapper<GameEvent> = ReflectionCloudEventTypeMapper.simple(GameEvent::class.java)
+    }
+
+    fun main(args: Array<String>) {
+        runApplication<Application>(*args)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The type ends up in every stored event, so decide on it before you go to production. Without your own mapper the starter uses the fully qualified class name. See [CloudEvent conversion](/docs/layer-1/cloudevent-conversion/) for the other choices.
+
+## 3. Configure it
+
+Point Spring Boot at MongoDB, and give the converter a CloudEvent source:
+
+```yaml
+spring:
+  mongodb:
+    uri: mongodb://localhost:27017/game
+occurrent:
+  cloud-event-converter:
+    cloud-event-source: urn:mycompany:mygame:game
+```
+
+Subscriptions read MongoDB change streams, so MongoDB has to run as a replica set. A single node replica set is fine for development. [Configuration properties](/docs/spring-boot/configuration-properties/) lists everything else you can set.
+
+## 4. Write events
+
+Inject the `ApplicationService` and call your domain functions through it. It loads the stream, runs your function and appends the new events under optimistic concurrency:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @RestController
+    public class GameController {
+        private final ApplicationService<GameEvent> applicationService;
+
+        public GameController(ApplicationService<GameEvent> applicationService) {
+            this.applicationService = applicationService;
+        }
+
+        @PostMapping("/games/{gameId}/guesses")
+        void guess(@PathVariable UUID gameId, @RequestParam String word) {
+            applicationService.execute(gameId, history -> Game.guess(history, word));
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @RestController
+    class GameController(private val applicationService: ApplicationService<GameEvent>) {
+
+        @PostMapping("/games/{gameId}/guesses")
+        fun guess(@PathVariable gameId: UUID, @RequestParam word: String) {
+            applicationService.execute(gameId) { history -> Game.guess(history, word) }
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+## 5. React to events
+
+Annotate a method with [`@Subscription`](/docs/spring-boot/subscription-annotations/) (from `org.occurrent.annotation`) to receive the events as they are written:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @Component
+    public class GuessLogger {
+
+        @Subscription(id = "logGuesses")
+        void log(GuessMade e) {
+            System.out.println("Someone guessed %s".formatted(e.word()));
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @Component
+    class GuessLogger {
+
+        @Subscription(id = "logGuesses")
+        fun log(e: GuessMade) {
+            println("Someone guessed ${e.word}")
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The subscription stores where it is, so it continues from there after a restart, and when you run several instances only one of them receives each event.
+
+## Where to go next
+
+* [`@Projection`](/docs/spring-boot/projection-annotation/) maintains a read model, and [`@Saga`](/docs/spring-boot/saga-annotation/) runs a process that reacts to events over time.
+* Inject `DomainEventQueries` to [query events](/docs/layer-1/querying-domain-events/) directly.
+* [What the starter configures](/docs/spring-boot/what-the-starter-configures/) says what the starter sets up for you, and the [Spring Boot starter](/docs/spring-boot/starter/) page says how to replace any of it with your own bean.
+* [Testing with Spring Boot](/docs/spring-boot/testing/) shows how to test the application.
+* The layer 1 pages, starting with the [ApplicationService](/docs/layer-1/application-service/), explain the parts the starter builds on.

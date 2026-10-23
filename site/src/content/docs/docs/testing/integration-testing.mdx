@@ -1,0 +1,205 @@
+---
+title: "Integration testing"
+description: "Test without a framework, and control the subscription life cycle in tests."
+sidebar:
+  order: 3
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+## Without a framework
+
+The in-memory event store and subscription model are a complete setup, and they need no Docker. Pass the subscription model into the event store so a write reaches subscribers:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    InMemorySubscriptionModel subscriptionModel = new InMemorySubscriptionModel();
+    InMemoryEventStore eventStore = new InMemoryEventStore(subscriptionModel);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val subscriptionModel = InMemorySubscriptionModel()
+    val eventStore = InMemoryEventStore(subscriptionModel)
+    ```
+  </TabItem>
+</Tabs>
+
+Use this first. Every example in the repository tests this way, which is why the examples run without a container.
+
+Events are still delivered on a background thread, so a test that writes and then immediately asserts on a read model can race the delivery. `InMemorySubscriptionModel.waitUntilAllEventsProcessed(timeout)` blocks until every event written so far has been handled by every subscription, so the assertion runs against a settled read model instead of a sleep:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    eventStore.write("order1", events);
+    subscriptionModel.waitUntilAllEventsProcessed(Duration.ofSeconds(2));
+    assertThat(orderView.status("order1")).isEqualTo(SHIPPED);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    eventStore.write("order1", events)
+    subscriptionModel.waitUntilAllEventsProcessed(Duration.ofSeconds(2))
+    assertThat(orderView.status("order1")).isEqualTo(SHIPPED)
+    ```
+  </TabItem>
+</Tabs>
+
+`waitUntilAllEventsProcessed()` without an argument waits up to 10 seconds. Past the timeout it throws `IllegalStateException` naming the subscriptions still busy, so a wait that silently ran out can't fall through into the following assertion as if nothing had gone wrong. Only the in-memory model has this. A MongoDB change stream never reaches a point where everything written has definitely arrived, so a test against a real database still has to poll.
+
+## Using the subscription life cycle
+
+`SubscriptionModelLifeCycle` exists partly for tests, and its own documentation says so: pausing a subscription is described as useful when you want to write events without triggering that particular subscription. That is a sharp tool for an integration test, because it lets you separate writing from consuming.
+
+Pausing is not instantaneous, so wait for it before writing. Skipping this is the single most common way to make one of these tests flaky:
+
+```java
+subscriptionModel.pauseSubscription("orders");
+await().atMost(ofSeconds(10)).until(() -> subscriptionModel.isPaused("orders"));
+
+// Events written now are not delivered to this subscription
+eventStore.write(orderId, events);
+
+subscriptionModel.resumeSubscription("orders");
+```
+
+Resuming continues from the stored checkpoint rather than replaying from the beginning, so this is also how you test that resume behaviour is what you think it is: pause, write, resume, and assert the handler saw exactly what was written while it was away.
+
+`waitUntilStarted()` closes the race between subscribing and writing, and it is why the examples call it before their first write. `cancelSubscription(id)` drops a subscription entirely and frees its id, which is useful when one test class exercises several subscriptions in turn. The in-memory subscription model supports all of these, so most of this can be tested with no container at all.
+
+Under a [`ManualStartSubscriptionModel`](/docs/layer-0/subscription-life-cycle/#starting-subscriptions-manually), which Spring Boot's `occurrent.subscription.mode=manual` uses, the handle that `subscribe(..)` returns answers `false` for as long as the registration is withheld. `resumeSubscription(id)` hands back a different handle, the one for the start that actually runs, and that's the one to wait on.
+
+## Stopping every subscription, then opting in
+
+Pausing the subscriptions a test does not want works until somebody adds a subscription to the application. The new one then runs in every test that never mentioned it, and a test that used to pass can start failing for a reason nowhere in its own code.
+
+Turning the default around removes that whole class of problem. Stop the entire subscription model before each test, and let each test name what it needs. `occurrent-testing-junit-jupiter-blocking` is the JUnit 5 extension that does it:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-junit-jupiter-blocking</artifactId>
+    <version>%OCCURRENT_VERSION%</version>
+    <scope>test</scope>
+</dependency>
+```
+
+It depends on JUnit and the blocking subscription API and nothing else, so it works without Spring and without a container. If your application is reactive, `occurrent-testing-junit-jupiter-reactor` is the twin, same class name, same methods, depending on the reactive subscription API instead:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-junit-jupiter-reactor</artifactId>
+    <version>%OCCURRENT_VERSION%</version>
+    <scope>test</scope>
+</dependency>
+```
+
+The two differences are both about waiting. Resuming a subscription and clearing a checkpoint each returns a `Mono` on the reactive stack rather than blocking, and the extension blocks on them for you, so your test still calls `start(id)` and moves straight on to writing an event.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @RegisterExtension
+    static final OccurrentSubscriptionsExtension subscriptions =
+            OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @JvmField
+    @RegisterExtension
+    val subscriptions = subscriptionModel.stoppedByDefault()
+    ```
+  </TabItem>
+</Tabs>
+
+:::note
+Kotlin needs the "@JvmField", or JUnit never picks the field up and every subscription stays live.
+:::
+
+`stop()` leaves every running subscription paused rather than cancelled, which is what lets the extension bring them back one at a time. `start(id)` waits until the subscription is really listening before it returns, so no test can forget that and race its own write. The wait defaults to 30 seconds on both stacks and fails naming the id that never started rather than hanging the run. Widen it with `OccurrentSubscriptionsExtension.withStartTimeout(Duration)` on infrastructure where that isn't enough.
+
+A test now opens with its own dependency list:
+
+```java
+@Test
+void order_projection_is_updated_when_an_order_is_placed() {
+    subscriptions.start("order-projection");
+
+    eventStore.write(orderId, orderPlaced());
+
+    await().untilAsserted(() -> assertThat(orders.findById(orderId)).isPresent());
+}
+```
+
+Stopping in `afterEach` matters as much as in `beforeEach`. Spring caches the test context across test classes, so a subscription that one class resumed is still running when the next class starts.
+
+If you also empty the database between tests, hand that to the same extension rather than registering a second one. It runs after every subscription is stopped and before any is resumed, which is the only order that works, and `clearingCheckpoints` takes care of the checkpoints:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @RegisterExtension
+    OccurrentSubscriptionsExtension subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel)
+            .clearingStateWith(OccurrentMongoFlush.everyCollectionIn(mongoTemplate.getDb()))
+            .clearingCheckpoints(checkpointStorage);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @JvmField
+    @RegisterExtension
+    val subscriptions = OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel)
+        .clearingStateWith(OccurrentMongoFlush.everyCollectionIn(mongoTemplate.db))
+        .clearingCheckpoints(checkpointStorage)
+    ```
+  </TabItem>
+</Tabs>
+
+`OccurrentMongoFlush` comes from `occurrent-testing-mongodb`:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-testing-mongodb</artifactId>
+    <version>%OCCURRENT_VERSION%</version>
+    <scope>test</scope>
+</dependency>
+```
+
+`clearingStateWith` takes any `Runnable`, so a store other than MongoDB fits the same shape.
+
+## Naming several subscriptions, or all of them
+
+Two shortcuts for the cases where naming one id per test is the wrong shape.
+
+`alwaysStart` names subscriptions that every test in the class needs, resumed in `beforeEach` right after the stop, so individual tests do not repeat themselves:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection");
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    OccurrentSubscriptionsExtension.stoppedByDefault(subscriptionModel).alwaysStart("order-projection")
+    ```
+  </TabItem>
+</Tabs>
+
+`startAll()` starts every subscription the model has, which is how you write the one test that checks two subscriptions reacting to the same event. It returns the ids it started, and skips any a test already started:
+
+```java
+subscriptions.startAll();
+```
+
+Both rest on the model being able to list its subscriptions, through `IntrospectableSubscriptions`. The in-memory, Spring MongoDB and native MongoDB models implement it, and so does the competing consumer model, which also reports a consumer still waiting for its lock. `CatchupThenPushSubscriptionModel` implements it too, since 0.32.0, delegating to the live feed it wraps. Name an id that does not exist and the failure tells you the ids that do, instead of only repeating the one you got wrong.

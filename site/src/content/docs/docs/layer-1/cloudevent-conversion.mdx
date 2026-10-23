@@ -1,0 +1,203 @@
+---
+title: "CloudEvent conversion"
+description: "Map your domain events to CloudEvents and back with the generic, XStream or Jackson converter."
+sidebar:
+  order: 1
+layer: "1"
+modules: [occurrent-cloudevent-converter-generic, occurrent-cloudevent-converter-xstream, occurrent-cloudevent-converter-jackson3]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
+
+To convert between domain events and cloud events you can use the cloud event converter API that's shipped with Occurrent. This is optional, but components such as the [application service](/docs/layer-1/application-service/) and [subscription dsl](/docs/layer-1/subscribing-to-domain-events/) uses a cloud event converter to function. If you're only using an [event store](/docs/layer-0/eventstore/) and [subscriptions](/docs/layer-0/subscriptions/) then you don't need a cloud event converter (or you can roll your own). All cloud event converters implements the `org.occurrent.application.converter.CloudEventConverter` interface from the `org.occurrent:occurrent-cloudevent-converter-api` module (see [custom cloudevent converter](/docs/layer-1/custom-cloudevent-converter/)).
+
+## Generic CloudEvent Converter
+
+This is a really simple cloud event converter to which you can pass two higher-order functions that converts to and from domain events respectively. To use it depend on:
+
+<Dependency artifact="occurrent-cloudevent-converter-generic" />
+
+For example:
+
+```java
+Function<CloudEvent, DomainEvent> convertCloudEventToDomainEventFunction = .. // You implement this function
+Function<DomainEvent, CloudEvent> convertDomainEventToCloudEventFunction = .. // You implement this function
+CloudEventConverter<CloudEvent> cloudEventConverter = new GenericCloudEventConverter<>(convertCloudEventToDomainEventFunction, convertDomainEventToCloudEventFunction);
+```
+
+If your domain model is already using a `CloudEvent` (and not a custom domain event) then you can just pass a `Function.identity()` to the `GenericCloudEventConverter`:
+
+```java
+CloudEventConverter<CloudEvent> cloudEventConverter = new GenericCloudEventConverter<>(Function.identity(), Function.identity());
+```
+
+## XStream CloudEvent Converter<HeadingBadge text="Added in 0.12.0" />
+
+This cloud event converter uses [XStream](https://x-stream.github.io/) to convert domain events to cloud events to XML and back. To use it, first depend on this module:
+
+<Dependency artifact="occurrent-cloudevent-converter-xstream" />
+
+Next you can instantiate it like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    XStream xStream = new XStream();
+    xStream.allowTypeHierarchy(MyDomainEvent.class);
+    URI cloudEventSource = URI.create("urn:company:domain");
+    XStreamCloudEventConverter<MyDomainEvent> cloudEventConverter = new XStreamCloudEventConverter<>(xStream, cloudEventSource);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val xStream = XStream().apply { allowTypeHierarchy(MyDomainEvent::class.java) }
+    val cloudEventSource = URI.create("urn:company:domain")
+    val cloudEventConverter = XStreamCloudEventConverter<MyDomainEvent>(xStream, cloudEventSource)
+    ```
+  </TabItem>
+</Tabs>
+
+You can also configure how different attributes of the domain event should be represented in the cloud event by using the builder, `new XStreamCloudEventConverter.Builder<MyDomainEvent>().. build()`.
+
+## Jackson CloudEvent Converter<HeadingBadge text="Added in 0.12.0" />
+
+### Jackson 3<HeadingBadge text="Added in 0.20.0" />
+
+Occurrent `0.20.0` provides a Jackson 3-native CloudEvent converter and that is the recommended choice for new code. To use it, first depend on this module:
+
+<Dependency artifact="occurrent-cloudevent-converter-jackson3" />
+
+Next you can instantiate it like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    import org.occurrent.application.converter.jackson3.JacksonCloudEventConverter;
+    import tools.jackson.databind.ObjectMapper;
+    import tools.jackson.databind.json.JsonMapper;
+
+    ObjectMapper objectMapper = JsonMapper.builder().build();
+    URI cloudEventSource = URI.create("urn:company:domain");
+    JacksonCloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    import org.occurrent.application.converter.jackson3.JacksonCloudEventConverter
+    import tools.jackson.module.kotlin.jacksonObjectMapper
+
+    val objectMapper = jacksonObjectMapper()
+    val cloudEventSource = URI.create("urn:company:domain")
+    val cloudEventConverter = JacksonCloudEventConverter<MyDomainEvent>(objectMapper, cloudEventSource)
+    ```
+  </TabItem>
+</Tabs>
+
+You can also configure how different attributes of the domain event should be represented in the cloud event by using the builder. In production, you almost certainly want to change the way the `JacksonCloudEventConverter` generates the cloud event type from the domain event. By default, the cloud event type will be generated from the fully-qualified class name of the domain event class type. I.e. if you do:
+
+```java
+import org.occurrent.application.converter.jackson3.JacksonCloudEventConverter;
+
+CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
+CloudEvent cloudEvent = cloudEventConverter.toCloudEvent(new SomeDomainEvent());
+```
+
+Then `cloudEvent.getType()` will return `com.mycompany.SomeDomainEvent`. Typically, you want to decouple the cloud event type from the fully-qualified name of the class. A better, but arguably still not optimal way, would be to make `cloudEvent.getType()` return `SomeDomainEvent` instead. The `JacksonCloudEventConverter` allows us to do this by using the builder:
+
+```java
+import org.occurrent.application.converter.jackson3.JacksonCloudEventConverter;
+
+CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter.Builder<MyDomainEvent>(objectMapper, cloudEventSource)
+        .typeMapper(..) // Specify a custom way to map the domain event to a cloud event and vice versa
+        .build();
+```
+
+But when using Jackson, we can't just configure the type mapper to return the "simple name" of the domain event class instead of the fully-qualified name. This is because there's no generic way to derive the fully-qualified name from just the simple name. The fully-qualified name is needed in order for Jackson to map the cloud event back into a domain event. In order to work-around this you could implement your own type mapper (that you pass to the builder above) or create an instance of [ReflectionCloudEventTypeMapper](https://github.com/johanhaleby/occurrent/blob/occurrent-%OCCURRENT_VERSION%/application/cloudevent-type-mapper/reflection/src/main/java/org/occurrent/application/converter/typemapper/ReflectionCloudEventTypeMapper.java) that knows how to convert the "simple name" cloud event type back into the domain event class. There are a couple of ways, the most simple one is probably this:
+
+```java
+CloudEventTypeMapper<MyDomainEvent> typeMapper = ReflectionCloudEventTypeMapper.simple(MyDomainEvent.class);
+```
+
+This will create an instance of `ReflectionCloudEventTypeMapper` that uses the simple name of the domain event as cloud event type. But when deriving the domain event type from the cloud event, the `ReflectionCloudEventTypeMapper` will prepend the package name of supplied domain event type (`MyDomainEvent`) to the cloud event type, thus reconstructing the fully-qualified name of the class. For this to work, _all_ domain events must reside in exactly the same package as `MyDomainEvent`.
+
+Another approach would be to supply a higher-order function that knows how to map the cloud event type back into a domain event class.
+
+```java
+CloudEventTypeMapper<MyDomainEvent> typeMapper = ReflectionCloudEventTypeMapper.simple(cloudEventType -> ...);
+```
+
+Again, this will create an instance of `ReflectionCloudEventTypeMapper` that uses the simple name of the domain event as cloud event type, but you are responsible to, somehow, map the cloud event type (`cloudEventType`) back into a domain event class.
+
+If you don't want to use reflection or don't want to couple the class name to the event name (which is recommended) you can roll your own custom `CloudEventTypeMapper` by implementing the [org.occurrent.application.converter.typemapper.CloudEventTypeMapper](https://github.com/johanhaleby/occurrent/blob/occurrent-%OCCURRENT_VERSION%/application/cloudevent-type-mapper/api/src/main/java/org/occurrent/application/converter/typemapper/CloudEventTypeMapper.java) interface.
+
+As of version 0.20.5 the builder can also truncate the cloud event time to a given precision with `timePrecision(ChronoUnit)`:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    CloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter.Builder<MyDomainEvent>(objectMapper, cloudEventSource)
+            .timePrecision(ChronoUnit.MILLIS)
+            .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val cloudEventConverter = JacksonCloudEventConverter.Builder<MyDomainEvent>(objectMapper, cloudEventSource)
+            .timePrecision(ChronoUnit.MILLIS)
+            .build()
+    ```
+  </TabItem>
+</Tabs>
+
+This matters when the event store uses `TimeRepresentation.DATE`, which cannot store the nanoseconds that `Instant.now()` and `OffsetDateTime.now()` carry on modern JVMs, so an append would otherwise fail. `RFC_3339_STRING` keeps full precision.
+
+If you are migrating an existing application and need to stay on the old Jackson 2 API for a while, `org.occurrent:occurrent-cloudevent-converter-jackson` is still available as a compatibility lane. However, the recommended direction for new applications and updated documentation is Jackson 3.
+
+### Jackson 2 Compatibility
+
+If you're maintaining an existing application that still uses the Jackson 2 API, you can continue to use the Jackson 2 compatibility lane. Depend on `org.occurrent:occurrent-cloudevent-converter-jackson`:
+
+```xml
+<dependency>
+    <groupId>org.occurrent</groupId>
+    <artifactId>occurrent-cloudevent-converter-jackson</artifactId>
+    <version>%OCCURRENT_VERSION%</version>
+</dependency>
+```
+
+Then instantiate it like this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    import com.fasterxml.jackson.databind.ObjectMapper;
+    import org.occurrent.application.converter.jackson.JacksonCloudEventConverter;
+
+    ObjectMapper objectMapper = new ObjectMapper();
+    URI cloudEventSource = URI.create("urn:company:domain");
+    JacksonCloudEventConverter<MyDomainEvent> cloudEventConverter = new JacksonCloudEventConverter<>(objectMapper, cloudEventSource);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
+    import org.occurrent.application.converter.jackson.JacksonCloudEventConverter
+
+    val objectMapper = jacksonObjectMapper()
+    val cloudEventSource = URI.create("urn:company:domain")
+    val cloudEventConverter = JacksonCloudEventConverter<MyDomainEvent>(objectMapper, cloudEventSource)
+    ```
+  </TabItem>
+</Tabs>
+
+Jackson 2 still works and is intended for existing applications that are not yet ready to move to the Jackson 3 API. For new applications, prefer the Jackson 3 converter documented above.
+
+:::tip[Using Spring Boot?]
+Set the time precision with `occurrent.cloud-event-converter.time-precision`. See [What the starter configures](/docs/spring-boot/what-the-starter-configures/#cloudevent-conversion).
+:::

@@ -27,3 +27,7 @@ Human-facing prose (documentation, news posts, PR descriptions) follows Johan's 
 ## Release workflow
 
 Documentation for an unreleased Occurrent feature lives on its own branch, one branch and pull request per feature, and is held until the matching library release ships. `main` tracks the released site, so do not push feature documentation straight to `main`.
+
+## Docs migration
+
+The docs are moving from `pages/docs/docs.md` to a multi-page Starlight site in `site/`, see [`site/README.md`](site/README.md). It isn't live yet, but the content has moved: write docs in `site/`. `docs.md` keeps serving occurrent.org until the switch, and CI fails if it has a section, anchor, code block or dependency the new site lacks, so a change to `docs.md` needs the same change in `site/`. See [`_migration/README.md`](_migration/README.md). If `check-against-jekyll.mjs` fails after a docs change, fix the parser in `_migration/lib.mjs` rather than the docs.

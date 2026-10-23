@@ -1,0 +1,34 @@
+---
+title: "Spring modules without Spring Boot"
+description: "Use Occurrent's Spring modules as plain libraries."
+sidebar:
+  order: 5
+stack: [spring-data]
+modules: [occurrent-saga-dsl-mongodb-spring, occurrent-snapshot-dsl-mongodb-spring-blocking, occurrent-snapshot-dsl-mongodb-spring-reactor, occurrent-application-service-transaction-spring, occurrent-application-service-transaction-spring-reactor]
+---
+
+import Dependency from "../../../../components/Dependency.astro";
+
+The [Spring Boot Starter](/docs/spring-boot/starter/) auto-wires a saga state store, a snapshot store, and a Spring transaction executor for you. If you're on Spring but not on the Occurrent starter (for example, you wire beans by hand or only need one of these pieces), each is also published as a standalone library artifact with no starter dependency:
+
+* A Spring Data MongoDB `SagaStateStore` implementation, used by [Sagas](/docs/layer-1/sagas/):
+
+<Dependency artifact="occurrent-saga-dsl-mongodb-spring" />
+
+* A Spring Data MongoDB blocking `SnapshotStore` implementation, used by [Snapshots](/docs/layer-1/snapshots/):
+
+<Dependency artifact="occurrent-snapshot-dsl-mongodb-spring-blocking" />
+
+* A Spring Data MongoDB reactive `SnapshotStore` implementation, the reactive counterpart of the one above:
+
+<Dependency artifact="occurrent-snapshot-dsl-mongodb-spring-reactor" />
+
+* A generic Spring `TransactionExecutor` (depends only on `spring-tx`, not MongoDB-specific), used for [transactional side-effects](/docs/layer-1/application-service-side-effects/#application-service-transactional-side-effects):
+
+<Dependency artifact="occurrent-application-service-transaction-spring" />
+
+* A generic reactive Spring `ReactiveTransactionExecutor`, the reactive counterpart of the one above:
+
+<Dependency artifact="occurrent-application-service-transaction-spring-reactor" />
+
+Construct each one directly and pass it wherever the corresponding interface is expected. The starter still gives you these beans for free if you're using it, this is only for manual wiring.

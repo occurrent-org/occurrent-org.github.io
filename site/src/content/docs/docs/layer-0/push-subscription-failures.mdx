@@ -1,0 +1,192 @@
+---
+title: "Push subscription failures"
+description: "What happens when a push feed fails, and how to recover, stop and skip the catch-up."
+sidebar:
+  order: 11
+layer: "0"
+model: [blocking]
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+On the blocking stack, the feed fails for good when its catch-up fails. From then on:
+
+* every later `acceptAndWait(...)` throws an `IllegalStateException`, including a call from the projection
+* an event a listener fed while the replay ran is refused the same way and isn't applied, unless the feed was already live before that catch-up started. Then the events it held back during the replay are applied first.
+
+An event that fails while the blocking feed is live doesn't make the feed fail. The exception reaches whoever called `acceptAndWait(...)`, so don't acknowledge the broker message, and the broker delivers it again.
+
+A blocking catch-up that fails on an interrupted thread isn't recorded as a failure. `catchUp()` still throws the exception, but the feed doesn't start refusing events, and `DomainEventFeed.refusesPermanently()` stays `false`.
+
+On the reactor stack, the feed starts failing when:
+
+* a catch-up fails
+* an event the projection fed during a replay, or from a callback such as `replayStarted()`, fails or is refused, even when the projection ignored the error
+* an event that nothing waits for fails, such as one fed from `replayAbandoned()`
+
+A listener's event that fails while the reactor feed is live doesn't make the feed fail. Only that event's `Mono` errors, so don't acknowledge the broker message, and the broker delivers it again.
+
+Once the reactor feed starts failing, it:
+
+1. deletes its catch-up marker, so a new feed replays the history
+2. refuses every later `acceptAndWait(...)` that doesn't come from the projection, with an `IllegalStateException`
+3. refuses each event a listener fed that was still waiting for the replay, without applying it
+4. applies the events it had already taken in, and those the projection feeds it meanwhile
+5. then refuses everything for good
+
+If deleting the marker still fails after 3 retries, the feed logs an error, with the feed id in the attached exception. Delete the marker from the `CheckpointStorage` yourself before you build a new feed.
+
+An event the projection fed itself is the only one that can be lost. Nothing stores it, so neither a replay nor the broker brings it back.
+
+## Recovering from a failed feed
+
+A failed feed stays failed until you replace it with a new feed that has the same id. The new feed replays the history, since the failed one either never wrote a catch-up marker or deleted it.
+
+Restarting the application is the simplest way to do that, and the first thing to try. A restart only helps once the cause is gone, though. If the projection fails on an event because of a bug, the replay reaches the same event and fails the same way, so fix the bug first. If the feed logged that it couldn't delete its marker, delete the marker from the `CheckpointStorage` before you restart.
+
+To recover without a restart, create the new feed in code, for example by calling `CatchupProjectionFeed.create("order-status", ...)` again. On the blocking stack, `catchUp()` throws when the catch-up fails, so the code that starts the feed can also rebuild it:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    private volatile CatchupProjectionFeed<OrderEvent> feed;
+
+    // Call at startup, and again once you've fixed what made the catch-up fail
+    void startFeed() {
+        feed = CatchupProjectionFeed.create("order-status", orderStatusProjection(), repository,
+                eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage);
+        try {
+            feed.catchUp();
+        } catch (RuntimeException e) {
+            // The feed now refuses every event, so the listener acknowledges none of them
+            log.error("The order-status catch-up failed", e);
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @Volatile
+    private lateinit var feed: CatchupProjectionFeed<OrderEvent>
+
+    // Call at startup, and again once you've fixed what made the catch-up fail
+    fun startFeed() {
+        feed = CatchupProjectionFeed.create("order-status", orderStatusProjection(), repository,
+            eventStore, cloudEventConverter, OrderEvent::eventId, checkpointStorage)
+        try {
+            feed.catchUp()
+        } catch (e: RuntimeException) {
+            // The feed now refuses every event, so the listener acknowledges none of them
+            log.error("The order-status catch-up failed", e)
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+A `DomainEventFeed` takes a projection only once, so you have to replace the whole `DomainEventFeed`.
+
+## Stopping, starting and skipping the catch-up
+
+`stopCatchUp()` stops a running replay, for example when the application shuts down in the middle of one. Without it, the shutdown waits until the whole history has been applied.
+
+A stopped replay isn't a failure. It writes no catch-up marker, so the next `catchUp()` replays the whole history again. Both `catchUp()` and `goLive()` work again after a stop.
+
+On a feed that's already live, `stopCatchUp()` has no effect.
+
+On a feed that isn't live and has no catch-up running, `stopCatchUp()` stops the feed itself, on both stacks. Until the next `catchUp()` or `goLive()`:
+
+* each event that was waiting, and each event fed after the stop, is refused with an `IllegalStateException` and isn't applied
+* on the reactor stack, the `Mono` of each event that was waiting errors on the thread that called `stopCatchUp()`, so your error handling runs there unless your own pipeline switches threads
+* the next catch-up doesn't apply those events either, so they come back only when the broker delivers them again
+
+A catch-up counts as running from the moment you call `CatchupProjectionFeed.catchUp()` or `goLive()`. For `DomainEventFeed.catchUpAll()`, `catchUp(id)` and `goLive(id)`, it counts as running from when you subscribe to the `Mono` they return, not from the call. It stops counting as running once the feed goes live, its replay notices a stop, or it fails.
+
+On the blocking stack, call `catchUp()` and `goLive()` on a different thread from the listener's, since nothing else applies the events the feed holds. A thread that feeds an event and then calls one of them waits until another thread runs the catch-up, takes the feed live, calls `stopCatchUp()` or interrupts it.
+
+When a view calls `catchUp()`, `catchUp(id)` or `catchUpAll()` on its own feed while the feed is calling the view, the call doesn't wait for the replay. The replay can't start until the view's code returns, so the call returning, or its `Mono` completing, only means the catch-up was asked for. It may not run at all, for example after a `stopCatchUp()`, an interrupt, or another catch-up that failed in the meantime. The javadoc of `CatchupProjectionFeed.catchUp()` describes these cases in more detail.
+
+A view that hands that call to another thread and waits for it waits for a replay that can't start until the view returns, so it waits until its thread is interrupted.
+
+## Skipping the catch-up with `goLive()`
+
+A new feed applies no event until you call `catchUp()` or `goLive()`. Until then it holds every event the listener feeds it. On the blocking stack each listener thread waits in its first `acceptAndWait(...)`, and the broker delivers that message again once one of the timeouts above runs out. On the reactor stack, events pile up until the buffer is full, and after that new ones are refused.
+
+So the code that starts your application calls one of the two, once for each feed. Which one depends on where the feed's events are stored:
+
+* If this application stores them in its own event store, call `catchUp()`. That's the usual case, where the application that writes the events also publishes them.
+* If it doesn't, for example because another service publishes the events and nothing here stores them, call `goLive()`. A replay would read a history that is empty or belongs to something else.
+
+Call it right after you create the feed, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on a `DomainEventFeed`, naming the projection the same way `catchUp(id)` does). On the blocking stack, call it from the startup thread rather than from a listener thread:
+
+```java
+feed.goLive();
+```
+
+It skips the replay and starts delivering the held and future live events directly. It writes no catch-up marker, so a later real `catchUp()` on the same feed still replays the full history rather than treating it as already done. While that replay runs, live events wait. They are delivered when it ends, whether it finishes or is stopped.
+
+If you call `goLive()` after a stop, it also delivers the live copy of an event the stopped replay already delivered. A view that holds events back until the replay finishes discarded them when the replay stopped, so it needs that copy. A view that saved each event as it arrived gets it twice.
+
+If you call `goLive()` or `goLive(id)` while a catch-up of the same projection is still replaying, the call waits for that replay to end, and on the reactor stack its `Mono` completes then. If a catch-up of the projection fails while the call waits, the call throws an `IllegalStateException` whose cause is that failure, or its `Mono` errors with one. When the view itself makes the call while the feed is calling the view, to apply an event or in a callback such as `replayStarted()`, the call doesn't wait.
+
+On the blocking stack, a catch-up that fails on an interrupted thread isn't recorded as a failure, so `goLive()` and `goLive(id)` don't throw for it.
+
+## Passing metadata with a live event
+
+A replayed event is always backed by the stored `CloudEvent`, so the catch-up always has full metadata to work with. A live event is not, so metadata on the live path is whatever the source supplies. Both `CatchupProjectionFeed` and `DomainEventFeed` accept it as a second argument, `feed.acceptAndWait(metadata, event)` beside the plain `feed.acceptAndWait(event)`, so call the two-argument form when the broker message carries the stream id, version or position, and the one-argument form when it does not. A projection keyed on metadata (such as the stream id) that is fed through the one-argument form now fails loud with an `IllegalStateException` instead of silently dropping the event.
+
+## When the feed throws
+
+A `DomainEventFeed` or `CatchupProjectionFeed` throws an exception in these three cases, instead of losing the event or applying it to the wrong projection instance:
+
+* `DomainEventFeed.register(id, ...)` rejects a duplicate `id`, on both the blocking and reactor feeds. The durable checkpoint key it derives from `id` must be unique across every registered projection.
+* A projection keyed by metadata that is fed through the metadata-less `acceptAndWait(event)` on either feed throws an `IllegalStateException` rather than resolving to a null instance id and dropping the event. Feed it with `acceptAndWait(metadata, event)` instead.
+* `DomainEventFeed.acceptAndWait(..)` and `acceptOrDefer(..)` throw an `IllegalStateException` when no projection is registered on the feed. On the reactor stack the returned `Mono` fails with one. `catchUpAll()` refuses on a feed with no projection for the same reason.
+
+Refusing an event with no projection registered matters because a listener acknowledges the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. On the refusal your listener [hands the message back to the broker](/docs/stores/brokers/#handing-a-message-back-to-the-broker) instead, the same way as for `HOLD`, so the broker still has it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
+
+This matters most when the registration is deferred until you call `ManualStartPushSources.startAll()`, which is what Spring Boot's `occurrent.subscription.mode=manual` does. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
+
+`PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](/docs/layer-0/push-subscription/#observing-pushed-events). When you drive it from a broker, call `acceptOrDefer(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, which is a `HOLD`, so [hand the message back to the broker](/docs/stores/brokers/#handing-a-message-back-to-the-broker) rather than acknowledge it. A [`PushObserver`](/docs/layer-0/push-subscription/#observing-pushed-events) is told the same outcome for each event the model is asked to deliver.
+
+## Feeding a `CloudEvent` to the feed
+
+A listener that receives a `CloudEvent` instead of a domain event, a broker consumer for example, hands it to `DomainEventFeed.acceptOrDeferCloudEvent(..)`. It returns a [`RoutingOutcome`](/docs/layer-0/push-subscription/#observing-pushed-events) that tells the listener whether to acknowledge the message:
+
+```java
+RoutingOutcome outcome = feed.acceptOrDeferCloudEvent(cloudEvent);
+```
+
+The feed matches the event against the filter the projection was registered with, the same filter its catch-up reads the event store with. A matching event is decoded with the feed's `CloudEventConverter`. An event that doesn't match is never decoded, so a converter that only knows this projection's event types never sees another type.
+
+| Outcome | When | What to do with the message |
+| :- | :- | :- |
+| `FILTERED` | The event doesn't match the filter. | Acknowledge it, since redelivering it gets the same answer. |
+| `DELIVERED` | The event matches, and the projection has applied it. | Acknowledge it. |
+| `DEFERRED` | The event matches but arrives before the projection is live. That covers an event fed before `catchUpAll()` or `goLive(id)` is called, one fed while the replay is running, and one fed after `stopCatchUp()` interrupted the replay. | Don't acknowledge it. [Hand it back to the broker](/docs/stores/brokers/#handing-a-message-back-to-the-broker), as for `HOLD`, until it comes back `DELIVERED`. That's safe any number of times. |
+
+With no projection registered, `acceptOrDeferCloudEvent(..)` throws `IllegalStateException`, the same as `acceptAndWait(..)`.
+
+A filter with a `Filter.data(...)` condition needs a [`DataFieldReader`](/docs/layer-0/eventstore-queries/#filtering-on-payload-data) to be matched here. Pass it as the last constructor argument:
+
+```java
+DomainEventFeed<OrderEvent> feed = new DomainEventFeed<>(eventStore, cloudEventConverter, OrderEvent::eventId,
+        checkpointStorage, CatchupThenLiveOptions.defaults(), new JacksonDataFieldReader());
+```
+
+Without one, `register(..)` still accepts that filter, and the first `acceptOrDeferCloudEvent(..)` throws `UnreadableLiveFilterException`. Every later call on the same feed throws that same exception instance, so stop consuming instead of redelivering the event. Build a new feed with a reader, or register a filter without the `data` condition.
+
+On the reactor stack `acceptOrDeferCloudEvent(..)` returns a `Mono<RoutingOutcome>`, and the `IllegalStateException` and `UnreadableLiveFilterException` above arrive as that `Mono`'s error.
+
+Once the projection's catch-up has failed, every later `acceptOrDeferCloudEvent(..)` with an event that matches the filter throws an `IllegalStateException`, or on the reactor stack its `Mono` errors with one.
+
+`feed.isReadyForLiveDelivery()` is `false` both while the replay runs and after the catch-up has failed. `feed.refusesPermanently()` returns `true` only after the failure, so check it to tell the two apart.
+
+The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so applying the same event twice must leave the read model unchanged. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
+
+If you are upgrading from 0.31.0 and shared one `PushSubscriptionModel` or `DomainEventFeed` between several projections, [upgrading to 0.32.0](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) shows the before and after.
+
+:::tip[Using Spring Boot?]
+The starter calls `catchUp(id)` or `goLive(id)` for you, and the feed is a bean. See [Fed by a push source](/docs/spring-boot/projection-annotation/#fed-by-a-push-source).
+:::

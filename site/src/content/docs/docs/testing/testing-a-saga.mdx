@@ -1,0 +1,272 @@
+---
+title: "Testing a saga"
+description: "Test a saga's reactions, timeouts and transitions without waiting."
+sidebar:
+  order: 1
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+`Saga.step(state, input)` runs `evolve` and then `react`, and returns the new state together with the effects that transition produced. It is what the executor runs per input, which is why it is also what a test drives. No clock, no scheduler, no store.
+
+The sagas below are the ones from [the Flow DSL](/docs/layer-1/sagas/#the-flow-dsl), and they are kept compiling as real tests in `dsl/saga-dsl/common/src/test`, so what you read here is what runs.
+
+Start with a plain event. In the game lobby, a `PlayerJoined` takes a branch that ends the flow, so the saga completes:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga.Step<FlowState<GameEvent>, CloseGame> started = start(lobby, new GameCreated("game-1"));
+
+    Saga.Step<FlowState<GameEvent>, CloseGame> step = lobby.step(started.state(), SagaInput.event(new PlayerJoined("game-1")));
+
+    assertThat(step.state().completed()).isTrue();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val started = start(lobby, GameCreated("game-1"))
+
+    val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
+
+    assertThat(step.state.completed()).isTrue()
+    ```
+  </TabItem>
+</Tabs>
+
+## Two things to know before you write the first test
+
+**`step` does not apply `onStart`.** A start event creates the instance, and `onStart` runs once at that point, but `step` is only `evolve` plus `react`. So a start event is applied the way the executor does it, and it is worth a small helper because every saga test needs it:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    static <E, C> Saga.Step<FlowState<E>, C> start(Saga<E, FlowState<E>, C> saga, E event) {
+        FlowState<E> state = saga.evolve(saga.initialState(), SagaInput.event(event));
+        List<SagaEffect<C>> effects = new ArrayList<>(saga.onStart(state, event));
+        effects.addAll(saga.react(state, SagaInput.event(event)));
+        return new Saga.Step<>(state, effects);
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    fun <E : Any, C : Any> start(saga: Saga<E, FlowState<E>, C>, event: E): Saga.Step<FlowState<E>, C> {
+        val state = saga.evolve(saga.initialState(), SagaInput.event(event))
+        val effects = saga.onStart(state, event) + saga.react(state, SagaInput.event(event))
+        return Saga.Step(state, effects)
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+**Effects are not only commands.** Leaving a step whose timeout was armed cancels that timer, and the cancellation is an effect like any other. So a branch that issues no command does not produce an empty effects list, it produces a `CancelTimeout` for the timer the step armed, which `stepTimer` names for you. That is what `issuedCommands()` is for. It reads the commands back out of the effects, so a reaction that issued nothing is empty there even when the effects list is not:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga.Step<FlowState<GameEvent>, CloseGame> step = lobby.step(started.state(), SagaInput.event(new PlayerJoined("game-1")));
+
+    // The branch issues nothing, but leaving the step still cancels its timeout
+    assertThat(step.issuedCommands()).isEmpty();
+    assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout(stepTimer("awaiting-players")));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val step = lobby.step(started.state, SagaInput.event(PlayerJoined("game-1")))
+
+    // The branch issues nothing, but leaving the step still cancels its timeout
+    assertThat(step.issuedCommands()).isEmpty()
+    assertThat(step.timerEffects()).containsExactly(SagaEffect.cancelTimeout(stepTimer("awaiting-players")))
+    ```
+  </TabItem>
+</Tabs>
+
+Timers get the same split treatment as commands. `timerEffects()` reads the started, re-armed, and cancelled timers back out of `effects`, in the order `effects` holds them, so a reaction that only issues commands is empty there even when `effects` is not. `effects()` stays the single ordered log of everything a reaction produced, and `issuedCommands()` and `timerEffects()` are two derived readings of it, the command half and the timer half, that together account for every effect a step can produce. Use whichever half the assertion is about, and fall back to `effects` itself when a test needs commands and timers in the order they were produced. Note that Kotlin calls both accessors with the parentheses, since they are derived methods rather than record components.
+
+## Firing a timeout without waiting
+
+Fire a timeout in a test by naming its timer, instead of waiting for time to pass. A flow step's timer is named after the step, and `stepTimer` from the flow DSL gives you that name:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga.Step<FlowState<GameEvent>, CloseGame> step =
+            lobby.step(started.state(), SagaInput.timeout("game-1", stepTimer("awaiting-players")));
+
+    assertAll(
+            () -> assertThat(step.effects()).containsExactly(SagaEffect.issue(new CloseGame("game-1"))),
+            () -> assertThat(step.state().completed()).isTrue()
+    );
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val step = lobby.step(started.state, SagaInput.timeout("game-1", stepTimer("awaiting-players")))
+
+    assertAll(
+        { assertThat(step.effects).containsExactly(SagaEffect.issue(CloseGame("game-1"))) },
+        { assertThat(step.state.completed()).isTrue() }
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+The step takes `SagaInput.timeout(...)` here the same way it took `SagaInput.event(...)` in the tests above, because to a step a timeout is just another input to react to.
+
+An absolute `timeout(at = ...)` fires the same way.
+
+The deadline only tells the executor when to fire the timer. Once it fires, the deadline has no further say in what happens, so a test never has to reach that instant to check the outcome.
+
+A timer name the saga does not know is a no-op. Test that case too, since it's what a typo in a `reactOnTimeout` name looks like.
+
+## A condition, one event at a time
+
+A condition fires once it is satisfied, counted since the step was entered. The interesting tests are the ones before that, a partial match that must not fire, and the other alternative firing instead. Using the `review` saga from [Step Conditions](/docs/layer-1/saga-step-conditions/) above, one `Approved` is not enough to publish, a second one is, and a single `Rejected` discards immediately without waiting for anything else. Feed the events one at a time and pass each step's state into the next:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga.Step<FlowState<ReviewEvent>, ReviewCommand> started = start(review, new ReviewStarted("review-1"));
+
+    // One of the two Approved events the condition needs, not enough to complete yet
+    Saga.Step<FlowState<ReviewEvent>, ReviewCommand> afterFirst = review.step(started.state(), SagaInput.event(new Approved("review-1")));
+    assertThat(afterFirst.state().completed()).isFalse();
+
+    // The second Approved satisfies the condition and publishes
+    Saga.Step<FlowState<ReviewEvent>, ReviewCommand> afterSecond = review.step(afterFirst.state(), SagaInput.event(new Approved("review-1")));
+    assertAll(
+            () -> assertThat(afterSecond.state().completed()).isTrue(),
+            () -> assertThat(afterSecond.effects()).containsExactly(SagaEffect.issue(new Publish("review-1")))
+    );
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val started = start(review, ReviewStarted("review-1"))
+
+    // One of the two Approved events the condition needs, not enough to complete yet
+    val afterFirst = review.step(started.state, SagaInput.event(Approved("review-1")))
+    assertThat(afterFirst.state.completed()).isFalse()
+
+    // The second Approved satisfies the condition and publishes
+    val afterSecond = review.step(afterFirst.state, SagaInput.event(Approved("review-1")))
+    assertAll(
+        { assertThat(afterSecond.state.completed()).isTrue() },
+        { assertThat(afterSecond.effects).containsExactly(SagaEffect.issue(Publish("review-1"))) }
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+A single `Rejected` takes the other branch and completes the saga immediately, with no second event needed:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga.Step<FlowState<ReviewEvent>, ReviewCommand> step = review.step(started.state(), SagaInput.event(new Rejected("review-1")));
+
+    assertAll(
+            () -> assertThat(step.state().completed()).isTrue(),
+            () -> assertThat(step.effects()).containsExactly(SagaEffect.issue(new Discard("review-1")))
+    );
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val step = review.step(started.state, SagaInput.event(Rejected("review-1")))
+
+    assertAll(
+        { assertThat(step.state.completed()).isTrue() },
+        { assertThat(step.effects).containsExactly(SagaEffect.issue(Discard("review-1"))) }
+    )
+    ```
+  </TabItem>
+</Tabs>
+
+Write the partial case first. A condition that fires too early passes a test that only checks the fulfilled path.
+
+## Transitions and loops
+
+`currentStep()` is how you assert where a flow went, and that covers `next`, `end` and `transitionTo` alike. A back-edge is the one that repays testing, because a loop that quietly leaves its step looks the same from the outside as one that stays. Using the auction from the Flow DSL section, each bid re-enters `bidding`, and the deadline still closes it after any number of bids:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    Saga.Step<FlowState<AuctionEvent>, CloseAuction> started = start(auction, new AuctionStarted("auction-1", Instant.parse("2026-01-01T12:00:00Z")));
+
+    Saga.Step<FlowState<AuctionEvent>, CloseAuction> afterBid = auction.step(started.state(), SagaInput.event(new BidPlaced("auction-1", 100)));
+    assertThat(afterBid.state().currentStep()).isEqualTo("bidding");
+
+    Saga.Step<FlowState<AuctionEvent>, CloseAuction> closed =
+            auction.step(afterBid.state(), SagaInput.timeout("auction-1", stepTimer("bidding")));
+    assertThat(closed.effects()).containsExactly(SagaEffect.issue(new CloseAuction("auction-1")));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val started = start(auction, AuctionStarted("auction-1", Instant.parse("2026-01-01T12:00:00Z")))
+
+    val afterBid = auction.step(started.state, SagaInput.event(BidPlaced("auction-1", 100)))
+    assertThat(afterBid.state.currentStep()).isEqualTo("bidding")
+
+    val closed = auction.step(afterBid.state, SagaInput.timeout("auction-1", stepTimer("bidding")))
+    assertThat(closed.effects).containsExactly(SagaEffect.issue(CloseAuction("auction-1")))
+    ```
+  </TabItem>
+</Tabs>
+
+A guard is tested the same way, by driving the same branch twice with events that differ only in the guarded value and asserting the flow moved in one case and not the other.
+
+## Through the executor, once
+
+The level above proves the saga. This level proves the wiring. It confirms that the runner subscribes, correlates, persists, and dispatches. Use the in-memory event store and subscription model, `SagaStateStore.inMemory()`, and a `CommandDispatcher` that collects into a list so you can assert on it.
+
+A timeout is the one case that genuinely needs time to pass here, and the poll interval is configurable so it does not need much. Shrink both the interval and the saga's own timeout:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    List<OrderCommand> issued = new CopyOnWriteArrayList<>();
+    CommandDispatcher<OrderCommand> dispatcher = issued::add;
+    SagaRunnerConfig config = SagaRunnerConfig.defaults().withTimerPollInterval(Duration.ofMillis(50));
+
+    SagaRunner<OrderEvent, OrderCommand> runner = SagaRunner.agnostic(subscriptionModel, converter);
+    runner.run("orders", orderFulfillment(Duration.ofMillis(150)), stateStore, dispatcher, null, config)
+            .waitUntilStarted();
+
+    eventStore.write(orderId, converter.toCloudEvents(List.of(new OrderPlaced(orderId, 42.0))));
+
+    await().atMost(5, TimeUnit.SECONDS).untilAsserted(() ->
+            assertThat(issued).containsExactly(new ReservePayment(orderId, 42.0), new CancelOrder(orderId, "payment timeout")));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val issued = CopyOnWriteArrayList<OrderCommand>()
+    val dispatcher = CommandDispatcher<OrderCommand> { issued.add(it) }
+    val config = SagaRunnerConfig.defaults().withTimerPollInterval(Duration.ofMillis(50))
+
+    val runner = SagaRunner.agnostic<OrderEvent, OrderCommand>(subscriptionModel, converter)
+    runner.run("orders", orderFulfillment(Duration.ofMillis(150)), stateStore, dispatcher, null, config)
+        .waitUntilStarted()
+
+    eventStore.write(orderId, converter.toCloudEvents(listOf(OrderPlaced(orderId, 42.0))))
+
+    await.atMost(5, TimeUnit.SECONDS).untilAsserted {
+        assertThat(issued).containsExactly(ReservePayment(orderId, 42.0), CancelOrder(orderId, "payment timeout"))
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+The [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/saga/order-fulfillment) runs exactly this, in both languages, with no Docker.

@@ -1,0 +1,192 @@
+---
+title: "Snapshots"
+description: "Snapshot a decider's state so a long stream loads quickly."
+sidebar:
+  order: 14
+layer: "1"
+addedIn: "0.31.0"
+---
+
+import { TabItem, Tabs } from "@astrojs/starlight/components";
+
+:::note
+Snapshots are an opt-in optimization. Use them only when rebuilding a stream's current state has genuinely become too slow.
+:::
+
+A snapshot caches a stream's state at a known version, so a later command replays only the events written after it instead of the whole history. Occurrent ships first-class support for this, from a [Decider](/docs/overview/deciders/) (the decision state) and from a plain [View](/docs/layer-1/views/), across stream and DCB and both the blocking and reactor stacks.
+
+A snapshot is a discardable, schema-versioned cache, never a source of truth. If the stored schema version does not match the one you declare, or no snapshot exists, Occurrent falls back to a full replay. Enabling a snapshot costs one snapshot load and one tail read per command that snapshots, and nothing at all when you do not use it. The rationale is recorded in [ADR 61](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0061-first-class-snapshot-support.md).
+
+A snapshot whose version is ahead of the stream's true head is now discarded rather than trusted, and replay restarts from the initial state. This happens when a stream is reset or truncated below the snapshot, for example [archiving a stream](/docs/layer-0/eventstore-operations/) with `deleteEventStream` after a "closing the books" cutover. The version check is a safety net, not the primary defense, so pair a stream reset with `SnapshotStore.delete(key)` to drop the stale snapshot up front. The maintained `@Snapshot` path applies the same guard: a reset below the snapshot makes it rebuild and self-heal instead of freezing on stale state. DCB snapshots are immune to this, because a DCB snapshot is versioned by the global DCB position, which is monotonic and never resets.
+
+## Snapshotting a decider
+
+Build a `SnapshotDeciderApplicationService` once, around the application service you already have. For each aggregate, wrap the decider in a `SnapshotDecider`, created with `SnapshotDecider.from(...)`, which bundles it with a `SnapshotStore` and a `SnapshotOptions`. The store keeps one snapshot per stream. `SnapshotStore.inMemory()` is handy for tests, and `SpringMongoSnapshotStore` persists to MongoDB.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    var snapshots = new SnapshotDeciderApplicationService<>(applicationService);
+    SnapshotStore<AccountState> store = SnapshotStore.inMemory();
+
+    // Reads the snapshot, applies only the events after it, decides, writes, and
+    // saves a new snapshot every 100 events. The first argument is the schema version.
+    var account = SnapshotDecider.from(accountDecider, store, SnapshotOptions.everyNEvents(1, 100));
+    WriteResult result = snapshots.execute(accountId, new Deposit(100), account);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val snapshots = SnapshotDeciderApplicationService(applicationService)
+    val store = SnapshotStore.inMemory<AccountState>()
+
+    // Reads the snapshot, applies only the events after it, decides, writes, and
+    // saves a new snapshot every 100 events. The first argument is the schema version.
+    val account = SnapshotDecider.from(accountDecider, store, SnapshotOptions.everyNEvents(1, 100))
+    snapshots.execute(accountId, Deposit(100), account)
+    ```
+  </TabItem>
+</Tabs>
+
+The schema version guards you against stale state. Whenever you change the shape of the decider's state, bump the schema version. Snapshots written under the old version are then ignored and rebuilt from a full replay, so you never deserialize an old shape into a new type.
+
+## Choosing when to snapshot
+
+`SnapshotOptions.everyNEvents(schemaVersion, n)` is the common case. For anything else, pass a `SnapshotPolicy` to `SnapshotOptions.of(schemaVersion, policy)`. The built-in policies are `everyNEvents(n)`, `onEvent(SomeEvent.class)`, `whenState(predicate)`, `always()`, and `never()`, and you combine them with `or`. `SnapshotPolicies.whenTerminal(decider)` snapshots when the decider reports a terminal state, which is the "closing the books" trigger described below. Whichever policy you land on, it goes into the `SnapshotOptions` you pass to `SnapshotDecider.from(...)`.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Snapshot every 100 events, and also whenever the decider reaches a terminal state.
+    SnapshotPolicy<AccountState, AccountEvent> policy =
+            SnapshotPolicy.<AccountState, AccountEvent>everyNEvents(100)
+                    .or(SnapshotPolicies.whenTerminal(accountDecider));
+
+    var account = SnapshotDecider.from(accountDecider, store, SnapshotOptions.of(1, policy));
+    snapshots.execute(accountId, new CloseBooks(june), account);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Snapshot every 100 events, and also whenever the decider reaches a terminal state.
+    val policy = SnapshotPolicy.everyNEvents<AccountState, AccountEvent>(100)
+            .or(SnapshotPolicies.whenTerminal(accountDecider))
+
+    val account = SnapshotDecider.from(accountDecider, store, SnapshotOptions.of(1, policy))
+    snapshots.execute(accountId, CloseBooks(june), account)
+    ```
+  </TabItem>
+</Tabs>
+
+Snapshot persistence is best-effort. The snapshot is saved after the write has completed, so a handler failure never undoes the write and a lost snapshot only means the next replay is a little longer. Because a snapshot is always reproducible from the events, this is a safe default. If you need the stored state to stay consistent with every write, maintain it on the write path with `@Snapshot(mode = SYNCHRONOUS)` (below) or a [synchronous subscription](/docs/layer-1/synchronous-subscriptions/) instead.
+
+## Snapshots without a decider
+
+If you only need the state and no command handling, describe the fold with a `SnapshotView`, then build a `SnapshotViews` facade once over the event store and the converter. For each view, bundle it with its `SnapshotStore` in a `SnapshotViewSource`, created with `SnapshotViewSource.from(view, store)`, and pass that per call. Calling `readState(id, source)` loads the latest snapshot, applies the events written since, and returns the current state. It is a plain read that never writes. To persist a fresh snapshot for a decider-free view on demand, call `snapshots.refresh(accountId, source)`, which applies the events up to the current head and saves a snapshot. There is no automatic write on the read path.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    SnapshotView<AccountState, AccountEvent> view = SnapshotView.<AccountState, AccountEvent>builder(AccountState.EMPTY)
+            .schemaVersion(1)
+            .on(MoneyDeposited.class, (state, e) -> state.add(e.amount()))
+            .on(MoneyWithdrawn.class, (state, e) -> state.subtract(e.amount()))
+            .build();
+
+    SnapshotViews<AccountEvent> snapshots = SnapshotViews.create(eventStore, cloudEventConverter);
+    var accountSource = SnapshotViewSource.from(view, store);
+    AccountState current = snapshots.readState(accountId, accountSource);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val view = snapshotView<AccountState, AccountEvent>(AccountState.EMPTY) {
+        schemaVersion(1)
+        on<MoneyDeposited> { state, e -> state.add(e.amount) }
+        on<MoneyWithdrawn> { state, e -> state.subtract(e.amount) }
+    }
+
+    val snapshots = SnapshotViews.create(eventStore, cloudEventConverter)
+    val accountSource = SnapshotViewSource.from(view, store)
+    val current = snapshots.readState(accountId, accountSource)
+    ```
+  </TabItem>
+</Tabs>
+
+## DCB snapshots
+
+For the [Dynamic Consistency Boundary](/docs/layer-0/dcb-event-store/), build a `SnapshotDcbDeciderApplicationService` once around the DCB application service. Wrap each `DcbDecider` in a `SnapshotDcbDecider`, created with `SnapshotDcbDecider.from(...)`, which bundles it with a `SnapshotStore` and a `SnapshotOptions`. The snapshot is keyed by a canonical form of the command's `DcbCriteria`, overridable with your own key function through the `SnapshotDcbDecider.from(dcbDecider, store, options, keyFunction)` overload, and versioned by the global DCB position, so a resumed execute reads only the events after the snapshot while still guarding the append against any later matching event. Because the key comes from the criteria, changing the boundary later (say a business rule that widens or narrows it) produces a new key, so the old snapshot is left behind and the state rebuilds from the events on its own. If you supply your own key function, keep the criteria's identifying detail in it, so a boundary change still rebuilds cleanly.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    var snapshots = new SnapshotDcbDeciderApplicationService<>(dcbApplicationService);
+    SnapshotStore<AccountState> store = SnapshotStore.inMemory();
+
+    var account = SnapshotDcbDecider.from(accountDcbDecider, store, SnapshotOptions.everyNEvents(1, 100));
+    Optional<DcbAppendResult> result = snapshots.execute(new Deposit(100), account);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val snapshots = SnapshotDcbDeciderApplicationService(dcbApplicationService)
+    val store = SnapshotStore.inMemory<AccountState>()
+
+    val account = SnapshotDcbDecider.from(accountDcbDecider, store, SnapshotOptions.everyNEvents(1, 100))
+    snapshots.execute(Deposit(100), account)
+    ```
+  </TabItem>
+</Tabs>
+
+## Closing the Books
+
+"Closing the books" is a domain concept in areas such as accounting, where a period is closed and its closing balance becomes the opening balance of the next period. It is the domain-driven counterpart to a technical every-N snapshot, and Occurrent models it with the tools you have already seen rather than a separate mechanism.
+
+Give the decider a terminal state for the closed period. Its `isTerminal` returns true once the books are closed, and from then on the decider refuses any further command. That terminal state is the snapshot trigger, so pair it with `SnapshotPolicies.whenTerminal(decider)`.
+
+The period is the stream, not the account. A closed period is a stream that has reached its end, so you never keep appending to a stream you have already marked terminal. You close `account-42:2026-Q1` and open `account-42:2026-Q2` as a fresh stream. Carry the balance across by modelling it as a domain event, so the closing state lives in the event log and the snapshot stays a discardable optimization.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    SnapshotOptions<AccountState, AccountEvent> onClose =
+            SnapshotOptions.of(1, SnapshotPolicies.whenTerminal(accountDecider));
+    var account = SnapshotDecider.from(accountDecider, store, onClose);
+    var accounts = new SnapshotDeciderApplicationService<>(applicationService);
+
+    // Q1 is its own stream. Closing it makes the decider terminal, which triggers the snapshot.
+    accounts.execute("account-42:2026-Q1", new Deposit(100), account);
+    accounts.execute("account-42:2026-Q1", new Withdraw(30), account);
+    accounts.execute("account-42:2026-Q1", new CloseBooks("2026-Q1"), account);
+    long closingBalance = store.findLatest("account-42:2026-Q1").orElseThrow().state().balance(); // 70
+
+    // Q2 is a new stream. The opening balance is stored as an event, so it survives archiving Q1.
+    accounts.execute("account-42:2026-Q2", new SetOpeningBalance(closingBalance), account);
+    eventStore.deleteEventStream("account-42:2026-Q1");
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val onClose = SnapshotOptions.of(1, SnapshotPolicies.whenTerminal(accountDecider))
+    val account = SnapshotDecider.from(accountDecider, store, onClose)
+    val accounts = SnapshotDeciderApplicationService(applicationService)
+
+    // Q1 is its own stream. Closing it makes the decider terminal, which triggers the snapshot.
+    accounts.execute("account-42:2026-Q1", Deposit(100), account)
+    accounts.execute("account-42:2026-Q1", Withdraw(30), account)
+    accounts.execute("account-42:2026-Q1", CloseBooks("2026-Q1"), account)
+    val closingBalance = store.findLatest("account-42:2026-Q1").orElseThrow().state().balance // 70
+
+    // Q2 is a new stream. The opening balance is stored as an event, so it survives archiving Q1.
+    accounts.execute("account-42:2026-Q2", SetOpeningBalance(closingBalance), account)
+    eventStore.deleteEventStream("account-42:2026-Q1")
+    ```
+  </TabItem>
+</Tabs>
+
+Once a closed period's events are genuinely no longer needed, archive them with the event store's [delete operations](/docs/layer-0/eventstore-operations/). If the archived stream had a snapshot, delete it in the same call with `SnapshotStore.delete(key)`. Occurrent's version guard catches a snapshot left ahead of a truncated stream, but do not rely on it as the primary defense. The runnable [`closing-the-books`](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/snapshot/closing-the-books) example runs this end to end.

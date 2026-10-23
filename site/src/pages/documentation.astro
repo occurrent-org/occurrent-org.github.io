@@ -1,0 +1,32 @@
+---
+// The old docs were one page, /documentation, with an anchor per section. This page sends a link such as
+// /documentation#saga-dsl to the page the section moved to, using the move map the migration wrote. Without
+// JavaScript, or for an anchor the map doesn't know, it lists where to go instead.
+import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
+import moveMap from "../../../_migration/move-map.json";
+
+const sections = [
+    ["Overview", "/docs/overview/introduction/"],
+    ["Layer 0: CloudEvents", "/docs/layer-0/"],
+    ["Layer 1: Domain events", "/docs/layer-1/"],
+    ["Spring Boot", "/docs/spring-boot/"],
+    ["Layer 3: Your own framework", "/docs/layer-3/your-own-framework/"],
+    ["Stores and infrastructure", "/docs/stores/"],
+    ["Testing", "/docs/testing/"],
+    ["Extending Occurrent", "/docs/extending/"],
+    ["Upgrading", "/docs/upgrading/"],
+];
+---
+
+<StarlightPage frontmatter={{ title: "The documentation has moved", description: "The Occurrent documentation is now split into pages.", pagefind: false }} hasSidebar={false}>
+    <script is:inline define:vars={{ moveMap }}>
+        const anchor = decodeURIComponent(location.hash.slice(1));
+        const target = anchor === "" ? "/docs/overview/introduction/" : moveMap[anchor];
+        if (target !== undefined) location.replace(target);
+    </script>
+    <p>The Occurrent documentation used to be one long page. It is now split into pages, one per topic. Pick where to go:</p>
+    <ul>
+        {sections.map(([label, href]) => <li><a href={href}>{label}</a></li>)}
+    </ul>
+    <p>Or press <kbd>Ctrl</kbd> + <kbd>K</kbd> to search.</p>
+</StarlightPage>
