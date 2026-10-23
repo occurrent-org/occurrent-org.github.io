@@ -2349,7 +2349,14 @@ A view that hands that call to another thread and waits for it waits for a repla
 
 A new feed applies no event until you call `catchUp()` or `goLive()`. Until then it holds every event the listener feeds it. On the blocking stack each listener thread waits in its first `acceptAndWait(...)`, and the broker delivers that message again once one of the timeouts above runs out. On the reactor stack, events pile up until the buffer is full, and after that new ones are refused.
 
-Some feeds have no history to replay, because their events aren't stored in this application's event store, for example events that another service publishes on the broker. Call `goLive()` on such a feed instead of `catchUp()`, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on a `DomainEventFeed`, naming the projection the same way `catchUp(id)` does):
+So the code that starts your application calls one of the two, once for each feed. Which one depends on where the feed's events are stored:
+
+* If this application stores them in its own event store, call `catchUp()`. That's the usual case, where the application that writes the events also publishes them.
+* If it doesn't, for example because another service publishes the events and nothing here stores them, call `goLive()`. A replay would read a history that is empty or belongs to something else.
+
+With the Spring Boot starter you don't make either call yourself. At startup the starter calls `catchUp(id)` by default, and `goLive(id)` when the `@Projection` has `catchup = Catchup.NONE`.
+
+Without Spring Boot, call it right after you create the feed, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on a `DomainEventFeed`, naming the projection the same way `catchUp(id)` does). On the blocking stack, call it from the startup thread rather than from a listener thread:
 
 ```java
 feed.goLive();
