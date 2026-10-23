@@ -47,6 +47,9 @@ const CAPTURE_START = /^\s*\{% capture (\w+) %\}\s*$/;
 const CAPTURE_END = /^\s*\{% endcapture %\}\s*$/;
 const INCLUDE = /\{% include (\S+)(.*?)%\}/g;
 const NAV_START = /<div id="spy-nav"/;
+// docs.md sets {{cloudevents_spec}} once, with a Liquid assign, and uses it in links.
+export const CLOUDEVENTS_SPEC = "https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md";
+const LINK = /\]\(([^)\s]+)\)|href="([^"]+)"/g;
 const DEPENDENCY_TEMPLATE = "macros/mavenSnippet.html";
 
 const isFenceEnd = (line, marker) => line.trim().startsWith(marker) && line.trim().replace(/[`~]/g, "") === "";
@@ -157,6 +160,13 @@ export function parseDocs(source, readInclude) {
     const codeBlocks = [];
     const includes = [];
     const excluded = [];
+    const links = [];
+    const addLinks = (text, line) => {
+        for (const match of text.replace(/<!--.*?-->/g, " ").matchAll(LINK)) {
+            const url = match[1] ?? match[2];
+            if (!url.startsWith("#")) links.push({ url: url.replaceAll("{{site.occurrentversion}}", "%OCCURRENT_VERSION%").replaceAll("{{cloudevents_spec}}", CLOUDEVENTS_SPEC), line, section: section.anchor });
+        }
+    };
 
     const newSection = (fields) => ({ ...fields, endLine: 0, words: 0, codeBlocks: [], dependencies: [], includes: [] });
     const preamble = newSection({ anchor: "_preamble", title: "(text before the first heading)", level: 0, line: 1 });
@@ -192,7 +202,10 @@ export function parseDocs(source, readInclude) {
         const words = [];
         walk(included, {
             heading: ({ text }) => words.push(text),
-            prose: ({ text }) => words.push(text),
+            prose: ({ text }) => {
+                words.push(text);
+                addLinks(text, line);
+            },
             code: (code) => record.codeBlocks.push(addCode(code, `_includes/${path}`)),
             dependency: ({ artifactIds }) => {
                 record.dependencies.push(...artifactIds);
@@ -218,6 +231,7 @@ export function parseDocs(source, readInclude) {
         },
         prose: ({ text, line }) => {
             addIds(text, line);
+            addLinks(text, line);
             prose.push(text);
         },
         code: (code) => addCode(code),
@@ -227,7 +241,7 @@ export function parseDocs(source, readInclude) {
     });
     closeSection(source.split("\n").length);
 
-    return { sections, anchors, codeBlocks, includes, excluded };
+    return { sections, anchors, codeBlocks, includes, excluded, links };
 }
 
 // The ids a built HTML page offers as link targets.

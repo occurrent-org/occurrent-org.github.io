@@ -4,9 +4,9 @@
 //
 // Every old anchor must be in move-map.json (old anchor -> new URL) or in merged.json (a deliberate merge of
 // duplicated content, with a reason). Every target must exist in the built site, every code block must appear in
-// the site's sources, every dependency snippet's artifactId must appear in the sources, and no section may lose
-// more than 10% of its words. With --report the problems are printed but the exit code stays 0, which is how CI
-// runs it until the content has moved.
+// the site's sources, every dependency snippet's artifactId and every link to another page must appear in the
+// sources, and no section may lose more than 10% of its words. With --report the problems are printed but the
+// exit code stays 0.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -80,6 +80,10 @@ export function verify({ inventory, moveMap, merged, siteDir, sourcesDir }) {
     }
     for (const artifactId of new Set(inventory.sections.flatMap((section) => section.dependencies))) {
         if (!allSources.includes(artifactId)) problems.push({ type: "dependency", anchor: null, message: `Dependency ${artifactId} is not in the site's sources` });
+    }
+
+    for (const url of new Set((inventory.links ?? []).map((link) => link.url))) {
+        if (!allSources.includes(url)) problems.push({ type: "link", anchor: null, message: `The link to ${url} is not in the site's sources` });
     }
 
     for (const section of inventory.sections) {

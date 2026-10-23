@@ -89,6 +89,13 @@ test("every dependency snippet's artifact must be in the sources", () => {
     assert.deepEqual(types(run()), ["dependency:null"]);
 });
 
+test("every link to another page must be in the sources", () => {
+    const links = [{ url: "https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example", line: 3, section: "eventstore" }];
+    assert.deepEqual(types(run({ inventory: { ...inventory, links } })), ["link:null"]);
+    write(join(sourcesDir, "layer-0/links.md"), "See [the example](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example).\n");
+    assert.deepEqual(run({ inventory: { ...inventory, links } }), []);
+});
+
 test("a section may lose up to 10% of its words, not more", () => {
     write(join(siteDir, "layer-0/eventstore/index.html"), `<h2 id="eventstore">EventStore</h2><p>${"word ".repeat(9)}</p>`);
     assert.deepEqual(run(), []);

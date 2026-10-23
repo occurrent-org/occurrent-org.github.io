@@ -128,7 +128,7 @@ To move those instances on, put the step back under its old name, or add a tempo
 
 What persists has one compatibility guarantee. The retained domain events serialize as CloudEvents through the application's `CloudEventConverter`, by their stable `CloudEventTypeMapper` type rather than a Java class name. So a domain event can move to a different package without breaking in-flight saga state, exactly as it can for events in the event store. The executor's own bookkeeping is not a compatibility surface. A core saga's state is your own model and serializes like the [snapshot](/docs/layer-1/snapshots/) store.
 
-For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/saga/order-fulfillment) wires up both DSLs through `SagaRunner`, with both styles of dispatcher.
+For the full design rationale, including the residual cross-node race a compare-and-set retry can produce and the deferred outbox that would make dispatch exactly-once, see [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md). The complete, runnable [order-fulfillment example](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/saga/order-fulfillment) wires up both DSLs through `SagaRunner`, with both styles of dispatcher.
 
 ## Running Across Multiple Instances
 

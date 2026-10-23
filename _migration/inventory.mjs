@@ -16,7 +16,7 @@ const repo = join(dirname(fileURLToPath(import.meta.url)), "..");
 export const readInclude = (path) => readFileSync(join(repo, "_includes", path), "utf8");
 
 export function buildInventory(source, read = readInclude) {
-    const { sections, anchors, codeBlocks, includes, excluded } = parseDocs(source, read);
+    const { sections, anchors, codeBlocks, includes, excluded, links } = parseDocs(source, read);
     const totals = {
         sections: sections.length,
         anchors: anchors.length,
@@ -25,9 +25,10 @@ export function buildInventory(source, read = readInclude) {
         snippetCodeBlocks: codeBlocks.filter((block) => block.kind === "snippet").length,
         includes: includes.length,
         dependencies: new Set(sections.flatMap((section) => section.dependencies)).size,
+        links: new Set(links.map((link) => link.url)).size,
         words: sections.reduce((sum, section) => sum + section.words, 0),
     };
-    return { source: "pages/docs/docs.md", totals, excluded, sections, anchors, codeBlocks, includes };
+    return { source: "pages/docs/docs.md", totals, excluded, sections, anchors, codeBlocks, includes, links };
 }
 
 export const currentInventory = () => buildInventory(readFileSync(join(repo, "pages/docs/docs.md"), "utf8"));

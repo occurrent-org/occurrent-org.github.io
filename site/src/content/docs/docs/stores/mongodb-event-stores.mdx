@@ -126,8 +126,8 @@ Now you can start reading and writing events to the EventStore:
 
 | Name | Description |
 | :- | :- |
-| [Number Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/number-guessing-game/mongodb/native) | A simple game implemented using a pure domain model and stores events in MongoDB using `MongoEventStore`. It also generates integration events and publishes these to RabbitMQ. |
-| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/uno/mongodb/native) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Stores events in MongoDB using `MongoEventStore`. |
+| [Number Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/domain/number-guessing-game/mongodb/native) | A simple game implemented using a pure domain model and stores events in MongoDB using `MongoEventStore`. It also generates integration events and publishes these to RabbitMQ. |
+| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/domain/uno/mongodb/native) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Stores events in MongoDB using `MongoEventStore`. |
 
 ## EventStore with Spring MongoTemplate (Blocking)
 
@@ -252,12 +252,12 @@ Now you can start reading and writing events to the EventStore:
 
 | Name | Description |
 | :- | :- |
-| [Number Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/number-guessing-game/mongodb/spring/blocking) | A simple game implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. It also generates integration events and publishes these to RabbitMQ. |
-| [Word Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/word-guessing-game/mongodb/spring/blocking) | Similar to the "Number Guessing Game" but more advanced, leveraging several Occurrent features such as CQRS, queries, and transactional projections. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. |
-| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/domain/uno/mongodb/spring/blocking) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. |
-| [Subscription View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/projection/spring-subscription-based-mongodb-projections/src/main/java/org/occurrent/example/eventstore/mongodb/spring/subscriptionprojections) | An example showing how to create a subscription that listens to certain events stored in the EventStore and updates a view/projection from these events. |
-| [Transactional View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/projection/spring-transactional-projection-mongodb/src/main/java/org/occurrent/example/eventstore/mongodb/spring/transactional) | An example showing how to combine writing events to the `SpringMongoEventStore` and update a view transactionally using the `@Transactional` annotation. |
-| [Custom Aggregation View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
+| [Number Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/domain/number-guessing-game/mongodb/spring/blocking) | A simple game implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. It also generates integration events and publishes these to RabbitMQ. |
+| [Word Guessing Game](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/domain/word-guessing-game/mongodb/spring/blocking) | Similar to the "Number Guessing Game" but more advanced, leveraging several Occurrent features such as CQRS, queries, and transactional projections. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. |
+| [Uno](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/domain/uno/mongodb/spring/blocking) | A port of [FsUno](https://github.com/thinkbeforecoding/FsUno), a classic card game. Implemented using a pure domain model and stores events in MongoDB using `SpringMongoEventStore` and Spring Boot. |
+| [Subscription View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/projection/spring-subscription-based-mongodb-projections/src/main/java/org/occurrent/example/eventstore/mongodb/spring/subscriptionprojections) | An example showing how to create a subscription that listens to certain events stored in the EventStore and updates a view/projection from these events. |
+| [Transactional View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/projection/spring-transactional-projection-mongodb/src/main/java/org/occurrent/example/eventstore/mongodb/spring/transactional) | An example showing how to combine writing events to the `SpringMongoEventStore` and update a view transactionally using the `@Transactional` annotation. |
+| [Custom Aggregation View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query the `SpringMongoEventStore` using custom MongoDB aggregations. |
 
 ## EventStore with Spring ReactiveMongoTemplate (Reactive)
 
@@ -382,4 +382,4 @@ Now you can start reading and writing events to the EventStore:
 
 | Name | Description |
 | :- | :- |
-| [Custom Aggregation View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query a MongoDB event store using custom MongoDB aggregations. It uses the blocking `SpringMongoEventStore`. There is no reactive version of this example. |
+| [Custom Aggregation View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query a MongoDB event store using custom MongoDB aggregations. It uses the blocking `SpringMongoEventStore`. There is no reactive version of this example. |

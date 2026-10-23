@@ -28,7 +28,7 @@ import remarkStringify from "remark-stringify";
 import { unified } from "unified";
 import { visit } from "unist-util-visit";
 import { currentInventory, readInclude } from "./inventory.mjs";
-import { normalizeCode } from "./lib.mjs";
+import { CLOUDEVENTS_SPEC, normalizeCode } from "./lib.mjs";
 import { pages } from "./pages.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -37,7 +37,6 @@ const docsDir = join(repo, "site/src/content/docs/docs");
 
 export const HAND_PORTED = ["overview/layers"];
 export const VERSION_TOKEN = "%OCCURRENT_VERSION%";
-const CLOUDEVENTS_SPEC = "https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md";
 
 const HEADING = /^(#{1,6})\s+(.*?)\s*$/;
 const EXPLICIT_ID = /\s*\{#([^}]+)\}\s*$/;
@@ -335,7 +334,8 @@ export function convertAll({ docs, inventory, pageList = pages, read = readInclu
         const preamble = pageId(page) === "overview/introduction" ? PREAMBLE : "";
         if (preamble) imports.add("StarUs");
         const importLines = [...imports].sort().map((name) => IMPORTS[name]);
-        const body = String(stringifier.stringify(tree));
+        // Turning Markdown into HTML percent-encodes the token's last "%" in a link target, so undo that.
+        const body = String(stringifier.stringify(tree)).replaceAll(`${VERSION_TOKEN}25`, VERSION_TOKEN);
         if (/occ-component|OCCHEADING|\{%|\{\{/.test(body)) throw new Error(`${pageId(page)} still has Liquid or a placeholder in it`);
         const importBlock = importLines.length > 0 ? `${importLines.join("\n")}\n` : "";
         const content = [frontMatter(page, pageOrder, modules), importBlock, preamble, body].filter((part) => part !== "").join("\n");

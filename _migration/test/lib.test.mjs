@@ -158,3 +158,20 @@ test("section words in built HTML stop at the next heading and skip code", () =>
     assert.equal(sectionWordsInHtml(html, "missing"), null);
     assert.deepEqual(htmlIds(html), ["one", "two"]);
 });
+
+test("parseDocs lists links to other pages, with the version as the site writes it, and skips comments", () => {
+    const source = [
+        "# Intro",
+        "See [the example](https://github.com/x/tree/occurrent-{{site.occurrentversion}}/example) and [spec]({{cloudevents_spec}}#id).",
+        '<a href="https://example.com/a">a</a> and [here](#intro).',
+        "<!-- [gone](https://example.com/gone) -->",
+    ].join("\n");
+    assert.deepEqual(
+        parseDocs(source, () => "").links.map(({ url }) => url),
+        [
+            "https://github.com/x/tree/occurrent-%OCCURRENT_VERSION%/example",
+            "https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md#id",
+            "https://example.com/a",
+        ],
+    );
+});

@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { buildInventory, currentInventory } from "../inventory.mjs";
 
 test("totals add up the parsed units", () => {
-    const { totals } = buildInventory("# A\n\nOne two.\n\n~~~java\nx();\n~~~\n\n## B\n\nThree.\n", () => "");
-    assert.deepEqual(totals, { sections: 2, anchors: 2, codeBlocks: 1, fencedCodeBlocks: 1, snippetCodeBlocks: 0, includes: 0, dependencies: 0, words: 3 });
+    const { totals } = buildInventory("# A\n\nOne two.\n\n~~~java\nx();\n~~~\n\n## B\n\n[Three](https://example.com).\n", () => "");
+    assert.deepEqual(totals, { sections: 2, anchors: 2, codeBlocks: 1, fencedCodeBlocks: 1, snippetCodeBlocks: 0, includes: 0, dependencies: 0, links: 1, words: 3 });
 });
 
 test("today's docs page parses", () => {

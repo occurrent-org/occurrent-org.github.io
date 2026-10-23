@@ -41,4 +41,4 @@ game.dispatch(StartGame(gameId))
 
 A real framework has more to decide, for example what happens when a reaction fails, which [subscription model](/docs/layer-0/subscriptions/) makes reactions survive a restart, and how commands are [retried](/docs/stores/retry/). Those are the choices that should follow your business, which is why Occurrent leaves them to you.
 
-The `occurrent-hederlig` module ([source](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%25/library/hederlig)) is an early experiment with this idea. It defines a module as a set of features, each with commands, subscriptions and queries, and runs it on the `ApplicationService`, `Subscriptions` and `DomainEventQueries`. It is unfinished and not ready for use.
+The `occurrent-hederlig` module ([source](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/library/hederlig)) is an early experiment with this idea. It defines a module as a set of features, each with commands, subscriptions and queries, and runs it on the `ApplicationService`, `Subscriptions` and `DomainEventQueries`. It is unfinished and not ready for use.

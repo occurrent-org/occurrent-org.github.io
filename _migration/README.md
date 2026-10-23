@@ -43,6 +43,7 @@ Run `node _migration/inventory.mjs` for the totals, or add `--out inventory.json
 * every new URL is a built page that has the anchor
 * every code block's content is in the new site's sources, unless a merge in `merged.json` lists it under `codeBlocks`
 * every dependency's `artifactId` is in the new site's sources
+* every link to another page or site is in the new site's sources
 * no section has lost more than 10% of its words
 
 `move-map.json` will also drive the redirects, so an old link like `/documentation#saga-dsl` keeps working.

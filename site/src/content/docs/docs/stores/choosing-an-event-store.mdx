@@ -28,7 +28,7 @@ All MongoDB EventStore implementations try to stay as close as possible to the [
 | `streamid` |         String         | An id that uniquely identifies a particular event stream. It's used to determine which events belong to which stream. |
 | `streamversion` | Long | The id of the stream version for a particular event. It's used for optimistic concurrency control. |
 
-A json schema describing a complete Occurrent CloudEvent, as it will be persisted to a MongoDB collection, can be found [here](https://github.com/johanhaleby/occurrent/blob/occurrent-%OCCURRENT_VERSION%25/cloudevents-schema-occurrent.json) (a "raw" cloud event json schema can be found [here](https://github.com/tsurdilo/cloudevents-schema-vscode/blob/master/schemas/cloudevents-schema.json) for comparison).
+A json schema describing a complete Occurrent CloudEvent, as it will be persisted to a MongoDB collection, can be found [here](https://github.com/johanhaleby/occurrent/blob/occurrent-%OCCURRENT_VERSION%/cloudevents-schema-occurrent.json) (a "raw" cloud event json schema can be found [here](https://github.com/tsurdilo/cloudevents-schema-vscode/blob/master/schemas/cloudevents-schema.json) for comparison).
 
 Note that MongoDB will automatically add an [\_id](https://docs.mongodb.com/manual/reference/method/ObjectId/) field (which is not used by Occurrent). The reason why the CloudEvent `id` attribute is not stored as `_id` in MongoDB is that the `id` of a CloudEvent is not globally unique! The combination of `id` and `source` is a globally unique CloudEvent. Note also that `_id` will _not_ be included when the `CloudEvent` is read from an `EventStore`.
 
