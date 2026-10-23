@@ -4,6 +4,7 @@ import starlightLinksValidator from "starlight-links-validator";
 import starlightLlmActions from "starlight-llm-actions";
 import remarkPageMeta from "./src/plugins/remark-page-meta.mjs";
 import remarkVersion from "./src/plugins/remark-version.mjs";
+import jekyllUrls from "./src/integrations/jekyll-urls.mjs";
 
 // The sidebar is the layer model. Each group lists the pages in its directory, ordered by sidebar.order.
 const groups = [
@@ -21,8 +22,6 @@ const groups = [
 
 export default defineConfig({
     site: "https://occurrent.org",
-    // The landing page moves over from Jekyll at the cutover. Until then the root goes straight to the docs.
-    redirects: { "/": "/docs/overview/introduction/" },
     markdown: { remarkPlugins: [remarkVersion, remarkPageMeta] },
     integrations: [
         starlight({
@@ -36,7 +35,8 @@ export default defineConfig({
             // Groups other than Overview start collapsed. The group of the page you are on always opens.
             sidebar: groups.map(([label, directory], index) => ({ label, collapsed: index > 0, items: [{ autogenerate: { directory: `docs/${directory}` } }] })),
             plugins: [
-                starlightLinksValidator(),
+                // The news pages are Astro pages rather than Starlight content, so the validator can't see them.
+                starlightLinksValidator({ exclude: ["/news/", "/news/**/*"] }),
                 starlightLlmActions({
                     renderMarkdown: "simple",
                     linkAlternate: true,
@@ -48,5 +48,6 @@ export default defineConfig({
                 }),
             ],
         }),
+        jekyllUrls(),
     ],
 });

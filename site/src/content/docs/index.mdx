@@ -1,0 +1,200 @@
+---
+title: "Occurrent"
+description: "Event sourcing utilities for the JVM, based on the CloudEvents specification."
+template: splash
+editUrl: false
+lastUpdated: false
+hero:
+  title: "Event sourcing for the JVM, on your terms"
+  tagline: "Occurrent stores your events as CloudEvents and keeps Occurrent out of your domain model. Use one library or all of them, with or without Spring Boot."
+  actions:
+    - text: "Get started"
+      link: /docs/overview/getting-started/
+      icon: right-arrow
+    - text: "Get started with Spring Boot"
+      link: /docs/overview/getting-started-spring-boot/
+      variant: secondary
+    - text: "GitHub"
+      link: https://github.com/johanhaleby/occurrent
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid, LinkCard, TabItem, Tabs } from "@astrojs/starlight/components";
+import StarUs from "../../components/StarUs.astro";
+
+<div class="landing-section landing-code">
+
+## Your domain is a function. Occurrent runs it.
+
+Write your domain as a pure function from past events to new events. The application service loads the stream, runs your function, and appends the new events under optimistic concurrency.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // Your domain is a pure function from past events to new events,
+    // with no dependency on Occurrent.
+    List<GameEvent> handle(List<GameEvent> history, GameCommand command) { ... }
+
+    // Occurrent's application service loads the stream, runs your function,
+    // and appends the new events under optimistic concurrency.
+    ApplicationService<GameEvent> applicationService = new GenericApplicationService<>(eventStore, cloudEventConverter);
+    applicationService.execute(gameId, history -> handle(history, command));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // Your domain is a pure function from past events to new events,
+    // with no dependency on Occurrent.
+    fun handle(history: List<GameEvent>, command: GameCommand): List<GameEvent> { ... }
+
+    // Occurrent's application service loads the stream, runs your function,
+    // and appends the new events under optimistic concurrency.
+    val applicationService = GenericApplicationService(eventStore, cloudEventConverter)
+    applicationService.execute(gameId) { history -> handle(history, command) }
+    ```
+  </TabItem>
+</Tabs>
+
+</div>
+
+<div class="landing-section">
+
+## Stream or DCB, the same event store and domain model
+
+Both application services run against the same event store, a single store with stream and [DCB](/docs/layer-0/dcb-event-store/) capabilities. The `decide` and `evolve` are identical too. A DCB decider only adds the consistency boundary the command reads and the tags for the events it writes, so a rule can span more than one entity without a shared stream.
+
+<div class="landing-compare">
+<div>
+
+### Stream
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // One boundary per stream
+    var game = Decider.create(
+        initialState, this::decide, this::evolve
+    );
+    deciderApplicationService.execute(gameId, command, game);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // One boundary per stream
+    val game = Decider.create(
+        initialState, ::decide, ::evolve
+    )
+    applicationService.execute(gameId, command, game)
+    ```
+  </TabItem>
+</Tabs>
+
+</div>
+<div>
+
+### DCB
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    // A boundary you define per decision, across entities
+    var game = DcbDecider.create(
+        initialState, this::decide, this::evolve,
+        this::boundaryFor, this::tagsFor
+    );
+    dcbDeciderApplicationService.execute(command, game);
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    // A boundary you define per decision, across entities
+    val game = DcbDecider.create(
+        initialState, ::decide, ::evolve,
+        ::boundaryFor, ::tagsFor
+    )
+    dcbApplicationService.execute(command, game)
+    ```
+  </TabItem>
+</Tabs>
+
+</div>
+</div>
+
+</div>
+
+<div class="landing-section">
+
+## Pick the layer you need
+
+Occurrent is built in [layers](/docs/overview/layers/). Each one is built from the one below it, and you can use any of them directly, even different ones in the same application.
+
+<CardGrid>
+  <LinkCard title="Layer 0: CloudEvents" href="/docs/layer-0/" description="An event store and subscriptions that read and write CloudEvents. Full control over how events are stored, for infrastructure such as a forwarder or an audit log." />
+  <LinkCard title="Layer 1: Domain events" href="/docs/layer-1/" description="Your own event types, mapped to CloudEvents for you. The ApplicationService, queries, subscriptions, projections, snapshots and sagas. Most applications start here." />
+  <LinkCard title="Spring Boot" href="/docs/spring-boot/" description="A starter that wires the event store, subscriptions and converter, and annotations such as @Subscription, @Projection and @Saga that need no wiring code." />
+  <LinkCard title="Layer 3: Your own framework" href="/docs/layer-3/your-own-framework/" description="Build a framework shaped after your own business from the layer 1 parts. Occurrent gives you the bricks." />
+</CardGrid>
+
+</div>
+
+<div class="landing-section">
+
+## What is Occurrent?
+
+<CardGrid>
+  <Card title="Unintrusive" icon="seti:java">
+    Design your domain model without _any_ dependency on Occurrent or any other library. Express it with pure functions that return events, and use Occurrent to store them.
+  </Card>
+  <Card title="Simple" icon="puzzle">
+    Pick only the libraries you need. There's no all or nothing.
+  </Card>
+  <Card title="Control" icon="setting">
+    You're in control. Magic is kept to a minimum, and data is stored in a standard format, [CloudEvents](https://cloudevents.io/). You serialize and deserialize the event data yourself.
+  </Card>
+  <Card title="Composable" icon="random">
+    Use the Occurrent components as building blocks for your own pipelines. They're small, so you can rewrite one to fit your needs, or write your own domain specific layer on top of Occurrent.
+  </Card>
+  <Card title="Library" icon="open-book">
+    Designed to be used as a library, not a framework, as far as possible.
+  </Card>
+  <Card title="Pragmatic" icon="approve-check">
+    Need consistent projections? Write projections and events in the same transaction, with tools you already know such as Spring's `@Transactional`.
+  </Card>
+  <Card title="Interoperable" icon="external">
+    [CloudEvents](https://cloudevents.io/) is a [CNCF](https://www.cncf.io/) specification for describing event data in a common way, across services and platforms.
+  </Card>
+  <Card title="Data format" icon="document">
+    Events are stored as CloudEvents in the database too, so you can use the database to your advantage. Create your own indexes for fast and fully consistent queries on one event stream, or several.
+  </Card>
+</CardGrid>
+
+</div>
+
+<div class="landing-section">
+
+## Works with what you already use
+
+<div class="landing-chips">
+  <a href="/docs/stores/mongodb-event-stores/">MongoDB</a>
+  <a href="/docs/stores/in-memory-event-store/">In-memory</a>
+  <a href="/docs/stores/spring-modules/">Spring Data</a>
+  <a href="/docs/spring-boot/">Spring Boot 4</a>
+  <a href="/docs/layer-0/reactive-subscriptions/">Project Reactor</a>
+  <a href="/docs/stores/rabbitmq-and-kafka/">RabbitMQ</a>
+  <a href="/docs/stores/rabbitmq-and-kafka/#kafka">Kafka</a>
+  <a href="/docs/overview/getting-started/">Java 21 and Kotlin</a>
+</div>
+
+</div>
+
+<div class="landing-section landing-release">
+
+Occurrent %OCCURRENT_VERSION% is the latest release. Read what's new in the [news](/news/), and see [Upgrading](/docs/upgrading/) when you move from an older version.
+
+<StarUs />
+
+</div>

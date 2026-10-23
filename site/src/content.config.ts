@@ -1,4 +1,5 @@
 import { defineCollection } from "astro:content";
+import { glob } from "astro/loaders";
 import { z } from "astro/zod";
 import { docsLoader } from "@astrojs/starlight/loaders";
 import { docsSchema } from "@astrojs/starlight/schema";
@@ -17,6 +18,17 @@ export const collections = {
                 modules: z.array(z.string()).optional(),
                 addedIn: z.string().optional(),
             }),
+        }),
+    }),
+    // The release posts, copied from Jekyll's _posts/news by _migration/news.mjs.
+    news: defineCollection({
+        loader: glob({ pattern: "*.md", base: "./src/content/news" }),
+        schema: z.object({
+            title: z.string(),
+            version: z.string(),
+            date: z.coerce.date(),
+            summary: z.string(),
+            hidewhatsoccurrent: z.boolean().optional(),
         }),
     }),
 };

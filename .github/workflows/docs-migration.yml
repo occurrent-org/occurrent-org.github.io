@@ -47,3 +47,11 @@ jobs:
 
       - name: Check that the new site has everything on today's docs page
         run: node _migration/verify.mjs
+
+      - name: Check that every link resolves and every address served today still exists
+        run: node _migration/check-links.mjs
+
+      - name: Check that the news posts in site/ match _posts/news
+        run: |
+          node _migration/news.mjs
+          git diff --exit-code -- site/src/content/news

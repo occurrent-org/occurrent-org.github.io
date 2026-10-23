@@ -46,7 +46,13 @@ Run `node _migration/inventory.mjs` for the totals, or add `--out inventory.json
 * every link to another page or site is in the new site's sources
 * no section has lost more than 10% of its words, unless `moved.json` says where they went and why (the Spring Boot clean-up moves text between pages on purpose)
 
-`move-map.json` will also drive the redirects, so an old link like `/documentation#saga-dsl` keeps working.
+`move-map.json` also drives the redirects. `site/src/pages/documentation.astro` sends an old link like `/documentation#saga-dsl` to the page the section moved to.
+
+## News and old addresses
+
+`news.mjs` copies the release posts from `_posts/news` to `site/src/content/news`, and points their links to the old docs page at the new pages. Until the cutover, write a new post in `_posts/news` and run it again. CI fails when the copies differ.
+
+`check-links.mjs` checks the built site: every internal link and asset must resolve, and every address the Jekyll site serves today must still exist (`/`, `/documentation`, `/news/` and each post at `/news/YYYY/MM/DD/name.html`).
 
 ## Running them
 
@@ -57,6 +63,7 @@ bundle exec jekyll build -d _site
 node _migration/check-against-jekyll.mjs _site/documentation.html
 (cd site && npm ci && npm run build)
 node _migration/verify.mjs
+node _migration/check-links.mjs
 ```
 
 `verify.mjs` reads the new site's sources from `site/src/content/docs` and the built pages from `site/dist`. An old anchor for a section that became a whole page maps to the page itself, with no `#`. Add `--report` to list every problem without failing.
