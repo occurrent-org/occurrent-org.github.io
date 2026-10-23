@@ -86,6 +86,8 @@ DurableSubscriptionModelConfig config = new DurableSubscriptionModelConfig(1).st
 DurableSubscriptionModel subscriptionModel = new DurableSubscriptionModel(wrappedSubscriptionModel, checkpointStorage, config);
 ```
 
-With the Spring Boot starter, set `occurrent.subscription.start-when-no-start-position-can-be-recorded=true` instead.
-
 The subscription then starts with no stored position. If the application crashes before the first checkpoint is saved, the subscription starts over from wherever the feed has got to by the time it restarts. An event whose delivery failed before the crash is then not delivered again.
+
+:::tip[Using Spring Boot?]
+Set `occurrent.subscription.start-when-no-start-position-can-be-recorded=true` instead, see [What the starter configures](/docs/spring-boot/what-the-starter-configures/#starting-when-no-start-position-can-be-recorded).
+:::

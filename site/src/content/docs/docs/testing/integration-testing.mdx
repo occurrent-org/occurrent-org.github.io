@@ -71,7 +71,7 @@ Resuming continues from the stored checkpoint rather than replaying from the beg
 
 `waitUntilStarted()` closes the race between subscribing and writing, and it is why the examples call it before their first write. `cancelSubscription(id)` drops a subscription entirely and frees its id, which is useful when one test class exercises several subscriptions in turn. The in-memory subscription model supports all of these, so most of this can be tested with no container at all.
 
-Running under `occurrent.subscription.mode=manual`, the handle that `subscribe(..)` returns answers `false` for as long as the registration is withheld. `resumeSubscription(id)` hands back a different handle, the one for the start that actually runs, and that's the one to wait on.
+Under a [`ManualStartSubscriptionModel`](/docs/layer-0/subscription-life-cycle/#starting-subscriptions-manually), which Spring Boot's `occurrent.subscription.mode=manual` uses, the handle that `subscribe(..)` returns answers `false` for as long as the registration is withheld. `resumeSubscription(id)` hands back a different handle, the one for the start that actually runs, and that's the one to wait on.
 
 ## Stopping every subscription, then opting in
 

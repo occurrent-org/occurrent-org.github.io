@@ -154,7 +154,7 @@ As of version 0.20.5 the builder can also truncate the cloud event time to a giv
   </TabItem>
 </Tabs>
 
-This matters when the event store uses `TimeRepresentation.DATE`, which cannot store the nanoseconds that `Instant.now()` and `OffsetDateTime.now()` carry on modern JVMs, so an append would otherwise fail. With the Spring Boot starter you set it through the `occurrent.cloud-event-converter.time-precision` property (a `ChronoUnit`, for example `millis`). When that property is unset and the event store `time-representation` is `DATE`, the converter defaults to truncating to `MILLIS`, so the common case needs no configuration. `RFC_3339_STRING` keeps full precision.
+This matters when the event store uses `TimeRepresentation.DATE`, which cannot store the nanoseconds that `Instant.now()` and `OffsetDateTime.now()` carry on modern JVMs, so an append would otherwise fail. `RFC_3339_STRING` keeps full precision.
 
 If you are migrating an existing application and need to stay on the old Jackson 2 API for a while, `org.occurrent:occurrent-cloudevent-converter-jackson` is still available as a compatibility lane. However, the recommended direction for new applications and updated documentation is Jackson 3.
 
@@ -197,3 +197,7 @@ Then instantiate it like this:
 </Tabs>
 
 Jackson 2 still works and is intended for existing applications that are not yet ready to move to the Jackson 3 API. For new applications, prefer the Jackson 3 converter documented above.
+
+:::tip[Using Spring Boot?]
+Set the time precision with `occurrent.cloud-event-converter.time-precision`. See [What the starter configures](/docs/spring-boot/what-the-starter-configures/#cloudevent-conversion).
+:::

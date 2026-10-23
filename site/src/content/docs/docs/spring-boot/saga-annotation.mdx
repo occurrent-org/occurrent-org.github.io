@@ -227,3 +227,73 @@ void becameLeader() {
 `startAll()` starts every withheld push source, projections and sagas alike, and `pendingIds()` says what is still waiting. The saga's instances are readable through [`SagaInstances`](/docs/layer-1/observing-sagas/) while it waits, since that reads the state store rather than a running subscription, so you can look at what is in flight before deciding to start it.
 
 The design rationale, including why a domain event feed is refused and why the timers wait for the handover, is in [ADR 0096](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0096-a-push-fed-saga-may-have-no-history-to-replay.md).
+
+## Observing @Saga instances
+
+The `@Saga` registrar publishes each saga's [`SagaInstances`](/docs/layer-1/observing-sagas/) under a registry keyed by saga id:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    @Service
+    class SagaDashboard {
+
+        private final SagaInstancesRegistry registry;
+
+        SagaDashboard(SagaInstancesRegistry registry) {
+            this.registry = registry;
+        }
+
+        List<SagaInstance> stalled(String sagaId, Duration threshold) {
+            SagaInstances instances = registry.get(sagaId);
+            List<SagaInstance> stalled = new ArrayList<>(
+                    instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100));
+            stalled.addAll(instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 100));
+            return stalled;
+        }
+    }
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    @Service
+    class SagaDashboard(private val registry: SagaInstancesRegistry) {
+
+        fun stalled(sagaId: String, threshold: Duration): List<SagaInstance> {
+            val instances = registry.get(sagaId)
+            return instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100) +
+                    instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 100)
+        }
+
+        fun sagaIds(): Set<String> = registry.sagaIds()
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+`get(id)` throws and names every id that is registered, which is what you want when the id is a constant in your own code. `find(id)` returns an `Optional` for an id that came from a request or a configuration value. `sagaIds()` lists them so a dashboard does not hardcode ids. Each saga is also published under the bean name `sagaInstances-<id>`, reachable with `getBean` or a `@Qualifier` if you prefer to inject one saga's view directly.
+
+Each saga's running `SagaSubscription` is published the same way, as `sagaSubscription-<id>`. It's the handle `SagaRunner` returns on the programmatic path, so it gives you the saga's event `Subscription` and `waitUntilStarted()` as well as `instances()`. A saga on a push feed that you start through `ManualStartPushSources` gets this bean when you start it, not when the context refreshes.
+
+One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
+
+You never build a `SagaRunnerConfig` for a `@Saga`, so the [quarantine](/docs/layer-1/observing-sagas/#quarantined-instances) budget is the property `occurrent.saga.quarantine-after`, one value for every `@Saga` in the application. It has no default. Leave it out, or leave it blank, to keep quarantine off, or set it to a positive duration to turn it on. Zero or a negative value stops an application with at least one `@Saga` from starting.
+
+```properties
+occurrent.saga.quarantine-after=5m
+```
+
+## Several instances of a @Saga
+
+The starter uses a [competing-consumer](/docs/layer-0/competing-consumers/) subscription model by default, so only one instance receives a saga's events at a time. [Gating the timer poller](/docs/layer-1/saga-delivery/) is on by default too. A `@Saga` runner reuses the same `SpringMongoLeaseCompetingConsumerStrategy` the subscription model already builds, so nothing extra to wire. Both the poll interval and the gating are configurable under `occurrent.saga`:
+
+```yaml
+occurrent:
+  saga:
+    timer-poll-interval: 15s   # the default, lower it only if you rely on short timeouts firing promptly
+    competing-consumer:
+      enabled: true   # set to false to let every instance poll (the uncoordinated behavior)
+```
+
+Turn `competing-consumer.enabled` off and the poller runs on every instance.

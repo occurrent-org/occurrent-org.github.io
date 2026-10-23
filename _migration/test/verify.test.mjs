@@ -103,6 +103,16 @@ test("a section may lose up to 10% of its words, not more", () => {
     assert.deepEqual(types(run()), ["words:eventstore"]);
 });
 
+test("a section may give its words away when moved.json says where, with a reason and a real target", () => {
+    const shrunk = { ...inventory, sections: inventory.sections.map((section) => (section.anchor === "eventstore" ? { ...section, words: 40 } : section)) };
+    assert.deepEqual(types(run({ inventory: shrunk })), ["words:eventstore"]);
+    assert.deepEqual(run({ inventory: shrunk, moved: [{ anchor: "eventstore", to: "/stores/in-memory/#in-memory", reason: "Spring Boot text moved" }] }), []);
+    assert.deepEqual(types(run({ inventory: shrunk, moved: [{ anchor: "eventstore", to: "/stores/in-memory/#nope", reason: " " }] })), [
+        "moved-reason:eventstore",
+        "moved-target:eventstore",
+    ]);
+});
+
 test("with no new site yet, every anchor, code block and dependency is reported", () => {
     const problems = verify({ inventory, moveMap: {}, merged: [], siteDir: join(siteDir, "none"), sourcesDir: join(sourcesDir, "none") });
     assert.deepEqual(types(problems), [

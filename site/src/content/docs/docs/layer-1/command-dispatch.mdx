@@ -174,4 +174,6 @@ Only one field, record component, or getter per command class can carry `@Target
 
 This is the single-stream match to [deriving DCB tags from annotations](/docs/layer-1/dcb-with-domain-events/#deriving-tags-from-annotations). `@DcbTag` marks the fields that become the tags for a DCB boundary spanning several streams. `@TargetStreamId` marks the one field that already is the id of a single stream.
 
-The Spring Boot starter registers a default `StreamIdResolver` bean backed by `AnnotationStreamIdResolver`, scanning your commands for `@TargetStreamId`. Define your own `StreamIdResolver` bean when a command's stream id needs computing rather than reading off one field, and the starter uses that bean instead.
+:::tip[Using Spring Boot?]
+The starter registers a `StreamIdResolver` bean for you. See [What the starter configures](/docs/spring-boot/what-the-starter-configures/#command-dispatch).
+:::

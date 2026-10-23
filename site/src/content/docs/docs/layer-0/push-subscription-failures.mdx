@@ -85,7 +85,7 @@ To recover without a restart, create the new feed in code, for example by callin
   </TabItem>
 </Tabs>
 
-A `DomainEventFeed` takes a projection only once, so you have to replace the whole `DomainEventFeed`. With the Spring Boot starter, the feed is a bean, so restarting the application is the only way.
+A `DomainEventFeed` takes a projection only once, so you have to replace the whole `DomainEventFeed`.
 
 ## Stopping, starting and skipping the catch-up
 
@@ -118,9 +118,7 @@ So the code that starts your application calls one of the two, once for each fee
 * If this application stores them in its own event store, call `catchUp()`. That's the usual case, where the application that writes the events also publishes them.
 * If it doesn't, for example because another service publishes the events and nothing here stores them, call `goLive()`. A replay would read a history that is empty or belongs to something else.
 
-With the Spring Boot starter you don't make either call yourself. At startup the starter calls `catchUp(id)` by default, and `goLive(id)` when the `@Projection` has `catchup = Catchup.NONE`.
-
-Without Spring Boot, call it right after you create the feed, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on a `DomainEventFeed`, naming the projection the same way `catchUp(id)` does). On the blocking stack, call it from the startup thread rather than from a listener thread:
+Call it right after you create the feed, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on a `DomainEventFeed`, naming the projection the same way `catchUp(id)` does). On the blocking stack, call it from the startup thread rather than from a listener thread:
 
 ```java
 feed.goLive();
@@ -148,7 +146,7 @@ A `DomainEventFeed` or `CatchupProjectionFeed` throws an exception in these thre
 
 Refusing an event with no projection registered matters because a listener acknowledges the broker message once `acceptAndWait` returns. Acknowledging an event no projection received means the broker discards it for good. On the refusal your listener [hands the message back to the broker](/docs/stores/brokers/#handing-a-message-back-to-the-broker) instead, the same way as for `HOLD`, so the broker still has it once the projection is registered. Ask `feed.hasProjection()` if you would rather check than catch.
 
-This matters most with `occurrent.subscription.mode=manual`, where the registration is deferred until you call `ManualStartPushSources.startAll()`. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
+This matters most when the registration is deferred until you call `ManualStartPushSources.startAll()`, which is what Spring Boot's `occurrent.subscription.mode=manual` does. Refusing is what makes manual mode withhold events rather than lose them. The broker is the only thing holding a backlog, and it only holds one while nobody acknowledges.
 
 `PushSubscriptionModel.accept(..)` returns normally instead, for the reason given under [Observing pushed events](/docs/layer-0/push-subscription/#observing-pushed-events). When you drive it from a broker, call `acceptOrDefer(CloudEvent)` instead. It returns `UNAVAILABLE` for an event that arrives before anything is registered, which is a `HOLD`, so [hand the message back to the broker](/docs/stores/brokers/#handing-a-message-back-to-the-broker) rather than acknowledge it. A [`PushObserver`](/docs/layer-0/push-subscription/#observing-pushed-events) is told the same outcome for each event the model is asked to deliver.
 
@@ -188,3 +186,7 @@ Once the projection's catch-up has failed, every later `acceptOrDeferCloudEvent(
 The same limits as the CloudEvent push apply, live-resume is the broker's job and delivery is at-least-once, so applying the same event twice must leave the read model unchanged. `startupMode = BACKGROUND` works here too, and a background replay reports its progress and any failure on the same `PushCatchupStatus` bean.
 
 If you are upgrading from 0.31.0 and shared one `PushSubscriptionModel` or `DomainEventFeed` between several projections, [upgrading to 0.32.0](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.32.0.md) shows the before and after.
+
+:::tip[Using Spring Boot?]
+The starter calls `catchUp(id)` or `goLive(id)` for you, and the feed is a bean. See [Fed by a push source](/docs/spring-boot/projection-annotation/#fed-by-a-push-source).
+:::

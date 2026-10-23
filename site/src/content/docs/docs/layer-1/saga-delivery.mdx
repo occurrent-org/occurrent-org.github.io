@@ -132,7 +132,7 @@ For the full design rationale, including the residual cross-node race a compare-
 
 ## Running Across Multiple Instances
 
-Run several instances of your application, and a saga has two things happening per instance. It receives events, and it polls the state store for due timers. The event side is already single-active when the subscription model is a [competing-consumer](/docs/layer-0/competing-consumers/) one, and the [Spring Boot starter](/docs/spring-boot/starter/) uses one by default. So for a given saga, only one instance receives events at a time. The timer poller is separate. Left uncoordinated, every instance runs its own poller and queries the store for due timers on its own interval. The timer-query load then grows with the instance count, even though only one instance ever needs to fire a due timer. Firing stays correct either way, since a lost compare-and-set is retried and the dispatch is idempotent, but the extra queries are wasted work.
+Run several instances of your application, and a saga has two things happening per instance. It receives events, and it polls the state store for due timers. The event side is already single-active when the subscription model is a [competing-consumer](/docs/layer-0/competing-consumers/) one,. So for a given saga, only one instance receives events at a time. The timer poller is separate. Left uncoordinated, every instance runs its own poller and queries the store for due timers on its own interval. The timer-query load then grows with the instance count, even though only one instance ever needs to fire a due timer. Firing stays correct either way, since a lost compare-and-set is retried and the dispatch is idempotent, but the extra queries are wasted work.
 
 Give the `SagaRunner` a `CompetingConsumerStrategy` with `competingConsumerStrategy(...)`, the same strategy the competing-consumer subscription uses. The poller is gated too. It takes a lease and only polls while it holds it, so exactly one instance queries the store. The lease is keyed apart from the event subscription's own lease, and released when the `SagaSubscription` is closed, so another instance takes over within about one lease period. A standby instance checks whether it holds the lease in memory, so it costs no query at all:
 
@@ -158,17 +158,7 @@ Give the `SagaRunner` a `CompetingConsumerStrategy` with `competingConsumerStrat
   </TabItem>
 </Tabs>
 
-On the [Spring Boot starter](/docs/spring-boot/starter/) this is on by default. A `@Saga` runner reuses the same `SpringMongoLeaseCompetingConsumerStrategy` the subscription model already builds, so nothing extra to wire. Both the poll interval and the gating are configurable under `occurrent.saga`:
-
-```yaml
-occurrent:
-  saga:
-    timer-poll-interval: 15s   # the default, lower it only if you rely on short timeouts firing promptly
-    competing-consumer:
-      enabled: true   # set to false to let every instance poll (the uncoordinated behavior)
-```
-
-Turn `competing-consumer.enabled` off, or run without a strategy, and the poller runs on every instance exactly as it did before. Single-node and in-memory setups need none of this.
+Run without a strategy and the poller runs on every instance exactly as it did before. Single-node and in-memory setups need none of this.
 
 Gating removes the redundant queries. It does not change the residual cross-node race noted in the [delivery contract](/docs/layer-1/saga-delivery/) (an event on one instance interleaving with a timeout fired on another), which stays handled by compare-and-set and an idempotent receiver. See [ADR 0064](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0064-lease-gate-the-saga-timer-poller.md) for the full rationale.
 
@@ -201,3 +191,7 @@ Compensation works the same way. A saga does not roll back, it moves forward, so
 Both branches issue the same forward-moving `CancelOrder` compensation for the `ReservePayment` issued when the step started, whichever failure mode gets there first.
 
 The one thing to watch out for is idempotency, and it follows directly from the [delivery contract](/docs/layer-1/saga-delivery/). Command dispatch is at-least-once, so a compensating or external command can arrive twice. An `ApplicationService`-backed target handles that for free, because it replays the stream and the target's own invariants reject the duplicate. A raw third-party call does not. When a command triggers a non-idempotent external effect such as an email, a payment capture, or a partner request, give it a stable id derived from the saga and the triggering event, and dedupe at that boundary. The deferred document-local outbox described in [ADR 0063](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0063-saga-dsl.md) would make dispatch exactly-once and remove this caveat, but it is not built yet.
+
+:::tip[Using Spring Boot?]
+The starter gates the timer poller for you, and `occurrent.saga.timer-poll-interval` sets its interval. See [Several instances of a @Saga](/docs/spring-boot/saga-annotation/#several-instances-of-a-saga).
+:::

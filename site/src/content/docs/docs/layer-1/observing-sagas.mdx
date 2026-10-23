@@ -79,54 +79,6 @@ Enumeration is an optional store capability. A store implements `SagaStateStoreQ
 
 Enumerating instances is cheap. Listing flow-saga instances never deserializes their state or received events, so a periodic stuck-instance check costs little even with many instances. Rationale in [ADR 0070](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0070-saga-instance-observation.md).
 
-On the Spring stack the `@Saga` registrar publishes each saga's `SagaInstances` under a registry keyed by saga id:
-
-<Tabs syncKey="lang">
-  <TabItem label="Java">
-    ```java
-    @Service
-    class SagaDashboard {
-
-        private final SagaInstancesRegistry registry;
-
-        SagaDashboard(SagaInstancesRegistry registry) {
-            this.registry = registry;
-        }
-
-        List<SagaInstance> stalled(String sagaId, Duration threshold) {
-            SagaInstances instances = registry.get(sagaId);
-            List<SagaInstance> stalled = new ArrayList<>(
-                    instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100));
-            stalled.addAll(instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 100));
-            return stalled;
-        }
-    }
-    ```
-  </TabItem>
-
-  <TabItem label="Kotlin">
-    ```kotlin
-    @Service
-    class SagaDashboard(private val registry: SagaInstancesRegistry) {
-
-        fun stalled(sagaId: String, threshold: Duration): List<SagaInstance> {
-            val instances = registry.get(sagaId)
-            return instances.findByStatus(SagaStatus.ACTIVE, Instant.now().minus(threshold), 100) +
-                    instances.findByStatus(SagaStatus.QUARANTINED, Instant.now(), 100)
-        }
-
-        fun sagaIds(): Set<String> = registry.sagaIds()
-    }
-    ```
-  </TabItem>
-</Tabs>
-
-`get(id)` throws and names every id that is registered, which is what you want when the id is a constant in your own code. `find(id)` returns an `Optional` for an id that came from a request or a configuration value. `sagaIds()` lists them so a dashboard does not hardcode ids. Each saga is also published under the bean name `sagaInstances-<id>`, reachable with `getBean` or a `@Qualifier` if you prefer to inject one saga's view directly.
-
-Each saga's running `SagaSubscription` is published the same way, as `sagaSubscription-<id>`. It's the handle `SagaRunner` returns on the programmatic path, so it gives you the saga's event `Subscription` and `waitUntilStarted()` as well as `instances()`. A saga on a push feed that you start through `ManualStartPushSources` gets this bean when you start it, not when the context refreshes.
-
-One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
-
 ## Quarantined Instances<HeadingBadge text="Added in 0.34.0" />
 
 Each saga gets one subscription, and that subscription delivers the events for all of its instances. An instance that cannot handle an event keeps failing for as long as your subscription model offers that event again.
@@ -263,10 +215,8 @@ Pass the budget to `withQuarantineAfter`. Five minutes is a reasonable budget.
 
 `withQuarantineAfter(null)` throws, and so does a zero or negative budget. `disableQuarantine()` turns quarantine off again.
 
-On the annotation path you never build a `SagaRunnerConfig`, so the budget is the property `occurrent.saga.quarantine-after`, one value for every `@Saga` in the application. It has no default. Leave it out, or leave it blank, to keep quarantine off, or set it to a positive duration to turn it on. Zero or a negative value stops an application with at least one `@Saga` from starting.
-
-```properties
-occurrent.saga.quarantine-after=5m
-```
-
 The design, including why releasing an instance back into service is harder than it looks, is in [ADR 0134](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0134-a-saga-instance-that-keeps-failing-is-quarantined-at-its-own-position.md).
+
+:::tip[Using Spring Boot?]
+The `@Saga` registrar publishes a `SagaInstancesRegistry` bean, and `occurrent.saga.quarantine-after` turns quarantine on. See [Observing @Saga instances](/docs/spring-boot/saga-annotation/#observing-saga-instances).
+:::

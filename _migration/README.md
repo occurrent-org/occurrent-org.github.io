@@ -44,7 +44,7 @@ Run `node _migration/inventory.mjs` for the totals, or add `--out inventory.json
 * every code block's content is in the new site's sources, unless a merge in `merged.json` lists it under `codeBlocks`
 * every dependency's `artifactId` is in the new site's sources
 * every link to another page or site is in the new site's sources
-* no section has lost more than 10% of its words
+* no section has lost more than 10% of its words, unless `moved.json` says where they went and why (the Spring Boot clean-up moves text between pages on purpose)
 
 `move-map.json` will also drive the redirects, so an old link like `/documentation#saga-dsl` keeps working.
 

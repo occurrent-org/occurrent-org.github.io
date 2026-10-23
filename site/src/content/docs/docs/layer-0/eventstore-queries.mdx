@@ -192,6 +192,6 @@ A minimal reader for events whose payload is already a `Map`, the shape a test o
 
 The shipped Jackson reader already resolves `Map` payloads without parsing, so in practice this example earns its keep as a picture of the contract rather than as code you need. The interface also has `readAll(cloudEvent, paths)` for a filter with several `data` conditions. Its default loops over `read`, so ignore it until resolving every path in one pass over the payload is a measured win.
 
-## With Spring Boot
-
-Add `occurrent-common-inmemory-filter-matching-jackson` to the classpath and the [Spring Boot starter](/docs/spring-boot/starter/) (both the blocking one and the [reactive](/docs/spring-boot/starter/#reactive-spring-boot-starter) one) contributes a `DataFieldReader` bean backed by `JacksonDataFieldReader`. The auto-configured `SynchronousSubscriptionModel` bean picks it up automatically, so a `data` filter on a [synchronous subscription](/docs/layer-1/synchronous-subscriptions/) works once the artifact is on the classpath. Define your own `DataFieldReader` bean instead to replace it. Without either, that same filter still refuses, naming the artifact to add. A hand-built `PushSubscriptionModel` isn't managed by the starter, so pass the reader to its constructor yourself if you need one there too.
+:::tip[Using Spring Boot?]
+The starter contributes a `DataFieldReader` bean when the Jackson module is on the classpath. See [What the starter configures](/docs/spring-boot/what-the-starter-configures/#filtering-on-payload-data).
+:::

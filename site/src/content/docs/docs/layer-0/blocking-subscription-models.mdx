@@ -204,8 +204,6 @@ A subscription runs into this whenever it opens its change stream at a position 
 
 Automatic restart is off when you create the model yourself, because a subscription that restarts from the current time can miss events. That happens when the subscriptions run in a different process than the writes, and the event store gets many writes. It's safe when the subscription runs in the same process as the writes, as long as the subscription starts before the application accepts writes.
 
-The Spring Boot starter turns automatic restart on. Set `occurrent.subscription.mongodb.restart-on-change-stream-history-lost=false` to turn it off there.
-
 To turn it on when you create the model yourself:
 
 ```java
@@ -301,3 +299,7 @@ Then you can use it like this:
 </Tabs>
 
 By default this model refuses a subscription filter on the event `data` payload. Pass a `DataFieldReader` to its constructor to give it one, see [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data).
+
+:::tip[Using Spring Boot?]
+The starter turns automatic restart on. See [What the starter configures](/docs/spring-boot/what-the-starter-configures/#restarting-when-the-oplog-is-lost).
+:::

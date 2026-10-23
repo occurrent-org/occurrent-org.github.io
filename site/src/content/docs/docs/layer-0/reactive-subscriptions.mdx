@@ -162,8 +162,6 @@ The default implementations evaluate no condition. The default `delete(subscript
 
 A `save` for that first position that completes without emitting a checkpoint is refused with `IllegalStateException`, naming the storage and the position it tried to record. Nothing then shows whether the write reached storage.
 
-The blocking Spring Boot starter runs its own fencing check against `evaluatesWriteConditionsFor` at startup. That check belongs to the blocking stack only and has no reactor equivalent.
-
 `ReactorDurableSubscriptionModel` deletes a cancelled subscription's checkpoint with `notOlderThan` and the version it read just before. A subscribe of the same id that comes while that delete runs writes the checkpoint back at a higher version. So the delete is refused, or what it removed is stored again.
 
 With a storage that returns `false` from `evaluatesDeleteConditions()` or from `evaluatesWriteConditionsFor(subscriptionId)`, the delete is unconditional. The checkpoint is then written back once the delete attempt in progress has ended.

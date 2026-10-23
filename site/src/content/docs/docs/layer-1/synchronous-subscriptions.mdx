@@ -44,7 +44,7 @@ By default a synchronous subscription is best-effort. The handler runs before `e
 
 To make the write and the handlers commit or roll back together, configure a `TransactionExecutor` (`org.occurrent.application.service.TransactionExecutor`, in the `occurrent-application-service-common` module) on the application service. It defaults to `TransactionExecutor.noTransaction()`, a pass-through. Two real executors ship:
 
-* **Spring.** The [Spring Boot Starter](/docs/spring-boot/starter/) wires a `SpringTransactionExecutor` (backed by `TransactionTemplate`, or `TransactionalOperator` on the reactive starter) by default, so a `@SynchronousSubscription` handler that writes to the same MongoDB commits atomically with the event write, without a call-site `@Transactional`.
+* **Spring.** `SpringTransactionExecutor`, backed by `TransactionTemplate` (or `TransactionalOperator` on the reactor stack), runs the handler in a Spring transaction, so a handler that writes to the same MongoDB commits atomically with the event write, without a call-site `@Transactional`.
 * **Native, no Spring.** `NativeMongoTransactionExecutor` (module `occurrent-application-service-transaction-mongodb-native`) opens a MongoDB `ClientSession` and transaction that the native event store's write joins, giving a no-Spring application the same atomic guarantee.
 
 A handler's own `@Transactional` composes with this. On the same datastore it joins the write's transaction, so the two are atomic. On a different datastore it opens its own transaction, which commits independently and is never atomic with the event write, because there is no distributed transaction. For a handler's `@Transactional` to take effect at all, the annotation processor invokes the handler through its Spring proxy rather than the raw target.
@@ -105,3 +105,7 @@ Register handlers on a `SynchronousSubscriptionModel` through the ordinary [Subs
 Leave the `transactionExecutor(...)` call off to run best-effort with no transaction. The same builder and DSL exist on the reactive stack (a `ReactiveTransactionExecutor` and the reactive `SynchronousSubscriptionModel`) and on the DCB application services.
 
 Because it matches entirely in memory, `new SynchronousSubscriptionModel()` refuses a subscription filter on the event `data` payload. Pass a `DataFieldReader` to its constructor to give it one, see [Filtering on Payload Data](/docs/layer-0/eventstore-queries/#filtering-on-payload-data).
+
+:::tip[Using Spring Boot?]
+The starter wires `SpringTransactionExecutor` by default, and `@SynchronousSubscription` registers a handler. See [What the starter configures](/docs/spring-boot/what-the-starter-configures/#synchronous-subscriptions).
+:::

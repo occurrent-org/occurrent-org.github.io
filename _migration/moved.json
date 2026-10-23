@@ -1,0 +1,17 @@
+[
+  {
+    "anchor": "push-subscription-blocking-catchup",
+    "to": "/docs/spring-boot/projection-annotation/#fed-by-a-push-source",
+    "reason": "Spring Boot clean-up: the @Projection(source = PUSH) text (properties, binding, startupMode, PushCatchupStatus, Catchup.NONE) moved to the Spring Boot page."
+  },
+  {
+    "anchor": "feeding-domain-events-instead-of-cloudevents",
+    "to": "/docs/spring-boot/projection-annotation/#fed-by-a-domaineventfeed",
+    "reason": "Spring Boot clean-up: declaring a DomainEventFeed bean for a @Projection moved to the Spring Boot page."
+  },
+  {
+    "anchor": "saga-quarantine-on",
+    "to": "/docs/spring-boot/saga-annotation/#observing-saga-instances",
+    "reason": "Spring Boot clean-up: the occurrent.saga.quarantine-after property moved to the @Saga page."
+  }
+]

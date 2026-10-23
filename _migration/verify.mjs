@@ -5,8 +5,8 @@
 // Every old anchor must be in move-map.json (old anchor -> new URL) or in merged.json (a deliberate merge of
 // duplicated content, with a reason). Every target must exist in the built site, every code block must appear in
 // the site's sources, every dependency snippet's artifactId and every link to another page must appear in the
-// sources, and no section may lose more than 10% of its words. With --report the problems are printed but the
-// exit code stays 0.
+// sources, and no section may lose more than 10% of its words, unless moved.json says where they went. With
+// --report the problems are printed but the exit code stays 0.
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -33,7 +33,7 @@ const resolveTarget = (siteDir, url) => {
     return { file, fragment };
 };
 
-export function verify({ inventory, moveMap, merged, siteDir, sourcesDir }) {
+export function verify({ inventory, moveMap, merged, moved = [], siteDir, sourcesDir }) {
     const problems = [];
     const known = new Set(inventory.anchors.map(({ anchor }) => anchor));
     if (inventory.sections.some(({ anchor }) => anchor === "_preamble")) known.add("_preamble");
@@ -86,9 +86,21 @@ export function verify({ inventory, moveMap, merged, siteDir, sourcesDir }) {
         if (!allSources.includes(url)) problems.push({ type: "link", anchor: null, message: `The link to ${url} is not in the site's sources` });
     }
 
+    // A section may give words to another page on purpose, as the Spring Boot clean-up does. moved.json says where.
+    const movedByAnchor = new Map(moved.map((entry) => [entry.anchor, entry]));
+    for (const entry of moved) {
+        if (!known.has(entry.anchor)) problems.push({ type: "unknown", anchor: entry.anchor, message: `#${entry.anchor} is in moved.json but is not an anchor on today's docs page` });
+        if (!entry.reason?.trim()) problems.push({ type: "moved-reason", anchor: entry.anchor, message: `#${entry.anchor} is in moved.json without a reason` });
+        const { file, fragment } = resolveTarget(siteDir, entry.to ?? "");
+        const html = page(file);
+        if (html === null || (fragment !== null && !htmlIds(html).includes(fragment))) {
+            problems.push({ type: "moved-target", anchor: entry.anchor, message: `#${entry.anchor} gave words to ${entry.to}, which is not a built page with that id` });
+        }
+    }
+
     for (const section of inventory.sections) {
         const url = moveMap[section.anchor];
-        if (url === undefined || section.words === 0) continue;
+        if (url === undefined || section.words === 0 || movedByAnchor.has(section.anchor)) continue;
         const { file, fragment } = resolveTarget(siteDir, url);
         const html = page(file);
         if (html === null || fragment === null) continue;
@@ -119,6 +131,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
         inventory: currentInventory(),
         moveMap: readJson("move-map.json"),
         merged: readJson("merged.json"),
+        moved: readJson("moved.json"),
         siteDir: join(repo, option("--site", "site/dist")),
         sourcesDir: join(repo, option("--sources", "site/src/content/docs")),
     });

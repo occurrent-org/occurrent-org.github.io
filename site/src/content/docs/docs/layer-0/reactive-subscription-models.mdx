@@ -98,7 +98,7 @@ If a subscription's change stream first opens longer after `subscribe(..)` than 
 
 With the model's default, `false`, the subscription stops, the model logs an error, and `isRunning(id)` returns `false`. `waitUntilStarted()` has already reported it started by then. It reports that when the model asks MongoDB to open the change stream, before MongoDB answers that the history is gone.
 
-To restart at the present instead, skipping the events written in between, create the model with `ReactorMongoSubscriptionModelConfig.withConfig().restartSubscriptionsOnChangeStreamHistoryLost(true)`. The reactive Spring Boot starter turns it on unless `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` is `false`.
+To restart at the present instead, skipping the events written in between, create the model with `ReactorMongoSubscriptionModelConfig.withConfig().restartSubscriptionsOnChangeStreamHistoryLost(true)`.
 
 When the cluster time the model read is at most 15 seconds older than the server's clock, every event written through the same `MongoClient` after the call is delivered, whatever the server's clock shows. So is every event another client writes to a replica set, unless another member becomes primary in between.
 
@@ -224,7 +224,7 @@ Two registrations are never refused by that read:
 
 So a position source that can never answer stops a brand new subscription rather than every subscription the application has.
 
-To start a registration whose read returns nothing, set `startWhenNoStartPositionCanBeRecorded(true)` on `ReactorDurableSubscriptionModelConfig`. With the Spring Boot starter, set `occurrent.subscription.start-when-no-start-position-can-be-recorded=true`.
+To start a registration whose read returns nothing, set `startWhenNoStartPositionCanBeRecorded(true)` on `ReactorDurableSubscriptionModelConfig`.
 
 `ReactorMongoSubscriptionModel` returns nothing when the server refuses the `hostInfo` command, as a shared MongoDB Atlas cluster does. A read that fails is still refused. [When No Start Position Can Be Recorded](/docs/layer-0/durable-subscriptions/#when-no-start-position-can-be-recorded) explains what you risk by starting without a stored position.
 
@@ -277,7 +277,7 @@ durableModel.shutdown();
 durableModel.subscribe("order-status", filter, startAt, action);
 ```
 
-That includes a durable model that wraps a catch-up model, which is what the reactive Spring Boot starter builds.
+That includes a durable model that wraps a catch-up model.
 
 If you subscribe with a subscription id while `shutdown()` is running, the subscribe either throws the same exception or is cancelled by the shutdown.
 
@@ -308,7 +308,7 @@ Every subscribe checks whether the wrapped model holds the id. It calls `subscri
 
 A wrapped model of your own that doesn't implement `IntrospectableSubscriptions` can return `false` from both `isRunning(..)` and `isPaused(..)` for a subscription it moves between running and paused. The check at the call then misses that subscription. The call can also subscribe to the wrapped model's `globalCheckpointAsOfNow()` on the calling thread, so that method shouldn't block when its `Mono` is subscribed to.
 
-This is the composition the reactive Spring Boot starter wires for a store that writes a `position`. The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
+The reactor catch-up models are themselves named subscription models, so the durable model on top delegates to them rather than driving their cold primitive itself.
 
 Once shut down, a reactor catch-up model that wraps a named subscription model throws `SubscriptionModelShutdownException` when you call `subscribe(..)` with a subscription id, before it replays anything. The durable model on top does the same, see [Shutting Down](/docs/layer-0/reactive-subscription-models/#shutting-down).
 
@@ -333,3 +333,7 @@ While such a subscription waits:
 The replay runs again from where it started, so the events it delivered before the stop are delivered again.
 
 A `resumeSubscription(id)` of a paused subscription on a stopped model calls `start(false)` first, so the model's other paused subscriptions stay paused.
+
+:::tip[Using Spring Boot?]
+[What the starter configures](/docs/spring-boot/what-the-starter-configures/#subscriptions) says which of these settings the reactive starter turns on, and the properties that change them.
+:::

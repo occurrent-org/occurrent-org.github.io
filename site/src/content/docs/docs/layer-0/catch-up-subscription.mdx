@@ -129,7 +129,7 @@ When the model is stopped and `start(..)` throws because the wrapped model faile
 
 ## Resuming a Replay from a Stored Checkpoint
 
-This applies to a position catch-up that stores its position while it replays. The blocking MongoDB Spring Boot starter stores it every 1000 events. The position catch-ups are:
+This applies to a position catch-up that stores its position while it replays. The position catch-ups are:
 
 * `StreamCatchupSubscriptionModel` and `DcbCatchupSubscriptionModel`
 * on the reactor stack, `ReactorStreamCatchupSubscriptionModel` and `ReactorDcbCatchupSubscriptionModel`
@@ -160,7 +160,7 @@ On the reactor stack the checkpoint from the replay stays stored after the catch
 
 A `position:N` checkpoint stored by 0.33.0 has no live start. It resumes with a live start read after the restart, so an event that committed late, like the one at position 1 above, isn't delivered. It also logs a warning that names the subscription.
 
-A blocking catch-up whose replay fails logs the failure at `ERROR`, as well as throwing it from `waitUntilStarted()`. So a caller that never calls `waitUntilStarted()` still learns about it. The Spring Boot starter doesn't wait for a subscription that replays history unless its `startupMode` says so. A catch-up that was cancelled, stopped, shut down or replaced by a newer subscribe for the same id isn't logged. On the reactor stack the subscription fails with the error.
+A blocking catch-up whose replay fails logs the failure at `ERROR`, as well as throwing it from `waitUntilStarted()`. So a caller that never calls `waitUntilStarted()` still learns about it. A catch-up that was cancelled, stopped, shut down or replaced by a newer subscribe for the same id isn't logged. On the reactor stack the subscription fails with the error.
 
 ## Resuming a Time-based Replay
 
@@ -178,7 +178,7 @@ A time stored by 0.33.0 has no live start. It resumes with a live start read at 
 
 ## Resuming a Subscription Another Node's Catch-up Started
 
-On the blocking stack, `resumeSubscription(id)` and `start(true)` on `CatchupSubscriptionModel` or `StreamCatchupSubscriptionModel` replay from a position a catch-up stored for a paused subscription, also when another node's catch-up stored it. That's the case when a [competing consumer](/docs/layer-0/competing-consumers/) gets the lease of a subscription whose replay another node hadn't finished. The MongoDB Spring Boot starter builds a `CompetingConsumerSubscriptionModel` over a `CatchupSubscriptionModel`, so a node that gets the lease resumes the subscription this way.
+On the blocking stack, `resumeSubscription(id)` and `start(true)` on `CatchupSubscriptionModel` or `StreamCatchupSubscriptionModel` replay from a position a catch-up stored for a paused subscription, also when another node's catch-up stored it. That's the case when a [competing consumer](/docs/layer-0/competing-consumers/) gets the lease of a subscription whose replay another node hadn't finished.
 
 The catch-up replays from the stored position and then resumes the subscription in the wrapped model. Events the other node had already delivered after that position arrive again.
 
@@ -251,3 +251,7 @@ It's also possible to start from a specific `java.time.OffsetDateTime`, for exam
 </Tabs>
 
 Several events can share a time, so the replay includes the events stored at exactly that time. If you pass the time of the last event you handled, to continue where you left off, that event is delivered again.
+
+:::tip[Using Spring Boot?]
+[What the starter configures](/docs/spring-boot/what-the-starter-configures/#catch-up-subscriptions) says how the starter builds and starts catch-up subscriptions.
+:::
