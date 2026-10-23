@@ -65,7 +65,8 @@
 .hero {
     margin-inline: calc(-1 * var(--sl-content-pad-x, 1.5rem));
     padding-inline: var(--sl-content-pad-x, 1.5rem);
-    border-radius: 0 0 1.5rem 1.5rem;
+    margin-top: 1rem;
+    border-radius: 1.5rem;
     background: radial-gradient(circle at 70% 40%, #7fbab4 0%, #0f6679 75%);
     color: #fff;
 }
@@ -89,8 +90,21 @@
 }
 
 .hero {
-    padding-block: 4rem;
+    padding-block: 2.25rem;
     grid-template-columns: 1fr;
+    gap: 1rem;
+}
+
+.hero > .sl-flex {
+    gap: 1.25rem;
+}
+
+.hero h1 {
+    font-size: clamp(var(--sl-text-3xl), 4vw, var(--sl-text-4xl));
+}
+
+.hero .tagline {
+    font-size: var(--sl-text-lg);
 }
 
 .hero > .sl-flex {
