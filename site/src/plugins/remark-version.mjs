@@ -1,5 +1,5 @@
 // Puts the Occurrent version the docs describe wherever a page writes %OCCURRENT_VERSION%: in text, code, link
-// targets and component attributes. The version comes from occurrentversion in the root _config.yml.
+// targets and component attributes. The version comes from src/version.mjs.
 
 import { OCCURRENT_VERSION } from "../version.mjs";
 

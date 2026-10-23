@@ -1,20 +1,18 @@
 # Repository guide
 
-This is [occurrent.org](https://occurrent.org), the documentation site for [Occurrent](https://github.com/johanhaleby/occurrent). It is a Jekyll site. The main documentation page is `pages/docs/docs.md`, rendered at `/documentation`, and release announcements live under `_posts/news/`.
+This is [occurrent.org](https://occurrent.org), the website and documentation for [Occurrent](https://github.com/johanhaleby/occurrent). It is an Astro Starlight site in `site/`. [`README.md`](README.md) says how to run it and where things are, and [`site/README.md`](site/README.md) says how to write a page. Read both before you change anything.
 
-## "Added in vX.Y.Z" version labels
+## Checking a change
 
-The documentation marks when a feature first shipped with a small "Added in vX.Y.Z" badge next to its heading (the Query DSL heading is an example). These labels come from the `addedTags` map in `js/_partials/main.js`, and only run on the `/documentation` page.
+From `site/`, run `npm test`, `npm run build` and `npm run check-links`. The build fails on a broken internal link, including a link to a heading that no longer exists. `check-links` fails if a link on the built site leads nowhere, or if an address the old Jekyll site served is gone. Look at a changed page in `npm run preview` before you call it done.
 
-Each entry maps a section's HTML id to the version that introduced it:
+## "Added in" labels
 
-```js
-"saga-dsl" : "0.31.0",
-```
+When a feature first ships in a release, mark it with the version. For a whole page, set `addedIn: "0.31.0"` in its front matter. For a section, put `<HeadingBadge text="Added in 0.31.0" />` straight after the heading text, with no space before it, so the heading's id stays the same. Do the same when you rewrite a section to describe newly added first-class support.
 
-The id is the one kramdown generates from the heading text, lowercased with spaces turned into hyphens, so `## Saga DSL` becomes `saga-dsl`. When a heading sets an explicit `{#anchor}`, use that anchor instead. A label whose id matches no element on the page is skipped, so an entry can be added before its section merges without breaking the page.
+## Old anchors
 
-When you document a feature that ships in a release, add its id and version here. Do the same when you rewrite an existing section to describe newly added first-class support, as the `## Snapshots` section was for 0.31.0.
+`site/src/data/old-docs-anchors.json` maps every anchor on the old single docs page to its new address, and `/documentation#anchor` links all over the web depend on it. When you rename or move a page or a heading that an entry points to, update the entry.
 
 ## Prose voice
 
@@ -22,12 +20,8 @@ Human-facing prose (documentation, news posts, PR descriptions) follows Johan's 
 
 ## Writing for people
 
-**Write `pages/docs/docs.md` and the news posts the way you would explain the change to another developer out loud.** Plain words, no term standing in for a plain statement the reader can act on, and nothing beyond what they need in order to act. A paragraph that needs a second reading gets rewritten, not extended.
+**Write the pages and the news posts the way you would explain the change to another developer out loud.** Plain words, no term standing in for a plain statement the reader can act on, and nothing beyond what they need in order to act. A paragraph that needs a second reading gets rewritten, not extended.
 
 ## Release workflow
 
-Documentation for an unreleased Occurrent feature lives on its own branch, one branch and pull request per feature, and is held until the matching library release ships. `main` tracks the released site, so do not push feature documentation straight to `main`.
-
-## Docs migration
-
-The docs are moving from `pages/docs/docs.md` to a multi-page Starlight site in `site/`, see [`site/README.md`](site/README.md). It isn't live yet, but the content has moved: write docs in `site/`. `docs.md` keeps serving occurrent.org until the switch, and CI fails if it has a section, anchor, code block or dependency the new site lacks, so a change to `docs.md` needs the same change in `site/`. See [`_migration/README.md`](_migration/README.md). If `check-against-jekyll.mjs` fails after a docs change, fix the parser in `_migration/lib.mjs` rather than the docs.
+Documentation for an unreleased Occurrent feature lives on its own branch, one branch and pull request per feature, and is held until the matching library release ships. `main` is what occurrent.org shows, and every push to it publishes, so do not push feature documentation straight to `main`. A release bumps `site/src/version.mjs` and adds a post to `site/src/content/news/`.

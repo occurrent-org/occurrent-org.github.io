@@ -180,3 +180,23 @@
 .landing-release .star-us {
     justify-content: center;
 }
+
+/* Starlight keeps the text column at 45rem whatever the screen, which leaves wide screens mostly empty and makes
+   long code lines scroll. The column grows with the screen instead, up to a width where prose is still readable. */
+@media (min-width: 90rem) {
+    html[data-has-sidebar] {
+        --sl-content-width: 52rem;
+    }
+}
+
+@media (min-width: 105rem) {
+    html[data-has-sidebar] {
+        --sl-content-width: 62rem;
+    }
+}
+
+@media (min-width: 120rem) {
+    html[data-has-sidebar] {
+        --sl-content-width: 72rem;
+    }
+}
