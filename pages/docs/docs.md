@@ -7268,7 +7268,7 @@ Each saga gets one subscription, and that subscription delivers the events for a
 
 Quarantine can end that once the instance has been failing for a length of time you set, and only when the conditions in [What else has to be true](#saga-quarantine-conditions) hold as well. It is off by default, and [Turning quarantine on](#saga-quarantine-on) says how to turn it on and why it is off.
 
-When an instance is quarantined, this happens to it and to the rest of the saga:
+When an instance is quarantined, this happens:
 
 * The instance never applies the event it failed on, or any later event addressed to it. Those events still reach the saga, which skips them for this instance without recording them as handled.
 * Its timers stay armed but never fire, so a timeout it relies on to cancel or compensate never runs.
