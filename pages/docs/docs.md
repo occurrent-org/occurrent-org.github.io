@@ -2104,9 +2104,11 @@ An event the projection fed itself is the only one that can be lost. Nothing sto
 
 ###### Recovering from a failed feed {#feeding-recovery}
 
-A failed feed stays failed. To recover, fix what made it fail, and create a new feed instance with the same id, for example by calling `CatchupProjectionFeed.create("order-status", ...)` again. You don't need a new id. The new feed replays the history, since the failed one either never wrote a catch-up marker or deleted it.
+A failed feed stays failed until you replace it with a new feed that has the same id. The new feed replays the history, since the failed one either never wrote a catch-up marker or deleted it.
 
-On the blocking stack, `catchUp()` throws when the catch-up fails, so the code that starts the feed can also rebuild it:
+Restarting the application is the simplest way to do that, and the first thing to try. A restart only helps once the cause is gone, though. If the projection fails on an event because of a bug, the replay reaches the same event and fails the same way, so fix the bug first. If the feed logged that it couldn't delete its marker, delete the marker from the `CheckpointStorage` before you restart.
+
+To recover without a restart, create the new feed in code, for example by calling `CatchupProjectionFeed.create("order-status", ...)` again. On the blocking stack, `catchUp()` throws when the catch-up fails, so the code that starts the feed can also rebuild it:
 
 {% capture java %}
 private volatile CatchupProjectionFeed<OrderEvent> feed;
@@ -2141,7 +2143,7 @@ fun startFeed() {
 {% endcapture %}
 {% include macros/docsSnippet.html java=java kotlin=kotlin %}
 
-A `DomainEventFeed` takes a projection only once, so replace the whole `DomainEventFeed`. With the Spring Boot starter, the feed is a bean, so you have to restart the application.
+A `DomainEventFeed` takes a projection only once, so you have to replace the whole `DomainEventFeed`. With the Spring Boot starter, the feed is a bean, so restarting the application is the only way.
 
 ###### Stopping, starting and skipping the catch-up {#feeding-catch-up-control}
 
@@ -2167,9 +2169,9 @@ A view that hands that call to another thread and waits for it waits for a repla
 
 ###### Skipping the catch-up with `goLive()` {#feeding-go-live}
 
-When the feed's events are not in the local event store, there is nothing for `catchUp()` to read, and the feed holds every `acceptAndWait(...)` back until told otherwise, so nothing is applied. On the blocking stack each listener thread stalls in its first `acceptAndWait(...)`, and the broker delivers that message again once one of the timeouts above runs out. On the reactor stack, events pile up until the buffer is full, and after that new ones are refused.
+A new feed applies no event until you call `catchUp()` or `goLive()`. Until then it holds every event the listener feeds it. On the blocking stack each listener thread waits in its first `acceptAndWait(...)`, and the broker delivers that message again once one of the timeouts above runs out. On the reactor stack, events pile up until the buffer is full, and after that new ones are refused.
 
-Call `goLive()` instead, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on the feed, naming the projection the same way `catchUp(id)` does):
+Some feeds have no history to replay, because their events aren't stored in this application's event store, for example events that another service publishes on the broker. Call `goLive()` on such a feed instead of `catchUp()`, on both `CatchupProjectionFeed` and `DomainEventFeed` (`goLive(id)` on a `DomainEventFeed`, naming the projection the same way `catchUp(id)` does):
 
 ```java
 feed.goLive();
