@@ -3268,7 +3268,13 @@ When the durable model drives the cold primitive itself, it calls the function o
 
 ###### When Two Nodes Register the Same Subscription {#durable-subscription-reactive-two-nodes}
 
-Recording that first position is a conditional write, so only the first one to reach storage is kept. When two nodes register the same brand new subscription at the same moment, the node that can't show the stored position is the one it read has its registration refused with `StartPositionAlreadyPinnedException`, rather than starting from a position it never read. The events between the two positions then reach neither until that interval is replayed, which is only safe while the subscription isn't running anywhere. A position that was already stored when the model read for it is taken without a word, so a node joining a subscription another has been running is unaffected.
+A brand new subscription stores the position it starts from, and storage keeps only the first write of that position.
+
+When two nodes register the same brand new subscription at the same moment, each reads its own start position, and one of them stores it first. The other node can't confirm that the stored position is the one it read. Its registration is refused with `StartPositionAlreadyPinnedException`, instead of starting from a position it never read.
+
+Neither node can tell which of the two positions is earlier, so the subscription may skip the events written between them. Getting those events back means replaying that interval, which is only safe while the subscription isn't running on any node.
+
+A position that was already stored when the node read it is used as it is, without a refusal. So a node that joins a subscription another node is already running is unaffected.
 
 With the MongoDB `ReactorCheckpointStorage`, the node whose write reached storage second is refused only when delivery has already moved the stored position forward. Otherwise the storage keeps whichever position has the earlier operation time, and the node starts from that.
 
