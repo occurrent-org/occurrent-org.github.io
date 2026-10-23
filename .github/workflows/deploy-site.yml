@@ -1,11 +1,10 @@
-# Builds the Starlight site in site/ and publishes it to GitHub Pages.
-#
-# It only runs when started by hand until the cutover. GitHub Pages builds the Jekyll site from main today, and a
-# deploy from here would replace it. At the cutover, set Settings > Pages > Source to "GitHub Actions" and add
-# `push: branches: [main]` under `on`.
+# Builds the site in site/ and publishes it to GitHub Pages on every push to main. You can also start it by hand from
+# the Actions tab. Settings > Pages > Source must be "GitHub Actions".
 name: Deploy site
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -38,8 +37,9 @@ jobs:
           npm ci
           npm run build
 
-      - name: Check that every link resolves and every address served today still exists
-        run: node _migration/check-links.mjs
+      - name: Check that every link resolves and every old address still exists
+        working-directory: site
+        run: npm run check-links
 
       - uses: actions/upload-pages-artifact@v3
         with:

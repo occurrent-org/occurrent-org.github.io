@@ -20,7 +20,7 @@ export const collections = {
             }),
         }),
     }),
-    // The release posts, copied from Jekyll's _posts/news by _migration/news.mjs.
+    // The release posts. The file name gives the post its address, 2021-01-06-0_5_0.md is /news/2021/01/06/0_5_0.html.
     news: defineCollection({
         loader: glob({ pattern: "*.md", base: "./src/content/news" }),
         schema: z.object({

@@ -1,67 +1,44 @@
 # occurrent.org
 
-This repo contains the source code for [occurrent.org](https://occurrent.org).
+This repository holds the website and documentation for [Occurrent](https://github.com/johanhaleby/occurrent), published at [occurrent.org](https://occurrent.org).
 
-Pull requests for adding tutorials and fixing errors in docs are very welcome.
+Pull requests that add tutorials or fix mistakes in the docs are very welcome.
 
-## Run locally
+## Run it locally
 
-The site now uses a modern GitHub Pages-compatible Jekyll stack and should run locally with a normal Ruby and Bundler setup.
-
-### Recommended: Native Ruby
-
-Requirements:
-
-- Ruby `3.3.6`
-- Bundler `2.5.22` or compatible Bundler 2.5.x
-
-Using `rbenv`:
+You need Node 24 or later.
 
 ```bash
-rbenv install 3.3.6
-rbenv local 3.3.6
-gem install bundler -v 2.5.22
+cd site
+npm install
+npm run dev
 ```
 
-Start the site with:
+Open http://localhost:4321. Pages reload when you save a file.
+
+Search, the news posts at their `.html` addresses, the `.md` copy of each page and `llms.txt` only exist in a full build:
 
 ```bash
-bundle install
-bundle exec jekyll serve --host 0.0.0.0 --port 4000 --livereload --livereload-port 35730
+npm run build
+npm run preview
 ```
 
-Or use the helper script:
+## Where things are
 
-```bash
-./run_mac.sh
-```
+The site is built with [Astro](https://astro.build) and [Starlight](https://starlight.astro.build), and lives in `site/`.
 
-Then open [http://localhost:4000](http://localhost:4000). Live reload uses port `35730` to avoid collisions with the default Jekyll live reload port.
+* `site/src/content/docs/index.mdx` is the landing page.
+* `site/src/content/docs/docs/` holds the documentation, one directory per sidebar group.
+* `site/src/content/news/` holds the release posts. A post's file name gives its address, so `2021-01-06-0_5_0.md` is published at `/news/2021/01/06/0_5_0.html`.
+* `site/src/version.mjs` holds the Occurrent version the docs describe.
+* `site/public/` holds files served as they are, such as images.
 
-### Optional: Docker
+[`site/README.md`](site/README.md) explains how to write a page.
 
-Requirements:
+## Publishing
 
-- Docker Desktop or another Docker runtime
+Every push to `main` builds the site and publishes it to GitHub Pages, see `.github/workflows/deploy-site.yml`. Before it publishes, the build fails on a broken internal link, and `npm run check-links` fails if a link on the built site leads nowhere or an address the old site served is gone. Pull requests run the same checks.
 
-Start the site with:
+## Links from the old site
 
-```bash
-./run_docker.sh
-```
-
-Then open [http://localhost:4000](http://localhost:4000). Live reload uses port `35730` to avoid collisions with the default Jekyll live reload port.
-
-The Docker helper:
-
-- builds a local image from `Dockerfile` based on `ruby:3.3.6`
-- installs gems with modern Bundler
-- starts Jekyll on port `4000`
-
-### Windows
-
-A legacy Windows helper script is still available:
-
-```bat
-run_win.bat
-```
+The docs used to be one long page at `/documentation`. A link to one of its sections, such as `/documentation#saga-dsl`, still works: `site/src/pages/documentation.astro` sends it to the page the section moved to, using `site/src/data/old-docs-anchors.json`.

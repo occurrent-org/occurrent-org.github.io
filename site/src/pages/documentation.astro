@@ -1,9 +1,9 @@
 ---
 // The old docs were one page, /documentation, with an anchor per section. This page sends a link such as
-// /documentation#saga-dsl to the page the section moved to, using the move map the migration wrote. Without
+// /documentation#saga-dsl to the page the section moved to, using src/data/old-docs-anchors.json. Without
 // JavaScript, or for an anchor the map doesn't know, it lists where to go instead.
 import StarlightPage from "@astrojs/starlight/components/StarlightPage.astro";
-import moveMap from "../../../_migration/move-map.json";
+import moveMap from "../data/old-docs-anchors.json";
 
 const sections = [
     ["Overview", "/docs/overview/introduction/"],
