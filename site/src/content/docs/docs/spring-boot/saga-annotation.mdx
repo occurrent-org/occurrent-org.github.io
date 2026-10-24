@@ -82,7 +82,7 @@ The annotation and the DSL class share the name `Saga`, so a Java factory method
 | `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the saga from a `PushSubscriptionModel` bean instead, see [Fed from a broker](/docs/spring-boot/saga-annotation/#fed-from-a-broker). |
 | `catchup` | For a push saga only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
 | `subscriptionModel` / `subscriptionModelName` | Select the `PushSubscriptionModel` bean by type or name when `source = PUSH`. |
-| `redeliveryDetection` | `REQUIRED` (the default) refuses an event the saga cannot recognize a redelivery of. `BEST_EFFORT` takes it anyway with one warning, see [Forward the Occurrent extensions](/docs/spring-boot/saga-annotation/#fed-from-a-broker). |
+| `redeliveryDetection` | `REQUIRED` (the default) refuses an event without a `streamid` and a `streamversion`. `BEST_EFFORT` takes it anyway with one warning, see [Forward the Occurrent extensions](/docs/spring-boot/saga-annotation/#fed-from-a-broker). |
 
 `@Saga` is blocking-only in this first version, the reactive starter does not register it.
 
@@ -195,13 +195,15 @@ A saga that has run before picks up where it left off either way, because its pe
 
 ### Forward the Occurrent extensions
 
-A saga recognizes a redelivered event by its `streamid` together with its `streamversion`, or by its `position`. That pair, or the position, is the event's redelivery key. A broker delivers at least once, so an event with none of those would make the saga react a second time and issue its commands again on every redelivery.
+A saga recognizes a redelivered event by its `streamid` together with its `streamversion`. That pair is the event's redelivery key. A broker delivers at least once, so an event without it would make the saga react a second time and issue its commands again on every redelivery.
+
+A `position` does not take the pair's place. An event that has only a position is refused like an event with nothing, and so is an event whose `streamid` or `streamversion` can't be read, under `BEST_EFFORT` as well.
 
 The saga therefore refuses such an event by throwing `SagaRedeliveryDetectionException` before the reaction runs, instead of acknowledging it. What happens to the event after that is up to your feed. Whatever the feed does, the listener that dropped the metadata sees the exception, and that listener is where it can be fixed.
 
 Occurrent's own stored events always have the extensions, so this only happens with events your listener forwards without them.
 
-Your feed might carry none of that redelivery metadata, another application's broker for example, while every command the saga issues is still safe to receive more than once. When both are true, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always carry the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md).
+Your feed might have none of that redelivery metadata, another application's broker for example, while every command the saga issues is still safe to receive more than once. When both are true, opt out with `@Saga(redeliveryDetection = RedeliveryDetection.BEST_EFFORT)`, or `SagaRunnerConfig.withRedeliveryDetection(BEST_EFFORT)` when you drive `SagaRunner` yourself. The saga then takes those events and logs one warning, naming the saga so you can find it. Setting `BEST_EFFORT` on an event-store saga (`source = EVENT_STORE`) is rejected at startup instead, since those events always have the extensions and there is no metadata gap for it to change. The reasoning is in [ADR 0109](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0109-a-saga-refuses-an-event-it-cannot-recognise-a-redelivery-of.md) and [ADR 0150](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0150-a-global-position-is-not-a-saga-redelivery-key.md).
 
 This is also why a `@Saga` accepts only a `PushSubscriptionModel` and not a [`DomainEventFeed`](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents), which a `@Projection` does accept. A domain event feed carries no stream metadata, so a saga bound to one would lose its redelivery protection without saying anything.
 
