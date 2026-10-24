@@ -207,6 +207,14 @@ Your feed might have none of that redelivery metadata, another application's bro
 
 This is also why a `@Saga` accepts only a `PushSubscriptionModel` and not a [`DomainEventFeed`](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents), which a `@Projection` does accept. A domain event feed carries no stream metadata, so a saga bound to one would lose its redelivery protection without saying anything.
 
+### A stream's events can arrive out of order
+
+A broker doesn't always deliver a stream's events in version order. `KafkaTopicPerTypeDestinationResolver` keeps one stream's events of one type in order and puts nothing in order across types, so a saga can see version 1000 of one type before version 2 of another. Prefetching more than one message on RabbitMQ can reorder events of one type.
+
+The saga keeps the highest version it has applied per stream and event type, together with the versions it applied below that one. It applies an event whose version is lower than the highest one, as long as it hasn't applied that version before, and skips a redelivery of it.
+
+An event that is 256 versions or more behind the highest one of its type is skipped, and the saga logs one warning per stream. A restart that replays from an old checkpoint is the common case of that, and applying those events would run their reactions again. The one event it never skips this way is an event the saga failed on, since a failed event was not applied. The window is `SagaRunnerConfig.reorderWindow`, which `@Saga` doesn't expose, so a `@Saga` saga always uses 256. Drive `SagaRunner` yourself with `withReorderWindow(..)` when your feed reorders further. A larger window makes every saga instance store more numbers. The reasoning is in [ADR 0154](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0154-a-saga-tells-a-late-stream-event-from-a-redelivery-per-event-type.md).
+
 ### What a push saga cannot set
 
 `startAt`, `startAtGlobalPosition` and `resumeBehavior` are rejected rather than quietly ignored. A replay always starts at the beginning, and where the live feed resumes after a restart is the broker's business. Occurrent only records that the catch-up finished, so a restart skips the replay and the broker redelivers whatever the consumer had not acknowledged.
