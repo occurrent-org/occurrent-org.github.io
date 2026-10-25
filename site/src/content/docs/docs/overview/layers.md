@@ -32,5 +32,5 @@ Some things are not part of a layer:
 Where to start:
 
 * With Spring Boot, start with [Getting started with Spring Boot](/docs/overview/getting-started-spring-boot/) and read about the layer 1 parts as you use them.
-* Without Spring Boot, start with a [CloudEventConverter](/docs/layer-1/cloudevent-conversion/) and the [ApplicationService](/docs/layer-1/application-service/). [Getting Started](/docs/overview/getting-started/) walks through it.
+* Without Spring Boot, start with a [CloudEventConverter](/docs/layer-1/cloudevent-conversion/) and the [ApplicationService](/docs/layer-1/application-service/). [Getting started without Spring Boot](/docs/overview/getting-started/) walks through it.
 * Use [layer 0](/docs/layer-0/cloudevents/) directly when you need control over the CloudEvents themselves, or when you write your own component on top of the event store.
