@@ -1,9 +1,10 @@
 ---
-title: "Getting started"
-description: "Write and read your first events with an event store, a converter and the ApplicationService, without Spring Boot."
+title: "Getting started without Spring Boot"
+description: "Wire a MongoDB event store, a converter, the ApplicationService and a subscription by hand, in plain Java or Kotlin."
 sidebar:
   order: 3
 stack: [plain-java]
+modules: [occurrent-eventstore-mongodb-native, occurrent-cloudevent-converter-jackson3, occurrent-application-service-blocking, occurrent-subscription-dsl-blocking]
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
@@ -12,40 +13,293 @@ import { TabItem, Tabs } from "@astrojs/starlight/components";
 Occurrent %OCCURRENT_VERSION% requires **Java 21** or later (earlier versions required Java 17).
 :::
 
-Most applications start at [layer 1](/docs/overview/layers/), where your code works with your own domain events. In code, it looks like this:
+This page builds a small word guessing game with MongoDB and no framework. You create the event store, the converter that turns your domain events into CloudEvents, the [`ApplicationService`](/docs/layer-1/application-service/) that writes events, and a subscription that reacts to them. With Spring Boot, the [Spring Boot starter](/docs/spring-boot/starter/) wires all of this for you, see [Getting started with Spring Boot](/docs/overview/getting-started-spring-boot/).
+
+Everything on this page is at [layer 1](/docs/overview/layers/). Your code works with your own domain events, and Occurrent stores them as CloudEvents.
+
+## 1. Add the dependencies
+
+You need the event store, a converter, the application service, and three modules for subscriptions: one that reads MongoDB change streams, one that stores how far each subscription has come, and the subscription DSL.
+
+<Tabs syncKey="build-tool">
+  <TabItem label="Maven">
+    ```xml
+    <dependency>
+        <groupId>org.occurrent</groupId>
+        <artifactId>occurrent-eventstore-mongodb-native</artifactId>
+        <version>%OCCURRENT_VERSION%</version>
+    </dependency>
+    <dependency>
+        <groupId>org.occurrent</groupId>
+        <artifactId>occurrent-cloudevent-converter-jackson3</artifactId>
+        <version>%OCCURRENT_VERSION%</version>
+    </dependency>
+    <dependency>
+        <groupId>org.occurrent</groupId>
+        <artifactId>occurrent-application-service-blocking</artifactId>
+        <version>%OCCURRENT_VERSION%</version>
+    </dependency>
+    <dependency>
+        <groupId>org.occurrent</groupId>
+        <artifactId>occurrent-subscription-mongodb-native-blocking</artifactId>
+        <version>%OCCURRENT_VERSION%</version>
+    </dependency>
+    <dependency>
+        <groupId>org.occurrent</groupId>
+        <artifactId>occurrent-subscription-mongodb-native-blocking-checkpoint-storage</artifactId>
+        <version>%OCCURRENT_VERSION%</version>
+    </dependency>
+    <dependency>
+        <groupId>org.occurrent</groupId>
+        <artifactId>occurrent-subscription-durable-blocking</artifactId>
+        <version>%OCCURRENT_VERSION%</version>
+    </dependency>
+    <dependency>
+        <groupId>org.occurrent</groupId>
+        <artifactId>occurrent-subscription-dsl-blocking</artifactId>
+        <version>%OCCURRENT_VERSION%</version>
+    </dependency>
+    ```
+  </TabItem>
+
+  <TabItem label="Gradle">
+    ```groovy
+    implementation 'org.occurrent:occurrent-eventstore-mongodb-native:%OCCURRENT_VERSION%'
+    implementation 'org.occurrent:occurrent-cloudevent-converter-jackson3:%OCCURRENT_VERSION%'
+    implementation 'org.occurrent:occurrent-application-service-blocking:%OCCURRENT_VERSION%'
+    implementation 'org.occurrent:occurrent-subscription-mongodb-native-blocking:%OCCURRENT_VERSION%'
+    implementation 'org.occurrent:occurrent-subscription-mongodb-native-blocking-checkpoint-storage:%OCCURRENT_VERSION%'
+    implementation 'org.occurrent:occurrent-subscription-durable-blocking:%OCCURRENT_VERSION%'
+    implementation 'org.occurrent:occurrent-subscription-dsl-blocking:%OCCURRENT_VERSION%'
+    ```
+  </TabItem>
+</Tabs>
+
+In Kotlin, also add `tools.jackson.module:jackson-module-kotlin`, so that Jackson can create your data classes.
+
+## 2. Start MongoDB
+
+Subscriptions read MongoDB change streams, so MongoDB has to run as a replica set. A single node replica set is fine for development. With Docker:
+
+```bash
+docker run -d --name mongo -p 27017:27017 mongo:8 --replSet rs0
+docker exec mongo mongosh --eval 'rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] })'
+```
+
+## 3. Write the domain model
+
+Your domain model has no dependency on Occurrent. The events are plain records, and the behavior is a function from the events that have happened so far to the new events:
 
 <Tabs syncKey="lang">
   <TabItem label="Java">
     ```java
-    // Your domain is a pure function from past events to new events, with no dependency on Occurrent.
-    List<GameEvent> handle(List<GameEvent> history, GameCommand command) { ... }
+    public sealed interface GameEvent permits GameStarted, GuessMade {
+    }
 
-    // Occurrent's application service loads the stream, runs your function, and appends the new events under optimistic concurrency.
-    ApplicationService<GameEvent> applicationService = new GenericApplicationService<>(eventStore, cloudEventConverter);
-    applicationService.execute(gameId, history -> handle(history, command));
+    public record GameStarted(String wordToGuess) implements GameEvent {
+    }
+
+    public record GuessMade(String word) implements GameEvent {
+    }
+
+    public class Game {
+
+        public static List<GameEvent> start(List<GameEvent> history, String wordToGuess) {
+            if (!history.isEmpty()) {
+                throw new IllegalStateException("The game has already started");
+            }
+            return List.of(new GameStarted(wordToGuess));
+        }
+
+        public static List<GameEvent> guess(List<GameEvent> history, String word) {
+            if (history.isEmpty()) {
+                throw new IllegalStateException("The game hasn't started");
+            }
+            return List.of(new GuessMade(word));
+        }
+    }
     ```
   </TabItem>
 
   <TabItem label="Kotlin">
     ```kotlin
-    // Your domain is a pure function from past events to new events, with no dependency on Occurrent.
-    fun handle(history: List<GameEvent>, command: GameCommand): List<GameEvent> { ... }
+    sealed interface GameEvent
 
-    // Occurrent's application service loads the stream, runs your function, and appends the new events under optimistic concurrency.
-    val applicationService = GenericApplicationService(eventStore, cloudEventConverter)
-    applicationService.execute(gameId) { history -> handle(history, command) }
+    data class GameStarted(val wordToGuess: String) : GameEvent
+
+    data class GuessMade(val word: String) : GameEvent
+
+    object Game {
+
+        fun start(history: List<GameEvent>, wordToGuess: String): List<GameEvent> {
+            check(history.isEmpty()) { "The game has already started" }
+            return listOf(GameStarted(wordToGuess))
+        }
+
+        fun guess(history: List<GameEvent>, word: String): List<GameEvent> {
+            check(history.isNotEmpty()) { "The game hasn't started" }
+            return listOf(GuessMade(word))
+        }
+    }
     ```
   </TabItem>
 </Tabs>
 
-These are the steps to get there:
+Put all the events in the same package. The converter in step 5 relies on that to find the class of an event from its name.
 
-1. **Pick an event store.** Use [MongoDB](/docs/stores/choosing-an-event-store/#mongodb) in production and the [in-memory event store](/docs/stores/in-memory-event-store/) for tests and experiments. See [Choosing an EventStore](/docs/stores/choosing-an-event-store/).
-2. **Pick a [CloudEventConverter](/docs/layer-1/cloudevent-conversion/).** It maps your domain events to CloudEvents and back. The [Jackson converter](/docs/layer-1/cloudevent-conversion/#jackson-3) is a good default. Configure how it names event types before you go to production, since the type ends up in every stored event.
-3. **Create an [ApplicationService](/docs/layer-1/application-service/)** and call your domain functions through it, as in the example above.
-4. **React to events.** Pick a [subscription model](/docs/layer-0/subscriptions/) for your store, and a [checkpoint storage](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage) if a subscriber should continue where it left off after a restart. Then use [Subscriptions](/docs/layer-1/subscribing-to-domain-events/), [projections](/docs/layer-1/projections/) or [sagas](/docs/layer-1/sagas/) to work with domain events.
-5. **Query events** with [DomainEventQueries](/docs/layer-1/querying-domain-events/) when you need to.
+## 4. Create the event store
 
-With Spring Boot and MongoDB, the [Spring Boot starter](/docs/spring-boot/starter/) sets all of this up for you, and gives you `ApplicationService`, `Subscriptions` and `DomainEventQueries` beans to inject. There's also a [reactive starter](/docs/spring-boot/starter/#reactive-spring-boot-starter).
+The [MongoDB event store](/docs/stores/mongodb-event-stores/#eventstore-with-mongodb-native-driver) takes a `MongoClient`, the database, the collection to store events in, and how to store the time of each event:
 
-You can always drop down to [layer 0](/docs/layer-0/) and use the event store and subscriptions with CloudEvents directly. It's worth reading about [CloudEvents](/docs/layer-0/cloudevents/) and their [specification](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md) either way, because that is how your events are stored.
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    MongoClient mongoClient = MongoClients.create("mongodb://localhost:27017");
+    MongoDatabase database = mongoClient.getDatabase("game");
+    TimeRepresentation timeRepresentation = TimeRepresentation.RFC_3339_STRING;
+
+    MongoEventStore eventStore = new MongoEventStore(mongoClient, database, database.getCollection("events"), new EventStoreConfig(timeRepresentation));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val mongoClient = MongoClients.create("mongodb://localhost:27017")
+    val database = mongoClient.getDatabase("game")
+    val timeRepresentation = TimeRepresentation.RFC_3339_STRING
+
+    val eventStore = MongoEventStore(mongoClient, database, database.getCollection("events"), EventStoreConfig(timeRepresentation))
+    ```
+  </TabItem>
+</Tabs>
+
+`RFC_3339_STRING` stores the time as a string, with all its precision. The subscription in step 7 reads the same collection, so give it the same `TimeRepresentation`. [Choosing an EventStore](/docs/stores/choosing-an-event-store/) compares MongoDB with the other stores.
+
+## 5. Create the converter
+
+A [`CloudEventConverter`](/docs/layer-1/cloudevent-conversion/) maps your domain events to CloudEvents and back. The [Jackson converter](/docs/layer-1/cloudevent-conversion/#jackson-3) is a good default. It needs a Jackson `ObjectMapper` and a source, a URI that says which part of your system the events come from:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    CloudEventConverter<GameEvent> cloudEventConverter = new JacksonCloudEventConverter.Builder<GameEvent>(JsonMapper.builder().build(), URI.create("urn:mycompany:mygame:game"))
+            .typeMapper(ReflectionCloudEventTypeMapper.simple(GameEvent.class))
+            .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val cloudEventConverter = JacksonCloudEventConverter.Builder<GameEvent>(jacksonObjectMapper(), URI.create("urn:mycompany:mygame:game"))
+        .typeMapper(ReflectionCloudEventTypeMapper.simple(GameEvent::class.java))
+        .build()
+    ```
+  </TabItem>
+</Tabs>
+
+The type mapper decides the CloudEvent type of each event. `ReflectionCloudEventTypeMapper.simple` uses the class name without the package, so a `GuessMade` event gets the type `GuessMade`. Without a type mapper the converter uses the fully qualified class name. The type ends up in every stored event, so decide on it before you go to production. [CloudEvent conversion](/docs/layer-1/cloudevent-conversion/) describes the other choices.
+
+## 6. Write events
+
+Create a `GenericApplicationService` and call your domain functions through it. It reads the events of the stream, runs your function, and appends the new events under optimistic concurrency:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    ApplicationService<GameEvent> applicationService = new GenericApplicationService<>(eventStore, cloudEventConverter);
+
+    UUID gameId = UUID.randomUUID();
+    applicationService.execute(gameId, history -> Game.start(history, "occurrent"));
+    applicationService.execute(gameId, history -> Game.guess(history, "eventsourcing"));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val applicationService: ApplicationService<GameEvent> = GenericApplicationService(eventStore, cloudEventConverter)
+
+    val gameId = UUID.randomUUID()
+    applicationService.execute(gameId) { history -> Game.start(history, "occurrent") }
+    applicationService.execute(gameId) { history -> Game.guess(history, "eventsourcing") }
+    ```
+  </TabItem>
+</Tabs>
+
+Each game is its own stream, with the game id as stream id. If another thread appends to the same game between the read and the write, the application service retries the call with the new history.
+
+## 7. React to events
+
+A subscription is made of three parts. `NativeMongoSubscriptionModel` reads new events from the change stream of the events collection. `NativeMongoCheckpointStorage` keeps the position each subscription has reached in a collection of its own. `DurableSubscriptionModel` puts the two together, so a subscription continues where it left off after a restart. On top of that, [`Subscriptions`](/docs/layer-1/subscribing-to-domain-events/) gives you your domain events instead of CloudEvents:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    NativeMongoSubscriptionModel changeStreamSubscriptionModel = new NativeMongoSubscriptionModel(database, "events", timeRepresentation, Executors.newCachedThreadPool());
+    NativeMongoCheckpointStorage checkpointStorage = new NativeMongoCheckpointStorage(database, "checkpoints");
+    DurableSubscriptionModel subscriptionModel = new DurableSubscriptionModel(changeStreamSubscriptionModel, checkpointStorage);
+
+    Subscriptions<GameEvent> subscriptions = new Subscriptions<>(subscriptionModel, cloudEventConverter);
+    subscriptions.subscribe("logGuesses", GuessMade.class, e -> System.out.printf("Someone guessed %s%n", e.word()));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val changeStreamSubscriptionModel = NativeMongoSubscriptionModel(database, "events", timeRepresentation, Executors.newCachedThreadPool())
+    val checkpointStorage = NativeMongoCheckpointStorage(database, "checkpoints")
+    val subscriptionModel = DurableSubscriptionModel(changeStreamSubscriptionModel, checkpointStorage)
+
+    subscriptions(subscriptionModel, cloudEventConverter) {
+        subscribe<GuessMade>("logGuesses") { e ->
+            println("Someone guessed ${e.word}")
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Start the subscriptions before you write events. The first time a subscription starts, it begins at the newest event, and it only receives events written after that. To also process the events that are already stored, use a [catch-up subscription](/docs/layer-0/catch-up-subscription/).
+
+The subscription id, `logGuesses` here, is the key its position is stored under, so keep it the same between releases. Call `subscriptionModel.shutdown()` when your application stops.
+
+Every instance of your application that runs this code receives every event. To have only one instance receive each event, use [competing consumers](/docs/layer-0/competing-consumers/).
+
+## Trying it without MongoDB
+
+For tests and experiments, the [in-memory event store](/docs/stores/in-memory-event-store/) needs no database. Add `occurrent-eventstore-inmemory` and `occurrent-subscription-inmemory`, and replace steps 4 and 7 with this:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    InMemorySubscriptionModel subscriptionModel = new InMemorySubscriptionModel();
+    InMemoryEventStore eventStore = new InMemoryEventStore(subscriptionModel);
+
+    Subscriptions<GameEvent> subscriptions = new Subscriptions<>(subscriptionModel, cloudEventConverter);
+    subscriptions.subscribe("logGuesses", GuessMade.class, e -> System.out.printf("Someone guessed %s%n", e.word()));
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val subscriptionModel = InMemorySubscriptionModel()
+    val eventStore = InMemoryEventStore(subscriptionModel)
+
+    subscriptions(subscriptionModel, cloudEventConverter) {
+        subscribe<GuessMade>("logGuesses") { e ->
+            println("Someone guessed ${e.word}")
+        }
+    }
+    ```
+  </TabItem>
+</Tabs>
+
+Everything is gone when the JVM stops.
+
+## Where to go next
+
+* [Projections](/docs/layer-1/projections/) maintain a read model from the events, and [sagas](/docs/layer-1/sagas/) run a process that reacts to events over time.
+* [DomainEventQueries](/docs/layer-1/querying-domain-events/) query the stored events directly.
+* [Blocking subscription models](/docs/layer-0/blocking-subscription-models/) lists the subscription models for each store, and [blocking subscriptions](/docs/layer-0/blocking-subscriptions/#blocking-subscription-checkpoint-storage) lists the other places to store checkpoints.
+* [Testing](/docs/testing/) shows how to test projections and sagas.
+* You can always drop down to [layer 0](/docs/layer-0/) and use the event store and subscriptions with CloudEvents directly. It's worth reading about [CloudEvents](/docs/layer-0/cloudevents/) and their [specification](https://github.com/cloudevents/spec/blob/v1.0.2/cloudevents/spec.md) either way, because that is how your events are stored.
+* There's also a [reactive Spring Boot starter](/docs/spring-boot/starter/#reactive-spring-boot-starter), if you use Spring Boot with Project Reactor.
