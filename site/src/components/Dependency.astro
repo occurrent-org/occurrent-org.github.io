@@ -13,7 +13,7 @@ const { artifact, scope } = Astro.props;
 const test = scope === "test";
 const snippets = [
     ["Maven", "xml", `<dependency>\n    <groupId>org.occurrent</groupId>\n    <artifactId>${artifact}</artifactId>\n    <version>${version}</version>${test ? "\n    <scope>test</scope>" : ""}\n</dependency>`],
-    ["Gradle", "groovy", `${test ? "testImplementation" : "compile"} 'org.occurrent:${artifact}:${version}'`],
+    ["Gradle", "groovy", `${test ? "testImplementation" : "implementation"} 'org.occurrent:${artifact}:${version}'`],
     ["SBT", "scala", `libraryDependencies += "org.occurrent" % "${artifact}" % "${version}"${test ? " % Test" : ""}`],
     ["Grape", "groovy", `@Grab(group='org.occurrent', module='${artifact}', version='${version}')`],
     ["Leiningen", "clojure", `[org.occurrent/${artifact} "${version}"]`],
