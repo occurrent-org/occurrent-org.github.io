@@ -50,7 +50,19 @@ Most of these capabilities are mixins. Instead of casting the model to check for
 
 A model that wraps another one (`DurableSubscriptionModel` around a Mongo model, `CatchupSubscriptionModel` around that, and so on) implements `SubscriptionModelWrapper` on the blocking stack, which exposes `getWrappedSubscriptionModel()` and a recursive variant that walks all the way down. This is blocking-only, reactor has no equivalent interface, so a reactor wrapper has no generic way to hand back what it wraps.
 
-That asymmetry is why the two stacks reach an optional capability differently. On the blocking stack, `IntrospectableSubscriptions`, `ReplayAwareSubscriptions`, and `RepositionableSubscriptions` each have a `findIn(subscriptionModel)` method that checks the model you hand it first, and only unwraps a `SubscriptionModelWrapper` layer by layer if that model itself doesn't implement the capability. It searches the whole wrapper chain and can come back with nothing, an `Optional`, not a guaranteed conversion, which is why it's named `findIn(..)` rather than `of(..)`. Which means the **outermost** implementer answers, not the innermost one. Hold `CompetingConsumer(Catchup(Durable(Mongo)))`, and if every layer happens to implement `IntrospectableSubscriptions`, `findIn(..)` returns `CompetingConsumerSubscriptionModel`'s own answer, never Mongo's. On the reactor stack there is no probe at all for `IntrospectableSubscriptions` or `ReplayAwareSubscriptions`, check the concrete model you're holding with `instanceof` instead, and note that the subscription DSL wrappers don't forward either capability, so ask the subscription model itself rather than a DSL wrapper around it.
+That asymmetry is why the two stacks reach an optional capability differently. On the blocking stack, `IntrospectableSubscriptions`, `ReplayAwareSubscriptions`, `RepositionableSubscriptions` and the other mixins below with `findIn(model)` in their last column each have a `findIn(subscriptionModel)` method. It checks the model you hand it first, and can come back with nothing, an `Optional`, not a guaranteed conversion, which is why it's named `findIn(..)` rather than `of(..)`.
+
+When that model is a `SubscriptionModelWrapper` that doesn't implement the capability, `findIn(..)` unwraps it layer by layer for these capabilities only:
+
+* `IntrospectableSubscriptions`, `ReplayAwareSubscriptions` and `HistoryRetainingSubscriptions`
+* `QuietPositionReportingSubscriptions` and `HistoryLossReportingSubscriptions`
+* `Pushable`
+
+Every other capability, `RepositionableSubscriptions`, `Subscribable`, `SubscriptionModelLifeCycle` and `CheckpointAwareSubscriptionModel` among them, acts on a subscription, so it's found only on a model that implements it. A resume or a subscribe through the model beneath a wrapper would go around the state the wrapper keeps, such as the lease a `CompetingConsumerSubscriptionModel` holds for the subscription. A wrapper of your own is found for such a capability when it implements it.
+
+For every capability, the **outermost** implementer answers, not the innermost one. Hold `CompetingConsumer(Catchup(Durable(Mongo)))`, and if every layer happens to implement `IntrospectableSubscriptions`, `findIn(..)` returns `CompetingConsumerSubscriptionModel`'s own answer, never Mongo's.
+
+On the reactor stack there is no probe at all for `IntrospectableSubscriptions` or `ReplayAwareSubscriptions`, check the concrete model you're holding with `instanceof` instead, and note that the subscription DSL wrappers don't forward either capability, so ask the subscription model itself rather than a DSL wrapper around it.
 
 ## Optional mixins
 
@@ -58,7 +70,7 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 | :- | :- | :- | :- | :- |
 | `IntrospectableSubscriptions` | yes | yes | `subscriptionIds()`, every id the model knows, running or paused | `findIn(model)` (blocking) / `instanceof` (reactor) |
 | `ReplayAwareSubscriptions` | yes | yes | `isCatchingUp(id)`, true only while that subscription is still replaying history, which `isRunning(id)` can't tell you since it stays true throughout a replay | `findIn(model)` (blocking) / `instanceof` (reactor) |
-| `RepositionableSubscriptions` | yes | yes | `resumeSubscription(id, startAt)`, resume at an explicit position instead of wherever the model stopped | `findIn(model)` |
+| `RepositionableSubscriptions` | yes | yes | `resumeSubscription(id, startAt)`, resume at an explicit position instead of wherever the model stopped | `findIn(model)`, which finds it only on a model that implements it, never beneath a wrapper |
 | `QuietPositionReportingSubscriptions` | yes | yes | `addQuietPositionListener(..)`, tells a listener the position a subscription has read to when a read returned no event for it, which a durable model [saves as the checkpoint](/docs/layer-0/durable-subscriptions/). The MongoDB models implement it | `findIn(model)` |
 | `HistoryLossReportingSubscriptions` | yes | yes | `addHistoryLossListener(..)`, asks a listener what to do with a subscription once the oplog has dropped its position, which is how a catch-up takes the subscription over. On the blocking stack it also tells the listener the position the subscription restarts from, before the restart. `NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel` and `ReactorMongoSubscriptionModel` implement it | `findIn(model)` |
 | `SubscriptionModelWrapper` | yes | no | `getWrappedSubscriptionModel()` / `...Recursively()`, the delegate a wrapper sits on, what `findIn(..)` walks through | declare or cast |
@@ -67,7 +79,7 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 
 `canResumeFrom(checkpoint)` returns `false` when the model no longer has the history back to that checkpoint, for example a MongoDB change-stream position older than the oldest entry in the oplog. It returns a `boolean` on blocking and a `Mono<Boolean>` on reactor, and returns `true` unless the model overrides it. A position catch-up, and the blocking time-based catch-up, call it when they resume from a stored checkpoint that holds a live start, before the resumed replay, and again once the replay is done, before it goes live.
 
-`CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the mixins reached with `findIn(model)` are. Nothing wraps a model and re-exposes checkpoint-awareness on demand. You get it because the concrete model you constructed implements it directly, so keep hold of that static type or cast to it. Those models are `NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents.
+`CheckpointAwareSubscriptionModel` and `Pushable` have no `findIn(..)` probe. You get them because the concrete model you constructed implements them directly, so keep hold of that static type or cast to it. The checkpoint-aware models are `NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents.
 
 ## Typed views
 
@@ -109,7 +121,7 @@ These aren't optional mixins, everyone gets one, they're translation layers you 
 
 Use `capability`/`hasCapability` when the `Class` you're checking is itself a value, chosen by a caller further up the stack rather than written into the code doing the check. Use `findIn` when the facet is fixed at the call site, since `IntrospectableSubscriptions.findIn(model)` names both the search and its target in one call.
 
-`capability(type)` runs the same search as `IntrospectableSubscriptions.findIn(model)` above, for whichever `Class` you pass it instead of one fixed facet. On the blocking stack it unwraps a `SubscriptionModelWrapper` chain until something implements `type`. On the reactor stack, which has no wrapper to unwrap, it checks the model itself.
+`capability(type)` runs the same search as the `findIn(..)` methods above, for whichever `Class` you pass it instead of one fixed facet. On the blocking stack it unwraps a `SubscriptionModelWrapper` only for the capabilities listed under [Wrapping](#wrapping-and-the-findin-probe), so `capability(CheckpointAwareSubscriptionModel.class)` on a `CompetingConsumerSubscriptionModel` is empty. On the reactor stack, which has no wrapper to unwrap, it checks the model itself.
 
 Of the reactor models Occurrent ships, only `ReactorCatchupSubscriptionModel` and `ReactorStreamCatchupSubscriptionModel` behave differently, and only for `QuietPositionReportingSubscriptions`. For that type they return the capability of the model they wrap. `hasCapability(type)` gives the same answer as a `boolean`, for a caller that only needs to know whether the capability is there.
 
@@ -126,6 +138,8 @@ Order does matter when composing wrappers, and the constraint is mostly the type
 Not every constraint is type-checked though. `ManualStartSubscriptionModel` has to be the outermost wrapper, and its own documentation states directly why. Withholding a subscription only works if nothing beneath it has already been handed the registration. Put it anywhere but outermost, and a catch-up layer below it would replay history to a handler nobody started yet. So wrap outward from whichever layer needs the most from its delegate (checkpoint-awareness first), then whatever only needs a plain `SubscriptionModel`, and put anything that has to see every subscription before the rest of the stack does, like `ManualStartSubscriptionModel`, last.
 
 The outermost layer answers a probe. This is the same rule as the `findIn(..)` probe described above, restated here because it's the detail that actually surprises people composing wrappers. Build `CompetingConsumer(Catchup(Durable(Mongo)))` and ask `ReplayAwareSubscriptions.findIn(..)` on the whole stack: `CompetingConsumerSubscriptionModel` doesn't implement `ReplayAwareSubscriptions` itself, so the probe unwraps one layer and asks `CatchupSubscriptionModel`, which does, and that's the answer you get, not whatever `Durable` or `Mongo` underneath it would have said. The first layer in the chain that implements the capability wins, working from the outside in.
+
+For `RepositionableSubscriptions` and the other capabilities that act on a subscription, the probe asks the outermost layer only. `RepositionableSubscriptions.findIn(..)` on the same stack is empty, because `CompetingConsumerSubscriptionModel` doesn't implement it.
 
 :::tip[Using Spring Boot?]
 [What the starter configures](/docs/spring-boot/what-the-starter-configures/#how-the-subscription-model-is-built) shows the stack of models the starter builds.
