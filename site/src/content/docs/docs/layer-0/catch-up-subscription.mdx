@@ -182,7 +182,7 @@ A time stored by 0.33.0 has no live start. The blocking catch-up refuses it with
 
 ## Starts a Catch-up Refuses<HeadingBadge text="Added in 0.35.0" />
 
-A MongoDB event store reserves an event's position before the transaction that writes it commits, so an event can commit below a position a reader has already read past. A catch-up that goes live from a live start read before that position still delivers such an event, from the change stream. A catch-up started after a position with no such live start never delivers it. So a catch-up refuses these starts before it delivers or stores anything, and fails with `CatchupCannotResumeException`:
+A MongoDB event store reserves an event's position before the transaction that writes it commits, so an event can commit below a position a reader has already read past. A catch-up that goes live from a live start read before that position still delivers such an event, from the change stream. A catch-up started after a position with no such live start never delivers it. So a catch-up fails with `CatchupCannotResumeException` for these starts, and for the first three before it delivers or stores anything:
 
 * `StartAt.checkpoint(GlobalCheckpoint.of(n))` or `DcbStartAt.afterPosition(n)`, with `n` above 0
 * a stored `position:<n>` checkpoint that holds no live start, with `n` above 0
@@ -190,6 +190,8 @@ A MongoDB event store reserves an event's position before the transaction that w
 * a replay that started above position 0 or at a specific time, once its live start is lost
 
 A start at position 0, `StartAt.checkpoint(GlobalCheckpoint.of(0))`, `DcbStartAt.beginning()` or the beginning of time is never refused.
+
+A replay that loses its live start fails only after its handler has received the events the replay delivered, in this run or before a restart, and after any checkpoint storage it uses has kept the progress. So the exception doesn't mean that nothing reached the handler.
 
 The blocking catch-up throws the exception from `subscribe(..)` or from `waitUntilStarted()`, and holds a replay that a resume or a takeover started, as for a lost live start. The reactor catch-up fails its `Flux` with it. The message names the subscription and what to do.
 
