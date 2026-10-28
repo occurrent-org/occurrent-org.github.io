@@ -144,7 +144,9 @@ A resume can deliver some events a second time, because live delivery starts fro
 
 MongoDB keeps a limited oplog, so a stored live start can be gone. The catch-up calls `canResumeFrom(checkpoint)` on the wrapped model, the subscription model it delivers live events through. It calls it when it resumes, and again once its replay is done, before it goes live.
 
-When `canResumeFrom` returns `false`, the catch-up logs a warning and reads a new live start. It then replays again from the position its replay first started from, which delivers that part of the history a second time. When the live start is gone after 4 replays in a row, the catch-up fails with an `IllegalStateException` that names the subscription, and nothing reaches live delivery.
+When `canResumeFrom` returns `false`, the catch-up logs a warning and reads a new live start. It then replays again from the position its replay first started from, which delivers that part of the history a second time. When the live start is gone after 4 replays in a row, the catch-up fails with `CatchupCannotResumeException`, an `IllegalStateException`, and nothing reaches live delivery. The message names the subscription and the longest replay, from reading its live start to checking it. Size the change stream history to reach back at least that far. On MongoDB that's the oplog, which you can keep for a minimum time with the `oplogMinRetentionHours` setting.
+
+A blocking catch-up whose replay a resume or a takeover started then holds the replay and logs the failure once, and runs it again when the subscription is resumed or `start(true)` is called. A replay that `subscribe(..)` started ends with the exception, which `waitUntilStarted()` throws.
 
 Make the oplog big enough to cover the longest rebuild, and the longest time a catch-up can be stopped in the middle of a replay.
 
@@ -172,7 +174,7 @@ The checkpoint it stores during the replay is a `CatchupTimeCheckpoint`, which h
 
 A time replay can deliver more events twice than a position replay, because a time doesn't tell which events committed after the live start. Every matching event written after the live start arrives live, including what was written while the catch-up was stopped, and the replay can read the same event too. Use the CloudEvent id to recognize an event you've already handled.
 
-The oplog has to reach back to the live start for the whole time replay. When it doesn't, the catch-up replays again from the time its replay first started from, the same way as a [position catch-up](/docs/layer-0/catch-up-subscription/#resuming-a-replay-from-a-stored-checkpoint). It does the same when the MongoDB model loses the live start as it opens the change stream. After 4 replays in a row it fails with an `IllegalStateException`.
+The oplog has to reach back to the live start for the whole time replay. When it doesn't, the catch-up replays again from the time its replay first started from, the same way as a [position catch-up](/docs/layer-0/catch-up-subscription/#resuming-a-replay-from-a-stored-checkpoint). It does the same when the MongoDB model loses the live start as it opens the change stream. After 4 replays in a row it fails with `CatchupCannotResumeException`.
 
 A time stored by 0.33.0 has no live start. It resumes with a live start read at the resume, so an event with an earlier time that committed after the earlier replay read past that time isn't delivered. It also logs a warning that names the subscription.
 
@@ -183,6 +185,39 @@ On the blocking stack, `resumeSubscription(id)` and `start(true)` on `CatchupSub
 The catch-up replays from the stored position and then resumes the subscription in the wrapped model. Events the other node had already delivered after that position arrive again.
 
 The wrapped model has to resume a subscription from a given position, so it implements `RepositionableSubscriptions` or wraps a model that does. `DurableSubscriptionModel` over either MongoDB model does. Over any other wrapped model, a resume that would replay throws an `IllegalStateException`. `resumeSubscription(id, startAt)` resumes at `startAt` and never replays.
+
+## Resuming from a Checkpoint You Store<HeadingBadge text="Added in 0.35.0" />
+
+`StreamCatchupSubscriptionModel` and `DcbCatchupSubscriptionModel` deliver each event they replay as a `CheckpointAwareCloudEvent` that holds the checkpoint the catch-up stores after it, as live delivery and the reactor catch-ups already did. An application that keeps a read model in its own database can store that checkpoint with its state, in the same transaction, and start the subscription from it again. A subscription started from that checkpoint then resumes where the stored state ends, apart from the cases below that deliver events again.
+
+| Handler | Read the checkpoint with |
+| - | - |
+| The DCB DSL, blocking and reactor | `DcbEventMetadata.checkpoint()` |
+| The Kotlin stream DSL, a `@Subscription` method with an `EventMetadata` parameter, a `@Projection` view | `EventMetadata.getCheckpoint()` |
+| An action that takes the `CloudEvent` | `EventMetadata.from(cloudEvent).getCheckpoint()` |
+
+Each returns an empty `Optional` for an event delivered with no checkpoint. Start the subscription from it with `StartAt.checkpoint(new StringBasedCheckpoint(checkpoint))`, or `DcbStartAt.checkpoint(checkpoint)` for a DCB subscription. To rewind a read model to a point you know is good, keep the checkpoint of the event at that point and start from it.
+
+From the checkpoint of a replayed event, the catch-up goes live from the live start kept in that checkpoint, also when its checkpoint storage holds a later position, so an event between the two isn't skipped.
+
+From the checkpoint of a live event, or of an event the catch-up replays by position, the subscription resumes after that event. A time replay resumes at the event's time instead, so the events with that time arrive again, that event included. An event without a time holds the checkpoint of the event before it, and resumes where that one does. When `catchupPhaseSortBy` doesn't start with the time ascending, an event from the first read resumes the whole replay from where it started.
+
+The string means something only to a catch-up subscription. A MongoDB subscription model with no catch-up wrapping it opens at its default, with no error, when you give it the checkpoint of a replayed event.
+
+The checkpoint of a live event holds a change stream resume token. Once the oplog no longer reaches back to it, the catch-up doesn't take a subscription restarted from it over, and the subscription model it wraps decides. A blocking MongoDB subscription model then stops the subscription and logs an error, or restarts it from the present when it's set to restart after lost history, which skips the events in between.
+
+`CompetingConsumerSubscriptionModel` hands your start to the model it wraps when the node first gets the lease, not when you subscribe. Read the checkpoint inside a `StartAt.dynamic(..)`, so a node that takes over later starts from the latest one your store holds, and return a start of your own while the store holds none, since `StringBasedCheckpoint` refuses `null`:
+
+```java
+competingConsumerSubscriptionModel.subscribe("my-read-model", filter, StartAt.dynamic(context -> {
+    String checkpoint = myStore.checkpoint();
+    return checkpoint == null ? StartAt.subscriptionModelDefault() : StartAt.checkpoint(new StringBasedCheckpoint(checkpoint));
+}), action);
+```
+
+When a node gets the lease back after losing it, the model it wraps resumes from where that node last ran, not from your start. Events can be delivered again. None are skipped, unless the change stream history no longer reaches back to that position and the model is set to restart after lost history, which restarts the subscription from the present.
+
+In Spring Boot, a [`SubscriptionResumePoints` bean](/docs/spring-boot/subscription-annotations/#resuming-from-a-checkpoint-you-store) does this for the annotated subscriptions.
 
 ## Catch-up Subscription Usage
 

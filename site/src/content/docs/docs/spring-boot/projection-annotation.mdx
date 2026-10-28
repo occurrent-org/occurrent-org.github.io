@@ -76,7 +76,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | `id` | The subscription id (required). |
 | `startAt` | `StartPosition.BEGINNING`, `NOW`, or `DEFAULT`, the same `StartPosition` that [`@Subscription`'s `startAt`](/docs/spring-boot/subscription-annotations/#subscription-start-position) takes. |
 | `startAtGlobalPosition` | Start after a specific global or DCB position instead, to rewind a durable read model to a known-good point. Mutually exclusive with a non-default `startAt`. |
-| `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](/docs/spring-boot/subscription-annotations/#subscription-start-position) as `@Subscription`. |
+| `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](/docs/spring-boot/subscription-annotations/#subscription-start-position) as `@Subscription`. A [`SubscriptionResumePoints` bean](/docs/spring-boot/subscription-annotations/#resuming-from-a-checkpoint-you-store) can say where the projection resumes. |
 | `startupMode` | `DEFAULT`, `WAIT_UNTIL_STARTED`, or `BACKGROUND`, the same [startup-mode idea](/docs/spring-boot/subscription-annotations/#subscription-startup-mode) as `@Subscription`. |
 | `capability` | `AGNOSTIC` (both stream and DCB events) or `STREAM` (stream events only). Only read for a `Projection` factory. A `DcbProjection` factory ignores it and always subscribes over its own `DcbCriteria`. |
 | `mode` | `ASYNC` (the default) or `SYNCHRONOUS`, see below. |
