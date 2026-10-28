@@ -155,7 +155,7 @@ For an ephemeral, per-connection subscription you start and cancel by hand, a Se
   </TabItem>
 </Tabs>
 
-`@DcbSubscription` filters by the DCB query built from its `eventTypes` (matched as any-of, and taken from the handler's event parameter when left empty) and its `tags` (matched as all-of, each in `"key:value"` form and validated at startup so a malformed tag fails fast). `startAt = DcbStartPosition.BEGINNING` replays from the start of the DCB sequence, or use `startAtDcbPosition` to resume after a specific position instead.
+`@DcbSubscription` filters by the DCB query built from its `eventTypes` (matched as any-of, and taken from the handler's event parameter when left empty) and its `tags` (matched as all-of, each in `"key:value"` form and validated at startup so a malformed tag fails fast). `startAt = DcbStartPosition.BEGINNING` replays from the start of the DCB sequence. `startAtDcbPosition` is deprecated for removal, since every value above 0 is [refused at start](/docs/layer-0/catch-up-subscription/#starts-a-catch-up-refuses). To resume after a specific event, return the checkpoint delivered with it from a [`SubscriptionResumePoints` bean](/docs/spring-boot/subscription-annotations/#resuming-from-a-checkpoint-you-store).
 
 <Tabs syncKey="lang">
   <TabItem label="Java">

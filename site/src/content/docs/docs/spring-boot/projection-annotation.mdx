@@ -75,7 +75,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | :- | :- |
 | `id` | The subscription id (required). |
 | `startAt` | `StartPosition.BEGINNING`, `NOW`, or `DEFAULT`, the same `StartPosition` that [`@Subscription`'s `startAt`](/docs/spring-boot/subscription-annotations/#subscription-start-position) takes. |
-| `startAtGlobalPosition` | Start after a specific global or DCB position instead, to rewind a durable read model to a known-good point. Mutually exclusive with a non-default `startAt`. |
+| `startAtGlobalPosition` | Deprecated for removal. 0 replays the whole history, and every value above 0 is [refused at start](/docs/layer-0/catch-up-subscription/#starts-a-catch-up-refuses). To rewind a read model to a known-good point, return the checkpoint stored with that point from a [`SubscriptionResumePoints` bean](/docs/spring-boot/subscription-annotations/#resuming-from-a-checkpoint-you-store). |
 | `resumeBehavior` | `DEFAULT` or `SAME_AS_START_AT`, the same [resume-behavior idea](/docs/spring-boot/subscription-annotations/#subscription-start-position) as `@Subscription`. A [`SubscriptionResumePoints` bean](/docs/spring-boot/subscription-annotations/#resuming-from-a-checkpoint-you-store) can say where the projection resumes. |
 | `startupMode` | `DEFAULT`, `WAIT_UNTIL_STARTED`, or `BACKGROUND`, the same [startup-mode idea](/docs/spring-boot/subscription-annotations/#subscription-startup-mode) as `@Subscription`. |
 | `capability` | `AGNOSTIC` (both stream and DCB events) or `STREAM` (stream events only). Only read for a `Projection` factory. A `DcbProjection` factory ignores it and always subscribes over its own `DcbCriteria`. |
@@ -250,9 +250,9 @@ Whether a projection replays at all depends on its start position. With the subs
 
 | `startAt` | Replays? | To rebuild the read model |
 | :- | :- | :- |
-| `StartPosition.BEGINNING`, or an explicit `startAtGlobalPosition` | Yes | Delete its stored checkpoint. |
-| Unset (`StartPosition.DEFAULT`, the annotation's own default) | Never, whatever its checkpoint holds, so it never clears its own records | Set `startAt = StartPosition.BEGINNING` (or a global position) and delete its stored checkpoint. Or wipe its read model and then call `AppliedAppendStore.clear(projectionId)` yourself. |
-| `NOW` | Never, whatever its checkpoint holds | Set `startAt = StartPosition.BEGINNING` (or a global position) and delete its stored checkpoint. |
+| `StartPosition.BEGINNING`, or `startAtGlobalPosition = 0` | Yes | Delete its stored checkpoint. |
+| Unset (`StartPosition.DEFAULT`, the annotation's own default) | Never, whatever its checkpoint holds, so it never clears its own records | Set `startAt = StartPosition.BEGINNING` and delete its stored checkpoint. Or wipe its read model and then call `AppliedAppendStore.clear(projectionId)` yourself. |
+| `NOW` | Never, whatever its checkpoint holds | Set `startAt = StartPosition.BEGINNING` and delete its stored checkpoint. |
 
 You have to delete the checkpoint because the default `resumeBehavior` resumes from it instead of replaying again. If you wipe the read model but keep the checkpoint, the projection resumes instead of replaying, so it never clears its recorded appends either.
 
