@@ -184,6 +184,37 @@ The catch-up replays from the stored position and then resumes the subscription 
 
 The wrapped model has to resume a subscription from a given position, so it implements `RepositionableSubscriptions` or wraps a model that does. `DurableSubscriptionModel` over either MongoDB model does. Over any other wrapped model, a resume that would replay throws an `IllegalStateException`. `resumeSubscription(id, startAt)` resumes at `startAt` and never replays.
 
+## Resuming from a Checkpoint You Store<HeadingBadge text="Added in 0.35.0" />
+
+`StreamCatchupSubscriptionModel` and `DcbCatchupSubscriptionModel` deliver each event they replay as a `CheckpointAwareCloudEvent` that holds the checkpoint the catch-up stores after it, as live delivery and the reactor catch-ups already did. An application that keeps a read model in its own database can store that checkpoint with its state, in the same transaction, and start the subscription from it again. The state and the point the subscription resumes from then never disagree.
+
+| Handler | Read the checkpoint with |
+| - | - |
+| The DCB DSL, blocking and reactor | `DcbEventMetadata.checkpoint()` |
+| The Kotlin stream DSL, a `@Subscription` method with an `EventMetadata` parameter, a `@Projection` view | `EventMetadata.getCheckpoint()` |
+| An action that takes the `CloudEvent` | `EventMetadata.from(cloudEvent).getCheckpoint()` |
+
+Each returns an empty `Optional` for an event delivered with no checkpoint. Start the subscription from it with `StartAt.checkpoint(new StringBasedCheckpoint(checkpoint))`, or `DcbStartAt.checkpoint(checkpoint)` for a DCB subscription. To rewind a read model to a point you know is good, keep the checkpoint of the event at that point and start from it.
+
+The catch-up goes live from the live start kept in that checkpoint, also when its checkpoint storage holds a later position, so an event between the two isn't skipped.
+
+From the checkpoint of a live event, or of an event the catch-up replays by position, the subscription resumes after that event. A time replay resumes at the event's time instead, so the events with that time arrive again, that event included. An event without a time holds the checkpoint of the event before it, and resumes where that one does. When `catchupPhaseSortBy` doesn't start with the time ascending, an event from the first read resumes the whole replay from where it started.
+
+The string means something only to a catch-up subscription. A MongoDB subscription model with no catch-up wrapping it opens at its default, with no error, when you give it the checkpoint of a replayed event.
+
+The checkpoint of a live event holds a change stream resume token. Once the oplog no longer reaches back to it, the catch-up doesn't take a subscription restarted from it over, and the subscription model it wraps decides. A blocking MongoDB subscription model then stops the subscription and logs an error, or restarts it from the present when it's set to restart after lost history, which skips the events in between.
+
+`CompetingConsumerSubscriptionModel` hands your start to the model it wraps when the node gets the lease, not when you subscribe. Read the checkpoint inside a `StartAt.dynamic(..)`, so a node that takes over later starts from the latest one your store holds, and return a start of your own while the store holds none, since `StringBasedCheckpoint` refuses `null`:
+
+```java
+competingConsumerSubscriptionModel.subscribe("my-read-model", filter, StartAt.dynamic(context -> {
+    String checkpoint = myStore.checkpoint();
+    return checkpoint == null ? StartAt.subscriptionModelDefault() : StartAt.checkpoint(new StringBasedCheckpoint(checkpoint));
+}), action);
+```
+
+In Spring Boot, a [`SubscriptionResumePoints` bean](/docs/spring-boot/subscription-annotations/#resuming-from-a-checkpoint-you-store) does this for the annotated subscriptions.
+
 ## Catch-up Subscription Usage
 
 The subscription model will only stream historic events if started with a `StartAt` instance that points to a checkpoint in the history, either a so called `TimeBasedCheckpoint` or a `GlobalCheckpoint`, for example:
