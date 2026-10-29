@@ -52,7 +52,7 @@ The source handles each outcome as the table under [Consuming from a broker](/do
 
 It holds a `DEFERRED` or `UNAVAILABLE` message unacknowledged, and its poll hands it back to RabbitMQ with `basicNack` and requeue, at most once per poll interval, one second by default. RabbitMQ then delivers it again. It stops consuming for good on `REFUSED`.
 
-Its configured `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeException` or `AssertionError` thrown out of `acceptOrDefer(...)`, and a message that can't be rebuilt into a `CloudEvent`. Any other `Error`, or a checked exception, stops the source for good and closes its channel, which puts the message back on the queue.
+Its configured `DeliveryFailurePolicy` handles `NOT_DELIVERABLE`, a `RuntimeException` or `AssertionError` thrown out of `acceptOrDefer(...)`, and a message that can't be rebuilt into a `CloudEvent`. Any other `Error`, or a checked exception, stops the source for good and closes its channel, which puts the message back on the queue. Every case where the source stops for good is listed further down.
 
 `onDeliveryFailure(DeliveryFailurePolicy)` picks that policy. `REDELIVER` is the default. It never acknowledges the original, and hands it back with `basicNack` and requeue on the next poll, the same pace as a held message. `PARK` needs a `parkingDestination(RabbitMqDestination)`. If you choose `PARK` without one, the source refuses to start.
 
@@ -72,7 +72,17 @@ The RabbitMQ client calls every consumer on a connection from one pool of thread
 
 `build()` retries opening its channel and declaring the queue, the bindings and the QoS, backing off from 100ms to 2 seconds over ten attempts, so a broker that is still starting doesn't fail your application's startup. `retryStrategy(RetryStrategy)` on the builder replaces that backoff, and your strategy then also decides which failures are retried.
 
-It never creates or reconnects the `Connection` you gave it. A source keeps consuming after that connection recovers automatically, and a delivery that was being handled when it dropped is delivered again. On a `Connection` with automatic recovery turned off, the source stops instead.
+It never creates or reconnects the `Connection` you gave it. A source keeps consuming after that connection recovers automatically, and a delivery that was being handled when it dropped is delivered again.
+
+Build the source with the `AutorecoveringConnection` that `ConnectionFactory.newConnection()` returns, not with a `Connection` that wraps it for metrics or tracing. The source follows a recovery through listeners that only the `AutorecoveringConnection` itself calls. Given a wrapper, it logs a warning when it's built, and with topology recovery turned off it stops consuming once the connection has recovered.
+
+The source stops for good in the cases below, and closes its channel, which puts every message it hadn't acknowledged back on the queue.
+
+* A catch-up wrapping its model has failed for good, so the model returns `REFUSED`.
+* `acceptOrDefer(...)` throws an `Error` other than `AssertionError`, or a checked exception.
+* Acknowledging a message, or handing one back with `basicNack`, fails for a reason other than a dropped connection. A `TrafficListener` or `MetricsCollector` that throws a `RuntimeException` is one example.
+* Acknowledging a message, or handing one back, fails with an `IOException`, and the connection doesn't drop within about a poll interval. A failed socket write drops the connection, and the source keeps running then. A `TrafficListener` or `MetricsCollector` written in Kotlin can throw an `IOException` while the connection is fine. So can NIO, which throws `Frame enqueuing failed` on a connection a memory alarm has blocked, for example one the source shares with a sink that publishes during the alarm.
+* Its channel closes, and nothing is going to open it again. The broker closes a channel after a channel error, for example with `406 PRECONDITION_FAILED` when a message outlives the broker's `consumer_timeout`. A `Connection` with automatic recovery turned off closes its channels for good when it drops, and so does closing the connection yourself. The source stops on its next poll, also when it holds no message.
 
 `RabbitMqDomainEventSource<E>` and `RabbitMqDomainEventSink<E>` are the domain-level counterparts. The source is built with `RabbitMqDomainEventSource.builder(connection, feed, queue)`, and the sink with `RabbitMqDomainEventSink.using(cloudEventSink, cloudEventConverter)`.
 
