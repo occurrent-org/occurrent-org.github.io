@@ -59,6 +59,8 @@ A store that hands out no global position at all is a legitimate design too. Dec
 
 The fixture also declares `appendConditionModel()`, one of two ways a store can evaluate a token-qualified append condition: `EXACT_CRITERIA`, comparing the condition against the exact query criteria (the in-memory store's approach), or `TAG_MARKER`, comparing by tag (the approach all three MongoDB stores take, see [ADR 21](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0021-dcb-write-path-query-scoped-concurrency.md)). A few edge-case assertions in `DcbEventStoreConformance` branch on this, so declare whichever your store actually implements.
 
+A read builds its token with `DcbConsistencyToken.of(criteria, version)`, where `criteria` are the criteria the read was given and `version` is whatever your store compares on append. An append condition holds its criteria and its token together, and it refuses a token read with other criteria before your store is called. `DcbEventStoreConformance` checks that refusal on your store too, including a case where two different criteria would give the same version, since a version alone can't tell them apart.
+
 If your store supports both `STREAM` and `DCB` against the same underlying storage, add `DcbStreamInteropConformance`. It checks that the two views stay logically separate over one physical store. A DCB read never sees a stream-written event, a stream write refuses an event carrying DCB tags, and both still share a single global position sequence.
 
 ## Time precision
