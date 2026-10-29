@@ -292,7 +292,7 @@ val state = applicationService.executeAndReturnState(streamId, command, decider)
 val newEvents = applicationService.executeAndReturnEvents(streamId, command, decider)
 ```
 
-The state from `executeAndReturnState` is `null` when the decider's state is, for example before a command has created the aggregate. The blocking services and these extensions return the `null`. The reactive services, and the Kotlin extensions for a `DcbDecider`, throw a `NullPointerException` instead, before anything is written, because a `Mono` can't hold `null` and the DCB extensions declare a non-null state. When the state can be `null`, call `executeAndReturnDecision` and read the state from the decision.
+The state from `executeAndReturnState` is `null` when the decider's state is, for example before a command has created the aggregate. The blocking services and these extensions return the `null`. The reactive services, and the Kotlin extensions for a `DcbDecider`, throw a `NullPointerException` instead and write none of the command's events, because a `Mono` can't hold `null` and the DCB extensions declare a non-null state. When the state can be `null`, call `executeAndReturnDecision` and read the state from the decision.
 
 ## Combining Deciders
 
