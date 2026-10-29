@@ -123,15 +123,15 @@ This lists the quarantined instances of a saga and what each one stopped on:
 
 ### The failure record and the quarantine budget
 
-`failure()` holds the failing event's redelivery key, its global position where the feed assigns one, the exception's class name and message, and `firstFailedAt`, the time the instance's first failure was recorded. A message longer than 1,000 characters is cut short in the record, and the log still has the whole exception.
+`failure()` holds the failing event's redelivery key, its global position where the feed assigns one, the exception's class name and message, and `firstFailedAt`, the time the failure of the event it names was first recorded. A message longer than 1,000 characters is cut short in the record, and the log still has the whole exception.
 
-The runner measures how long the instance has been failing, not how many times it failed. The budget is `SagaRunnerConfig.quarantineAfter`, measured from `firstFailedAt`.
+The runner measures how long an event has been failing, not how many times it failed, and each failing event keeps its own clock. The budget is `SagaRunnerConfig.quarantineAfter`, measured from when that event first failed.
 
 An instance's first failure writes the failure record and is then rethrown, whether or not the write succeeded, so a subscription model that offers the event again lets the saga try again. An event that fails before its instance exists creates the instance to hold the record.
 
 That first write happens only for a failure that could be quarantined later, and [Observing Saga Instances](/docs/layer-1/observing-sagas/) lists the failures that record nothing. When nothing was recorded, the next failure is treated as a first failure again.
 
-The same event failing again inside the budget writes nothing more. A different event failing rewrites the record to name that event and keeps `firstFailedAt`. The budget is still measured from `firstFailedAt`, so the instance can be quarantined on the new event's first failure.
+The same event failing again inside the budget writes nothing more. A different event failing rewrites the record to name that event, with that event's own `firstFailedAt`. When versions 7, 8, 7 fail in turn, version 7 is still measured from its first failure, so the instance reaches its budget. An event a broker parked a week ago doesn't count against an unrelated event that fails today. A parked event that is replayed after the budget and fails again quarantines the instance on that first replay failure, so fix the cause before replaying it.
 
 Once the instance has been failing for at least the budget, the next failure can move it to `SagaStatus.QUARANTINED` on whichever event it is failing on then. When it does, the runner returns normally instead of rethrowing. The instance never applies that event or any later one of its own, and the other instances of the saga move on to their next events.
 
