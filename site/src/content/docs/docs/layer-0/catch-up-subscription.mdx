@@ -191,7 +191,7 @@ A MongoDB event store reserves an event's position before the transaction that w
 
 A start at position 0, `StartAt.checkpoint(GlobalCheckpoint.of(0))`, `DcbStartAt.beginning()` or the beginning of time isn't refused when it starts. A replay from there that keeps losing its live start replays again, and fails only after 4 replays in a row, as [Resuming a Replay from a Stored Checkpoint](#resuming-a-replay-from-a-stored-checkpoint) describes.
 
-On an event store that writes no positions, a blocking stream catch-up replays `StartAt.checkpoint(GlobalCheckpoint.of(0))` from the beginning of time, and refuses `GlobalCheckpoint.of(n)` with `n` above 0 with an `UnsupportedStartAtException`.
+On an event store that writes no positions, a blocking stream catch-up replays `StartAt.checkpoint(GlobalCheckpoint.of(0))` from the beginning of time, and refuses a position above 0 with an `UnsupportedStartAtException`, whether it comes from `GlobalCheckpoint.of(n)` or from a `position:<n>` checkpoint stored for the subscription.
 
 A replay that loses its live start fails only after its handler has received the events the replay delivered, in this run or before a restart, and after any checkpoint storage it uses has kept the progress. So the exception doesn't mean that nothing reached the handler.
 
@@ -199,7 +199,7 @@ The blocking catch-up throws the exception from `subscribe(..)` or from `waitUnt
 
 To resume after an event, keep the checkpoint the subscription delivers with it, as [Resuming from a Checkpoint You Store](#resuming-from-a-checkpoint-you-store) describes. That checkpoint holds the live start, so a start from it isn't refused while the change stream history still reaches back to that live start. Once it no longer does, a start from it is refused when the replay that delivered the event started at a specific time, or is a 0.34 replay that started above position 0. A checkpoint from a replay that started at position 0 or at the beginning replays again from there instead.
 
-A subscription with no such checkpoint can only start from the beginning again. Cancel it first with `cancelSubscription(id)`, which deletes its stored checkpoint. A blocking catch-up holds a refused resume, and holds the stored checkpoint it read with it, so deleting the checkpoint and resuming is refused again. With the application stopped, deleting the stored checkpoint is enough.
+A subscription with no such checkpoint can only start from the beginning again. Cancel it first with `cancelSubscription(id)`, which deletes its stored checkpoint. A blocking catch-up holds a refused resume, and holds the stored checkpoint it read with it, so deleting the checkpoint and resuming is refused again. With every instance of the application stopped, deleting the stored checkpoint is enough.
 
 `NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel` and `ReactorMongoSubscriptionModel` refuse a subscribe at a `GlobalCheckpoint` or a `CatchupTimeCheckpoint`, the checkpoints a catch-up stores, with an `UnsupportedStartAtException`. Subscribe through the catch-up that stored the checkpoint. Only a `StartAt` that names the checkpoint is refused. A `StartAt.dynamic(..)` that answers one still opens the change stream at the present. A blocking `DurableSubscriptionModel` does that when it reads one from its storage for a dynamic start, which [occurrent#1346](https://github.com/johanhaleby/occurrent/issues/1346) tracks. A resume at such a checkpoint, `resumeSubscription(subscriptionId, startAt)`, still goes on from the position the subscription has read to.
 
