@@ -25,7 +25,13 @@ The reactive starter builds a durable model over a catch-up model for a store th
 
 ### Restarting when the oplog is lost
 
-Automatic restart when the oplog no longer has a subscription's history is off when you create a MongoDB subscription model yourself, see [Restart Subscription when Oplog Lost](/docs/layer-0/blocking-subscription-models/#restart-subscription-when-oplog-lost). The starter turns it on, for both the blocking and the reactive model. Set `occurrent.subscription.mongodb.restart-on-change-stream-history-lost=false` to turn it off there.
+Automatic restart when the oplog no longer has a subscription's history is off when you create a MongoDB subscription model yourself, see [Restart Subscription when Oplog Lost](/docs/layer-0/blocking-subscription-models/#restart-subscription-when-oplog-lost). The starter turns it on, for both the blocking and the reactive model, but it reaches only a subscription the starter runs without a catch-up subscription. Set `occurrent.subscription.mongodb.restart-on-change-stream-history-lost=false` to turn it off there.
+
+Both starters run every subscription through a catch-up subscription by default. The blocking starter does it when `occurrent.event-store.capabilities` contains `STREAM`, or contains `DCB` and the context has a `DcbEventStore`. The reactive starter does it when the capabilities contain `DCB` and the context has a DCB store, or contain `STREAM` and the stream store writes positions.
+
+Such a subscription stops instead of restarting when its resume token is gone, since a restart from now would skip every event committed in between. A running subscription is paused, an error in the log names it, and `resumeSubscription` throws `CatchupCannotResumeException` until you cancel the subscription. On the blocking stack a subscription that starts from a resume token that is already gone throws from `subscribe`, which can keep the application from starting. A `startAt = BEGINNING` subscription restarted from the checkpoint it stored is one. The [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.35.0.md#a-subscription-whose-resume-token-is-gone-stops-instead-of-restarting-from-now) lists the starts this affects and how to recover.
+
+On the blocking stack the property still restarts one such subscription from now. That is a subscription that opened at the present when MongoDB answered with no operation time, and loses the history before it reads anything, which [#1358](https://github.com/johanhaleby/occurrent/issues/1358) tracks.
 
 ### Starting when no start position can be recorded
 
