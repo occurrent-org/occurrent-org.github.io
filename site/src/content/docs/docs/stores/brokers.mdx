@@ -122,7 +122,7 @@ D catchAllDestination();
 
 An empty `Optional` from it means the resolver could not narrow the filter, not that no destination matches. In that case the caller binds `catchAllDestination()`, instead of listening to nothing.
 
-`destinationsFor(subscriptionFilter)` is a default method you do not implement. It hands the `Filter` inside an `AgnosticSubscriptionFilter` or a `StreamSubscriptionFilter` to the method above, and returns an empty `Optional` for every other `SubscriptionFilter`. That covers a `DcbSubscriptionFilter`, which holds DCB criteria rather than a `Filter`, and any `SubscriptionFilter` of your own, which is a type this interface knows nothing about.
+`destinationsFor(subscriptionFilter)` is a default method you do not implement. It hands the `Filter` inside an `AgnosticSubscriptionFilter` or a `StreamSubscriptionFilter` to the method above, and returns an empty `Optional` for every other `SubscriptionFilter`, including a `DcbSubscriptionFilter`, a MongoDB `MongoFilterSpecification` and any `SubscriptionFilter` of your own.
 
 `catchAllDestination()` is the destination that receives every event the resolver could route, so a consumer bound to it never misses one.
 
