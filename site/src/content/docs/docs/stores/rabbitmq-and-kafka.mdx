@@ -74,17 +74,23 @@ The RabbitMQ client calls every consumer on a connection from one pool of thread
 
 It never creates or reconnects the `Connection` you gave it. A source keeps consuming after that connection recovers automatically, and a delivery that was being handled when it dropped is delivered again.
 
-Build the source with the `AutorecoveringConnection` that `ConnectionFactory.newConnection()` returns, not with a `Connection` that wraps it for metrics or tracing. The source follows a recovery through listeners that only the `AutorecoveringConnection` itself calls. Given a wrapper, it logs a warning when it's built, and with topology recovery turned off it stops consuming once the connection has recovered.
+Build the source with the `AutorecoveringConnection` that `ConnectionFactory.newConnection()` returns, not with a `Connection` that wraps it for metrics or tracing. The source follows a recovery through listeners that only the `AutorecoveringConnection` itself calls. Given a wrapper that implements `Recoverable`, or whose channels do, it logs a warning when it's built, and with topology recovery turned off it stops consuming once the connection has recovered.
+
+A channel that doesn't implement `Recoverable`, from a wrapper or from a `Connection` with automatic recovery turned off, also gets a warning when the source is built. The source then can't tell whether a recovery is going to reopen that channel after it closes, so a close of that channel doesn't stop the source.
 
 The source stops for good in the cases below, and closes its channel, which puts every message it hadn't acknowledged back on the queue.
 
 * A catch-up wrapping its model has failed for good, so the model returns `REFUSED`.
 * `acceptOrDefer(...)` throws an `Error` other than `AssertionError`, or a checked exception.
 * Acknowledging a message, or handing one back with `basicNack`, fails for a reason other than a dropped connection. A `TrafficListener` or `MetricsCollector` that throws a `RuntimeException` is one example.
-* Acknowledging a message, or handing one back, fails with an `IOException`, and the connection doesn't drop within about a poll interval. A failed socket write drops the connection, and the source keeps running then. A `TrafficListener` or `MetricsCollector` written in Kotlin can throw an `IOException` while the connection is fine. So can NIO, which throws `Frame enqueuing failed` on a connection a memory alarm has blocked, for example one the source shares with a sink that publishes during the alarm.
-* Its channel closes, and nothing is going to open it again. The broker closes a channel after a channel error, for example with `406 PRECONDITION_FAILED` when a message outlives the broker's `consumer_timeout`. A `Connection` with automatic recovery turned off closes its channels for good when it drops, and so does closing the connection yourself. The source stops on its next poll, also when it holds no message.
+* Acknowledging a message, or handing one back, fails with an `IOException`, and the connection doesn't drop within about a poll interval. A failed flush of the socket drops the connection, and the source keeps running then. A `TrafficListener` or `MetricsCollector` written in Kotlin can throw an `IOException` while the connection is fine. So can NIO, which throws `Frame enqueuing failed` on a connection a memory alarm has blocked, for example one the source shares with a sink that publishes during the alarm. When the connection takes longer than that to drop after the failure, the source stops as well, and nothing is lost, since closing the channel puts the message back on the queue.
+* Its channel from an `AutorecoveringConnection` closes, and nothing is going to open it again. The broker closes a channel after a channel error, for example with `406 PRECONDITION_FAILED` when a message outlives the broker's `consumer_timeout`, and closing the connection yourself closes its channels for good too. The source stops on its next poll, also when it holds no message, and logs at `warn` when your application closed the channel or the connection, and at `error` otherwise.
+
+The source tells a dropped connection from a close for good with the RabbitMQ client's default recovery condition, which recovers from every close your application didn't start, and from one after a missed heartbeat. A condition you set with `setConnectionRecoveryTriggeringCondition` on the `ConnectionFactory` isn't followed where it differs from that.
 
 `RabbitMqDomainEventSource<E>` and `RabbitMqDomainEventSink<E>` are the domain-level counterparts. The source is built with `RabbitMqDomainEventSource.builder(connection, feed, queue)`, and the sink with `RabbitMqDomainEventSink.using(cloudEventSink, cloudEventConverter)`.
+
+`RabbitMqDomainEventSource<E>` stops for good in every case above, and also when its feed throws [`UnreadableLiveFilterException`](/docs/stores/brokers/#consuming-from-a-broker) for a message.
 
 ## Kafka
 
