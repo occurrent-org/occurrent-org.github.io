@@ -349,6 +349,10 @@ If the proxy can't reach a handler method, Spring Boot startup fails with `Subsc
 | `final`, on a bean behind a CGLIB proxy | A CGLIB proxy can't override a final method | Remove `final` |
 | `static` | Calling it never goes through any proxy | Make it an instance method |
 
+A handler on a bean built after startup, a `@Lazy` bean for example, is checked when the bean is built, as described under [When Annotations Register](#when-annotations-register). The exception then comes from creating that bean, not from startup.
+
+If a `BeanPostProcessor` that runs after Occurrent's wraps such a bean in a proxy that can't reach the handler method, that proxy doesn't exist yet when the check runs. The handler then fails with `SubscriptionHandlerNotInvocableException` the first time an event is delivered to the wrapped bean.
+
 A private or final handler on a bean that isn't proxied at all still runs, since there's no advice to lose.
 
 ## When Annotations Register
