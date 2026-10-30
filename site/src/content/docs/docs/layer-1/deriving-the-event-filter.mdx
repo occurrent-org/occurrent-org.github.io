@@ -89,7 +89,7 @@ A refusal is thrown when the filter is derived, and each place derives it at a d
 
 A `DcbCriteriaBuilder` seeded with a boundary that excludes types can fail in one more way. A sealed type passed to `type(..)` or `types(..)` expands to its concrete types, and when one of them is a type the boundary excludes, the call throws `IllegalArgumentException` saying types and excluded types cannot overlap.
 
-A criterion built from a sealed type also matches every concrete type it permits when you use it in `DcbAppendCondition.failIfEventsMatch(..)`, so the append fails on a concurrent write of any of them.
+A criterion built from a sealed type also matches every concrete type it permits when you read with it and append under `DcbAppendCondition.failIfEventsMatch(token)` with the token that read returned, so the append fails on a concurrent write of any of them.
 
 There are three ways to fix a refused declaration, and which one fits depends on who owns the events.
 

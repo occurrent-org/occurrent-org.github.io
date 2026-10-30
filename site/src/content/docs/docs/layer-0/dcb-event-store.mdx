@@ -114,7 +114,9 @@ The type names above are strings, which is convenient but unchecked. If you woul
 
 `DcbEventStore` is the low-level API. `read(criteria)` returns a `DcbEventStream`, `exists(criteria)` and `count(criteria)` answer cheaper yes-or-no and how-many questions over the same criteria, and `append(events)` or `append(events, condition)` writes DCB-tagged CloudEvents.
 
-The read-decide-append cycle is how you use it directly, without an application service. Read the events for your boundary. The returned `DcbEventStream` carries both the events and a `DcbConsistencyToken`. Decide the new events from what you read, then append them under a `DcbAppendCondition.failIfEventsMatch(criteria, consistencyToken)`. That condition fails the append with a `DcbAppendConditionNotFulfilledException` if anything matching your boundary was committed after your read, and that exception is your signal to retry the whole cycle. To fail on any concurrent append at all, rather than one matching a specific boundary, use `DcbAppendCondition.wholeStoreLock()` (or `wholeStoreLock(consistencyToken)`). It is the intent-revealing form of `failIfEventsMatch(DcbCriteria.all())` and is the recommended way to express a whole-store lock.
+The read-decide-append cycle is how you use it directly, without an application service. Read the events for your boundary. The returned `DcbEventStream` has both the events and a `DcbConsistencyToken`, and the token holds the criteria you read with. Decide the new events from what you read, then append them under a `DcbAppendCondition.failIfEventsMatch(consistencyToken)`, which takes its criteria from the token. That condition fails the append with a `DcbAppendConditionNotFulfilledException` if anything matching your boundary was committed after your read, and that exception is your signal to retry the whole cycle. A prune of your boundary's markers on MongoDB can let such an append through until [#1300](https://github.com/johanhaleby/occurrent/issues/1300) is fixed. On the MongoDB stores it can also fail when nothing matching your boundary was committed, for example after an event that shares a tag with your boundary but doesn't match it. Sharing only a type with a criterion that has tags isn't a reason for the append to fail. The in-memory store fails the append only on a matching event. To fail when the store already holds any DCB event, rather than one matching a specific boundary, use `DcbAppendCondition.wholeStoreLock()`. It is the intent-revealing form of `failIfEventsMatch(DcbCriteria.all())` and is the recommended way to express a whole-store lock. `wholeStoreLock(consistencyToken)`, with a token read with `DcbCriteria.all()`, fails when another whole-store append was committed after the read. Neither form conflicts with a concurrent tag-scoped or type-scoped append on the MongoDB stores, so use them only when a single writer appends, or for a first append that races only with other first appends.
+
+A token belongs to the criteria it was read with. The deprecated `failIfEventsMatch(criteria, consistencyToken)` throws `IllegalArgumentException` when `criteria` isn't the same as the token's criteria, and `wholeStoreLock(consistencyToken)` throws it for a token that wasn't read with `DcbCriteria.all()`. Both throw before anything is appended. Two criteria are the same when they hold the same alternatives in any order, so `anyOf(a, b)` is the same as `anyOf(b, a)`, but `types("A", "B")` isn't the same as `anyOf(type("A"), type("B"))` even though they select the same events.
 
 <Tabs syncKey="lang">
   <TabItem label="Java">
@@ -127,7 +129,7 @@ The read-decide-append cycle is how you use it directly, without an application 
     // Decide the new events from what is currently true for this boundary
     List<CloudEvent> newEvents = decideEnrollment(currentEvents, courseId, studentId);
 
-    DcbAppendCondition condition = DcbAppendCondition.failIfEventsMatch(boundary, stream.consistencyToken());
+    DcbAppendCondition condition = DcbAppendCondition.failIfEventsMatch(stream.consistencyToken());
     try {
         DcbAppendResult result = eventStore.append(newEvents, condition);
     } catch (DcbAppendConditionNotFulfilledException e) {
@@ -146,7 +148,7 @@ The read-decide-append cycle is how you use it directly, without an application 
     // Decide the new events from what is currently true for this boundary
     val newEvents = decideEnrollment(currentEvents, courseId, studentId)
 
-    val condition = DcbAppendCondition.failIfEventsMatch(boundary, stream.consistencyToken())
+    val condition = DcbAppendCondition.failIfEventsMatch(stream.consistencyToken())
     try {
         val result = eventStore.append(newEvents, condition)
     } catch (e: DcbAppendConditionNotFulfilledException) {
@@ -198,7 +200,7 @@ Three things about these options are easy to get wrong, so they are worth statin
 
 **Skip happens before limit.** `backwards().skip(4).limit(1)` skips the four newest matches and returns the fifth newest. A large MongoDB skip can be expensive, so use position windows for catch-up and large scans.
 
-**Direction, skip and limit do not affect the consistency token.** The token reflects every event matching the criteria at read time, not the handful you asked for. A read using `fromBeginning().backwards().limit(1)` followed by a `failIfEventsMatch(boundary, token)` append still fails if anything else landed in that boundary, including events the read never returned.
+**Direction, skip and limit do not affect the consistency token.** The token reflects every event matching the criteria at read time, not the handful you asked for. A read using `fromBeginning().backwards().limit(1)` followed by a `failIfEventsMatch(token)` append still fails if anything else matching that boundary was committed after the read, including events the read never returned.
 
 ## Notes
 
