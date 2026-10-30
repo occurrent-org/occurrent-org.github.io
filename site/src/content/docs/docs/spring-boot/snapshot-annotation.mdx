@@ -39,6 +39,8 @@ You can declare a maintained snapshot with `@Snapshot` on both the blocking and 
 
 The subscription that keeps the snapshot up to date is filtered to the event types the `SnapshotView` registers handlers for, derived as described in [Deriving the Event Filter](/docs/layer-1/deriving-the-event-filter/). If the `SnapshotView` registers a handler for a type listed as refused in that section, Spring Boot startup fails.
 
+A DCB `@Snapshot` keeps one snapshot per boundary, saved at the marker versions of the boundary. On each matching event it reads the events appended after those versions, applies them to the saved state, and saves at the versions of that read. `everyNEvents` counts the events of that read. A `DcbSnapshotView` over `DcbCriteria.all()` keeps no snapshot and logs a warning at startup, since a read of every event has no marker versions.
+
 :::note
 The declarative `@Snapshot` annotation works on both the blocking and reactor stacks, for stream and DCB. The application services and the `SnapshotViews` facade described in the other sections are the programmatic path when you would rather not use the annotation.
 :::
