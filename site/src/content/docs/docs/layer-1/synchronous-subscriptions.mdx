@@ -40,7 +40,7 @@ That same property is what makes the [subscription life cycle](/docs/testing/int
 
 ## The transaction model
 
-By default a synchronous subscription is best-effort. The handler runs before `execute` returns, but the write has already committed, so a handler that throws does not roll it back. The events stay, and `execute` still surfaces the exception. This is the deliberate trade for running in the write path with no transaction.
+By default a synchronous subscription is best-effort. The handler runs before `execute` returns, but the write has already committed, so a handler that throws does not roll it back. The events stay, and `execute` still surfaces the exception. As of 0.35.0 the application service's retry strategy never sees that failure, even one that matches its predicate, because running the command again would write its events twice. This is the deliberate trade for running in the write path with no transaction.
 
 To make the write and the handlers commit or roll back together, configure a `TransactionExecutor` (`org.occurrent.application.service.TransactionExecutor`, in the `occurrent-application-service-common` module) on the application service. It defaults to `TransactionExecutor.noTransaction()`, a pass-through. Two real executors ship:
 
