@@ -262,8 +262,8 @@ A running projection isn't told about a `clear(projectionId)` call. The wrapper 
 
 At startup, the Spring Boot starter logs a `WARN` naming each `recordAppliedAppends = true` projection that it can tell will never replay. It can tell for:
 
-* an explicit `NOW`
-* `DEFAULT` on the MongoDB subscription models the starter configures
+* `NOW` with `resumeBehavior = SAME_AS_START_AT`
+* `DEFAULT`, or `NOW` with the default `resumeBehavior`, on the MongoDB subscription models the starter configures
 * a push projection with `catchup = NONE`
 * on the reactor stack, a subscription model the starter configured without a catch-up model inside it
 

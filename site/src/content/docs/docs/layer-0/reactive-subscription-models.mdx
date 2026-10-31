@@ -226,7 +226,7 @@ So a position source that can never answer stops a brand new subscription rather
 
 To start a registration whose read returns nothing, set `startWhenNoStartPositionCanBeRecorded(true)` on `ReactorDurableSubscriptionModelConfig`.
 
-`ReactorMongoSubscriptionModel` returns nothing when the server refuses the `hostInfo` command, as a shared MongoDB Atlas cluster does. A read that fails is still refused. [When No Start Position Can Be Recorded](/docs/layer-0/durable-subscriptions/#when-no-start-position-can-be-recorded) explains what you risk by starting without a stored position.
+`ReactorMongoSubscriptionModel` reads that position with the `hello` command, which doesn't depend on `hostInfo`, so a shared MongoDB Atlas cluster that refuses `hostInfo` doesn't make it answer nothing. It fails when the server can't be asked or replies without a clock, and a read that fails is refused, so this setting doesn't change what it does. [When No Start Position Can Be Recorded](/docs/layer-0/durable-subscriptions/#when-no-start-position-can-be-recorded) explains what you risk by starting without a stored position.
 
 A dynamic start position can return `StartAt.subscriptionModelDefault()` too, and is then read for and refused the same way. When the wrapped model manages named subscriptions of its own, the durable model calls the function inside `subscribe(..)`, so what the function throws comes out of that call. The exception is a subscribe that takes over the delete of an earlier cancel after that delete has read the checkpoint, as described in [Cancelling a Subscription](/docs/layer-0/reactive-subscription-models/#cancelling-a-subscription).
 
