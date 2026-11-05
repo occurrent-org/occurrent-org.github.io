@@ -127,7 +127,7 @@ In the example above, writing the events to the event store and executing synchr
   </TabItem>
 </Tabs>
 
-Given that you've defined a `MongoTransactionManager` in your Spring Boot configuration (and use this when creating your [event store instance](/docs/stores/mongodb-event-stores/#eventstore-with-spring-mongotemplate-blocking)) the side effects and events are written atomically in the same transaction!
+Given that your Spring Boot configuration has a `MongoTransactionManager` (the starter creates a `CommitRetryingMongoTransactionManager` unless you define your own) and you use it when creating your [event store instance](/docs/stores/mongodb-event-stores/#eventstore-with-spring-mongotemplate-blocking), the side effects and events are written atomically in the same transaction!
 
 ## Application Service Kotlin Extensions
 
