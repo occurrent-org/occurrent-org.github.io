@@ -251,8 +251,8 @@ Whether a projection replays at all depends on its start position. With the subs
 | `startAt` | Replays? | To rebuild the read model |
 | :- | :- | :- |
 | `StartPosition.BEGINNING`, or an explicit `startAtGlobalPosition` | Yes | Delete its stored checkpoint. |
-| Unset (`StartPosition.DEFAULT`, the annotation's own default) | Never, whatever its checkpoint holds, so it never clears its own records | Set `startAt = StartPosition.BEGINNING` (or a global position) and delete its stored checkpoint. Or wipe its read model and then call `AppliedAppendStore.clear(projectionId)` yourself. |
-| `NOW` | Never, whatever its checkpoint holds | Set `startAt = StartPosition.BEGINNING` (or a global position) and delete its stored checkpoint. |
+| Unset (`StartPosition.DEFAULT`, the annotation's own default) | On the blocking stack, never, whatever its checkpoint holds, so it never clears its own records. On the reactor stack, when a catch-up stored its checkpoint | Set `startAt = StartPosition.BEGINNING` (or a global position) and delete its stored checkpoint. Or wipe its read model and then call `AppliedAppendStore.clear(projectionId)` yourself. |
+| `NOW` | With the default `resumeBehavior`, when a catch-up stored its checkpoint, for example an earlier `startAt = BEGINNING` that stopped before it caught up. With `resumeBehavior = SAME_AS_START_AT`, never | Set `startAt = StartPosition.BEGINNING` (or a global position) and delete its stored checkpoint. |
 
 You have to delete the checkpoint because the default `resumeBehavior` resumes from it instead of replaying again. If you wipe the read model but keep the checkpoint, the projection resumes instead of replaying, so it never clears its recorded appends either.
 
@@ -262,10 +262,12 @@ A running projection isn't told about a `clear(projectionId)` call. The wrapper 
 
 At startup, the Spring Boot starter logs a `WARN` naming each `recordAppliedAppends = true` projection that it can tell will never replay. It can tell for:
 
-* an explicit `NOW`
-* `DEFAULT` on the MongoDB subscription models the starter configures
+* `NOW` with `resumeBehavior = SAME_AS_START_AT`
+* on the blocking stack, `DEFAULT` on the MongoDB subscription models the starter configures
 * a push projection with `catchup = NONE`
 * on the reactor stack, a subscription model the starter configured without a catch-up model inside it
+
+A `SubscriptionResumePoints` bean can replace the start of the first two with a checkpoint, so while the application declares one, the starter logs nothing for them.
 
 It can't tell for a subscription model of your own, so it logs nothing there.
 
