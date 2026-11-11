@@ -53,6 +53,8 @@ The same resolver backs the `CloudEventSink` bean, a `RabbitMqCloudEventSink`. T
 
 Your own `CloudEventSink` or `DestinationResolver` bean replaces the starter's.
 
+A `RabbitMqOutboundMapper` bean is passed to the starter's sink, and a `RabbitMqInboundMapper` bean to both source factories, so every source they build reads with it. See [A RabbitMQ wire format of your own](/docs/stores/rabbitmq-and-kafka/#a-rabbitmq-wire-format-of-your-own). With your own `CloudEventSink` bean the outbound mapper bean isn't used, so set it on the sink you build.
+
 | Property under `occurrent.broker.rabbitmq` | Default | Sets |
 | - | - | - |
 | `exchange` | none | The topic exchange the sink publishes to and the sources bind to |
