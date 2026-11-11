@@ -78,7 +78,7 @@ With Micrometer on the classpath and a `MeterRegistry` bean, the starter counts 
 
 The routing key isn't a tag, since a routing key derived from the event type has one value per type. A `RabbitMqSinkListener` or `RabbitMqSourceListener` bean of your own replaces the matching Micrometer one. See [Metrics and health for RabbitMQ](/docs/stores/rabbitmq-and-kafka/#metrics-and-health-for-rabbitmq) for when each is called.
 
-With `spring-boot-health` on the classpath, which `spring-boot-starter-actuator` brings, the starter adds a health contributor named `rabbitMqBroker` with one indicator per sink and source bean that exists. A sink is down once it's closed or its connection is. A source is down when it has stopped, been closed or lost its connection, and its status is a detail. The contributor never creates a bean, so the sink isn't listed until something has asked for it.
+With `spring-boot-health` on the classpath, which `spring-boot-starter-actuator` brings, the starter adds a health contributor named `rabbitMqBroker` with one indicator per sink and source bean that exists. A sink is down once it's closed or its connection is. A source is down when it has stopped, been closed or lost its connection, and its status is a detail. The contributor never creates a bean, so the sink isn't listed until something has asked for it. Set `management.health.rabbitMqBroker.enabled=false` to turn it off. It also follows `management.health.defaults.enabled`, like Spring Boot's own health indicators.
 
 `occurrent-broker-kafka-spring-boot-starter` needs no client bean. Turn it on with `@EnableOccurrentKafkaBroker` and set the bootstrap servers:
 
