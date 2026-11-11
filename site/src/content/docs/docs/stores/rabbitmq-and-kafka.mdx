@@ -152,7 +152,7 @@ RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, r
 | | `parked` | The parking destination confirmed a parked copy and the source acknowledged the original. |
 | | `redelivered` | The source handed a failed delivery back to the queue, under `REDELIVER` or after a park that failed. |
 
-A listener that throws is logged and ignored, so it never fails a publish or a delivery. `RabbitMqCloudEventSource.Builder#listener` and `RabbitMqDomainEventSource.Builder#listener` take a `RabbitMqSourceListener`.
+A listener that throws is logged and ignored, so it never fails a publish or a delivery. That includes an `Error`, apart from a `VirtualMachineError` such as an `OutOfMemoryError`. `RabbitMqCloudEventSource.Builder#listener` and `RabbitMqDomainEventSource.Builder#listener` take a `RabbitMqSourceListener`.
 
 To ask whether they still work, `RabbitMqCloudEventSink#isOpen()` is `false` once the sink is closed or its connection is. `status()` on both sources returns `CONSUMING`, `STOPPED` after a failure the source can't recover from, or `CLOSED`, and `isConnected()` says whether the connection is open. A paused subscription still reads `CONSUMING`.
 
