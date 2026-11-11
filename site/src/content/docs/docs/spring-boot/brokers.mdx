@@ -68,6 +68,18 @@ A `RabbitMqOutboundMapper` bean is passed to the starter's sink, and a `RabbitMq
 | `source.parking-destination.exchange`, `.routing-key` | none | `parkingDestination(..)`, where `PARK` publishes |
 | `source.retry.initial`, `.max`, `.multiplier`, `.max-attempts` | `100ms`, `2s`, `2.0`, `10` | How `build()` retries opening its channel and declaring the queue |
 
+With Micrometer on the classpath and a `MeterRegistry` bean, the starter counts what the sink and every source the factories build do:
+
+| Meter | Type | Tag |
+| - | - | - |
+| `occurrent.rabbitmq.sink.published`, `.unroutable`, `.failed` | Counter | `exchange` |
+| `occurrent.rabbitmq.sink.publish` | Timer | `exchange` |
+| `occurrent.rabbitmq.source.delivered`, `.failed`, `.parked`, `.redelivered` | Counter | `queue` |
+
+The routing key isn't a tag, since a routing key derived from the event type has one value per type. A `RabbitMqSinkListener` or `RabbitMqSourceListener` bean of your own replaces the matching Micrometer one. See [Metrics and health for RabbitMQ](/docs/stores/rabbitmq-and-kafka/#metrics-and-health-for-rabbitmq) for when each is called.
+
+With `spring-boot-health` on the classpath, which `spring-boot-starter-actuator` brings, the starter adds a health contributor named `rabbitMqBroker` with one indicator per sink and source bean that exists. A sink is down once it's closed or its connection is. A source is down when it has stopped, been closed or lost its connection, and its status is a detail. The contributor never creates a bean, so the sink isn't listed until something has asked for it.
+
 `occurrent-broker-kafka-spring-boot-starter` needs no client bean. Turn it on with `@EnableOccurrentKafkaBroker` and set the bootstrap servers:
 
 ```properties
