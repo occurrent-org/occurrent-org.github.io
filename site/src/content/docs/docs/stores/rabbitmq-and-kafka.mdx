@@ -101,6 +101,8 @@ The sink still does the publisher confirm, the return handling and the retries a
 
 A message the RabbitMQ client can't encode fails the publish with the client's own exception, usually an `IllegalArgumentException`, and the sink doesn't retry it. A header value of a type AMQP has no field type for, such as a `UUID`, does that, and so does a property over 255 bytes, such as a long `messageId`.
 
+An `IOException` from encoding a header, for example from a custom `LongString`, is different. The sink retries it, and its default retry has no cap on attempts, so a header that fails every time keeps the publish retrying until the sink is closed. Give the sink a `retryStrategy(..)` with `maxAttempts(..)` when your mapper can produce one. The Spring Boot starter's sink has no setting for that, so declare a `CloudEventSink` bean of your own.
+
 A `RabbitMqInboundMapper` does the reverse for `RabbitMqCloudEventSource` and `RabbitMqDomainEventSource`. To give a handler the stream id and version, set the `streamid` and `streamversion` extensions from the message:
 
 ```java
