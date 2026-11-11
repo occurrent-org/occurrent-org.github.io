@@ -146,15 +146,18 @@ RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, r
 | - | - | - |
 | `RabbitMqSinkListener` | `published` | The broker confirmed a publish attempt and didn't return it. `publishTime` runs from the start of the attempt to the confirm. |
 | | `unroutable` | The broker returned a publish attempt, under both unroutable policies. |
-| | `failed` | A publish attempt threw for any other reason, the outbound mapper included. A publish the sink retries can call it more than once. |
-| `RabbitMqSourceListener` | `delivered` | The source acknowledged a delivery its subscriber took or filtered out. |
+| | `unresolved` | A publish attempt failed before the sink knew where the event goes, because the destination resolver threw or returned `null`. |
+| | `failed` | A publish attempt to a resolved destination threw for any other reason, the outbound mapper included. |
+| `RabbitMqSourceListener` | `delivered` | The source handed the client the acknowledgement of a delivery its subscriber took or filtered out. |
 | | `failed` | A delivery went to the delivery failure policy. The failure is `null` when the subscription model couldn't deliver it. |
-| | `parked` | The parking destination confirmed a parked copy and the source acknowledged the original. |
+| | `parked` | The parking destination confirmed a parked copy and the source handed the client the acknowledgement of the original. |
 | | `redelivered` | The source handed a failed delivery back to the queue, under `REDELIVER` or after a park that failed. |
+
+The sink reports every attempt of a publish it retries. The client drops the acknowledgement of a delivery from before an automatic connection recovery, and the broker delivers it again, so `delivered` and `parked` can count it twice.
 
 A listener that throws is logged and ignored, so it never fails a publish or a delivery. That includes an `Error`, apart from a `VirtualMachineError` such as an `OutOfMemoryError`. `RabbitMqCloudEventSource.Builder#listener` and `RabbitMqDomainEventSource.Builder#listener` take a `RabbitMqSourceListener`.
 
-To ask whether they still work, `RabbitMqCloudEventSink#isOpen()` is `false` once the sink is closed or its connection is. `status()` on both sources returns `CONSUMING`, `STOPPED` after a failure the source can't recover from, or `CLOSED`, and `isConnected()` says whether the connection is open. A paused subscription still reads `CONSUMING`.
+To ask whether they still work, `RabbitMqCloudEventSink#isOpen()` is `false` once the sink is closed or its connection is. `status()` on both sources returns `OPEN`, `STOPPED` after a failure the source can't recover from, or `CLOSED`, and `isConnected()` says whether the connection is open. `OPEN` doesn't mean a consumer is registered, since a source has none while what it delivers to is paused or not ready.
 
 The Spring Boot starter turns both into metrics and health, see [Brokers](/docs/spring-boot/brokers/). See [ADR 171](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0171-a-rabbitmq-sink-and-source-report-to-a-listener-for-metrics-and-health.md).
 
