@@ -132,6 +132,8 @@ Pause a competing subscription with `pauseSubscription(..)` on the `CompetingCon
 * a grant of the subscription's lease
 * a `resumeSubscription(..)` of the subscription
 
+`RepositionableSubscriptions.findIn(..)` on a `CompetingConsumerSubscriptionModel` is empty, so there is no resume at an explicit position through it. Over a `DurableSubscriptionModel`, `resumeSubscription(id)` resumes a competing subscription from its stored checkpoint.
+
 `shutdown()` shuts the `CompetingConsumerStrategy` down, then the wrapped model, and then makes one attempt to give up each lease, waiting at most 5 seconds for all of them. The MongoDB strategies stop refreshing their leases once they are shut down, so a lease that isn't given up expires after the lease time.
 
 When the wrapped model's own `shutdown()` throws, the competing consumer model's `shutdown()` throws that failure and gives up no lease, since the wrapped model may still deliver. Each event the wrapped model hands over after that waits for `hasLock` again, so this node stops delivering once the strategy stops reporting that this node holds the lease. Once the wrapped model can shut down, call `shutdown()` again, which then tries to give the leases up.
