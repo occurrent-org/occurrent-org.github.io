@@ -55,7 +55,7 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 When that model is a `SubscriptionModelWrapper` that doesn't implement the capability, `findIn(..)` unwraps it layer by layer for these capabilities only:
 
 * `IntrospectableSubscriptions`, `ReplayAwareSubscriptions` and `HistoryRetainingSubscriptions`
-* `QuietPositionReportingSubscriptions` and `HistoryLossReportingSubscriptions`
+* `QuietPositionReportingSubscriptions`, `HistoryLossReportingSubscriptions` and `StartRefusalReportingSubscriptions`
 * `Pushable`
 
 Every other capability, `RepositionableSubscriptions`, `Subscribable`, `SubscriptionModelLifeCycle` and `CheckpointAwareSubscriptionModel` among them, acts on a subscription, so it's found only on a model that implements it. A resume or a subscribe through the model beneath a wrapper would go around the state the wrapper keeps, such as the lease a `CompetingConsumerSubscriptionModel` holds for the subscription. A wrapper of your own is found for such a capability when it implements it.
