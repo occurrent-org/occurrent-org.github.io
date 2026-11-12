@@ -177,7 +177,7 @@ When you turn quarantine on for a saga on a model that returns `false` from `ret
 
 ### An event without a redelivery key is never quarantined
 
-The failure record identifies the failing event by its redelivery key, the stream id with its stream version, or the global position when the event has no stream metadata. An event with neither can't be told apart from its own redelivery, so its budget never runs out and it is never quarantined.
+The failure record identifies the failing event by its redelivery key, the stream id with its stream version. An event without one, including an event that has only a global position, can't be told apart from its own redelivery, so its budget never runs out and it is never quarantined.
 
 `SagaRunnerConfig.redeliveryDetection` refuses such an event under `REQUIRED`, its default, before the saga sees it. You only meet this case after setting it to `BEST_EFFORT`.
 
