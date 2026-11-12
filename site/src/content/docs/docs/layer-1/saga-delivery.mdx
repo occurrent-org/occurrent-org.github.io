@@ -49,7 +49,7 @@ Only an event the saga routed to an instance can be quarantined. When the conver
 
 The runner refuses such an event on every delivery, whatever the budget, because it may still belong to an instance and acknowledging it would lose it. Nothing is written to the state store for it, so no `SagaInstance` shows it.
 
-The first refusal is logged at `WARN`. After that it is logged at `ERROR` once per interval for as long as the model keeps offering the event. The interval is the quarantine budget when one is configured and five minutes when none is. A model that does not offer the event again gets only the `WARN`.
+The first refusal is logged at `WARN`. After that it is logged at `ERROR` once per interval for as long as each offer of the event comes within twice the interval of the one before. The interval is the quarantine budget when one is configured and five minutes when none is. The saga forgets an event it hasn't been offered for more than twice the interval, so a model that offers the event further apart than that gets a `WARN` on every offer and never an `ERROR`. A model that does not offer the event again gets only the `WARN`.
 
 Where the model does offer the event again, fix the converter or the correlation and the saga applies the event in the order it was written, with nothing to feed it by hand.
 
