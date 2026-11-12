@@ -61,9 +61,9 @@ A `null` from `failure()` means no failure is on record. The instance can still 
 * an `OutOfMemoryError`
 * a failing event the instance already counts as handled
 * a failure where the store read or the record write throws, for example a store that can only read an instance together with its state, when that state no longer decodes
-* a failure whose record write loses its compare-and-set to another writer
+* a failure whose record write loses its compare-and-set to another writer on every attempt
 
-When the store read or the record write throws, or the write loses its compare-and-set, the next failure tries the write again.
+A record write that loses its compare-and-set is worked out again from the instance as it is then and written again, up to `maxCasAttempts` attempts in all. When every attempt loses, the runner logs a `WARN` saying it could not record the failure. When the store read or the record write throws, or every attempt loses, the next failure tries the write again.
 
 On an `ACTIVE` instance a non-null answer means an event has failed at least once and the instance has not been quarantined, which can still be true after the budget has run out. On a `QUARANTINED` one it means the instance stopped there.
 
