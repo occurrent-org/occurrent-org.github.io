@@ -52,7 +52,7 @@ If you're on the [Spring Boot Starter](/docs/spring-boot/starter/), you don't ha
 
 The annotation and the DSL class share the name `Projection`, so a Java factory method needs to qualify one of them, as above. Kotlin doesn't have this problem since the DSL's entry point is the lowercase `projection` function.
 
-The factory method doesn't have to be a `@Bean` on a `@Configuration` class. The bean post-processor scans every Spring bean's declared methods for `@Projection`, so a plain `@Component` works too, and reads better for a single dedicated projection:
+The factory method doesn't have to be a `@Bean` on a `@Configuration` class. The bean post-processor scans every Spring bean's methods for `@Projection`, including the ones its class inherits from a superclass or gets as an interface default method, so a plain `@Component` works too, and reads better for a single dedicated projection:
 
 ```kotlin
 import org.occurrent.annotation.Projection
