@@ -55,15 +55,13 @@ Where the model does offer the event again, fix the converter or the correlation
 
 On the timer path the poller catches what the reaction throws, logs it at `WARN` and leaves the timer due, so one failing timer does not stop the poller. A failing timer never quarantines its instance and records no failure. An `OutOfMemoryError` is not caught per instance, so it ends that poll for every instance after it.
 
-A poll fires at most `timerBatchLimit` instances, 100 by default, starting with the timer that has been due longest. A timer that fails is due again from the moment of the poll that tried it, so it waits behind every instance that was already due then.
+A poll fires at most `timerBatchLimit` instances, 100 by default, starting with the timer that has been due longest. A timer that fails is due again just after the poll that tried it, so it waits behind every instance that was already due then.
 
-Failing timers therefore can't keep other instances' timers from firing. With `timerBatchLimit` at 100 and 250 instances due before a healthy one, the healthy instance's timer fires by the fourth poll, however many of the 250 fail.
+Failing timers therefore can't keep other instances' timers from firing. With `timerBatchLimit` at 100 and 250 instances due before a healthy one, the healthy instance's timer fires by the fourth poll, however many of the 250 fail. That holds as long as the poller can record each failure in the state store, and when it can't, it logs a `WARN`.
 
 `timerBatchLimit` is set through the `SagaRunnerConfig` constructor, and there is no Spring Boot property for it.
 
-A `SagaStateStore` of your own has to return `findWithDueTimers` with the earliest due instance first, or a batch full of failing timers can stop every other timer from firing.
-
-For a timer that keeps failing, `SagaInstance.nextTimerAt()` is the moment it last failed rather than the moment it was set to fire.
+A `SagaStateStore` of your own has to return `findWithDueTimers` with the earliest due instance first, or a batch full of failing timers can stop every other timer from firing. Instances due at the same instant can come back in any order.
 
 A failing timer stays armed, so once its reaction stops failing a later poll fires it and the instance needs nothing done to it.
 
