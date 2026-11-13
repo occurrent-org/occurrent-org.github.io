@@ -57,7 +57,7 @@ On the timer path the poller catches what the reaction throws, logs it at `WARN`
 
 A poll fires at most `timerBatchLimit` instances, 100 by default, starting with the timer that has been due longest. A timer that fails is due again just after the poll that tried it, so it waits behind every instance that was already due then.
 
-Failing timers therefore can't keep other instances' timers from firing. With `timerBatchLimit` at 100 and 250 instances due before a healthy one, the healthy instance's timer fires by the fourth poll, however many of the 250 fail. That holds as long as the poller can record each failure in the state store, and when it can't, it logs a `WARN`.
+Failing timers therefore take turns with the healthy ones. With `timerBatchLimit` at 100 and 250 instances due before a healthy one, the healthy instance's timer fires by the fourth poll, however many of the 250 fail. That holds as long as the poller can record each failure in the state store, and when it can't, it logs a `WARN`. An event saved to a failing instance between two polls can remove that record, and the instance is then tried ahead of its turn once more.
 
 `timerBatchLimit` is set through the `SagaRunnerConfig` constructor, and there is no Spring Boot property for it.
 
