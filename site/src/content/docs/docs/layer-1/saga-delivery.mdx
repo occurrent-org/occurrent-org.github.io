@@ -37,7 +37,7 @@ When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka sour
 
 Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either source.
 
-An instance that keeps failing can be quarantined, so the saga's other instances keep getting their events. Quarantine is off by default. [Quarantined Instances](/docs/layer-1/observing-sagas/#quarantined-instances) says what happens to a quarantined instance, what has to be true before one is quarantined, how to turn quarantine on for both `SagaRunnerConfig` and `@Saga`, and why it's off by default.
+An instance that keeps failing can be quarantined, so the saga's other instances keep getting their events. From 0.35.0 quarantine is on by default, after 5 minutes. [Quarantined Instances](/docs/layer-1/observing-sagas/#quarantined-instances) says what happens to a quarantined instance, what has to be true before one is quarantined, how to configure quarantine for both `SagaRunnerConfig` and `@Saga`, and how to release a quarantined instance.
 
 An instance that isn't quarantined keeps failing for as long as the model keeps offering the event. That ends when:
 

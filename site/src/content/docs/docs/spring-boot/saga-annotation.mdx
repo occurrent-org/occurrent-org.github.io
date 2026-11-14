@@ -278,10 +278,21 @@ Each saga's running `SagaSubscription` is published the same way, as `sagaSubscr
 
 One timing constraint comes with the annotation path. A `@Saga` factory can only run once the beans it collaborates with are wired, which is after the context has refreshed, so the registry holds nothing until that scan has run. Inject it and read it when a request arrives, never from another bean's constructor.
 
-You never build a `SagaRunnerConfig` for a `@Saga`, so the [quarantine](/docs/layer-1/observing-sagas/#quarantined-instances) budget is the property `occurrent.saga.quarantine-after`, one value for every `@Saga` in the application. It has no default. Leave it out, or leave it blank, to keep quarantine off, or set it to a positive duration to turn it on. Zero or a negative value stops an application with at least one `@Saga` from starting.
+You never build a `SagaRunnerConfig` for a `@Saga`, so the [quarantine](/docs/layer-1/observing-sagas/#quarantined-instances) budget is the property `occurrent.saga.quarantine-after`, one value for every `@Saga` in the application. From 0.35.0 it is 5 minutes when you leave it out or leave it blank, and `occurrent.saga.quarantine-enabled=false` turns quarantine off. Zero or a negative value stops an application with at least one `@Saga` from starting.
 
 ```properties
-occurrent.saga.quarantine-after=5m
+occurrent.saga.quarantine-after=30m
+# or, to turn quarantine off
+occurrent.saga.quarantine-enabled=false
+```
+
+`occurrent.saga.quarantine-record-limit` caps how many skipped events a quarantined instance records, 1000 by default. With quarantine on, a value below 1 stops an application with at least one `@Saga` from starting.
+
+To [release a quarantined instance](/docs/layer-1/observing-sagas/#releasing-a-quarantined-instance), call `release` on the saga's `sagaSubscription-<id>` bean. The starter gives the runner its `EventStoreQueries` bean to read the skipped events back with, when the context has exactly one or one of several is primary. Without it, `release` throws.
+
+```java
+SagaSubscription subscription = applicationContext.getBean("sagaSubscription-order-fulfilment", SagaSubscription.class);
+SagaSubscription.ReleaseResult result = subscription.release("order-4711");
 ```
 
 ## Several instances of a @Saga
