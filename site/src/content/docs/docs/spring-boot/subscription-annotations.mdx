@@ -345,6 +345,7 @@ If the proxy can't reach a handler method, Spring Boot startup fails with `Subsc
 | Handler method | Why the proxy can't reach it | Fix |
 | - | - | - |
 | Declared only on the class, on a bean behind a JDK interface proxy | The proxy implements only the interfaces | Declare the method on an interface, or set `spring.aop.proxy-target-class=true` |
+| `private` or package-private and inherited from a superclass, on a bean behind a JDK interface proxy, when an interface of the proxy declares a method of the same name and parameter types | The proxy runs that interface method, which the bean's class implements with another body | Make the method public, so it implements the interface method |
 | `private`, on a bean behind a CGLIB proxy | A CGLIB proxy can't override a private method | Make the method non-private |
 | `final`, on a bean behind a CGLIB proxy | A CGLIB proxy can't override a final method | Remove `final` |
 | Package-private and declared in another package than the bean's class, on a bean behind a CGLIB proxy | A CGLIB proxy is generated in the package of the class it subclasses, so it can't override a package-private method of another package | Make the method public or protected |
