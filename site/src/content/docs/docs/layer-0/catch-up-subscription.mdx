@@ -148,7 +148,21 @@ When `canResumeFrom` returns `false` for a replay that started above position 0,
 
 For a replay that started at position 0, the catch-up logs a warning and reads a new live start. It then replays again from position 0, which delivers that part of the history a second time. When the live start is gone after 4 replays in a row, the catch-up fails with `CatchupCannotResumeException`, an `IllegalStateException`, and nothing reaches live delivery. The message names the subscription and the longest replay, from reading its live start to checking it. Size the change stream history to reach back at least that far. On MongoDB that's the oplog, which you can keep for a minimum time with the `oplogMinRetentionHours` setting.
 
-A blocking catch-up whose replay a resume or a takeover started then holds the replay and logs the failure once, and runs it again when the subscription is resumed or `start(true)` is called. A replay that `subscribe(..)` started ends with the exception, which `waitUntilStarted()` throws.
+A blocking catch-up holds a replay that fails this way paused, whichever call started it, and logs the failure once. For a replay that `subscribe(..)` started, `waitUntilStarted()` throws the exception, and the subscription id stays taken until you cancel the subscription, so a subscribe of the same id throws `DuplicateSubscriptionIdException`.
+
+When the replay started above position 0, the catch-up records the loss, since a replay again from where it started would skip events. `resumeSubscription(id)` and `start(true)` then throw `CatchupCannotResumeException` until you cancel the subscription or resume it at a position with `resumeSubscription(id, startAt)`.
+
+On a blocking catch-up model you call directly, `resumeSubscription(id, startAt)` at a position the change stream history still reaches resumes the subscription. For a replay that `subscribe(..)` started, it subscribes the catch-up at `startAt` in place of the held replay.
+
+A replay that started at position 0 runs again when the subscription is resumed or `start(true)` is called.
+
+A named reactor catch-up holds the subscription paused the same way. When its replay started above position 0, it records the loss, so a resume throws `CatchupCannotResumeException`. The `Flux` of an unnamed reactor catch-up fails with the exception.
+
+A blocking `subscribe(..)` from a checkpoint a catch-up stored throws `CatchupCannotResumeException` on the calling thread, before it replays anything, when the change stream history no longer reaches the live start in that checkpoint and the replay that stored it started above position 0 or after the beginning of time. With `startupMode = BACKGROUND` in Spring Boot, or on a competing-consumer node that gets the lease later, the subscription is held paused at that live start instead.
+
+Once it holds a replay paused this way, the blocking catch-up calls `StartRefusalListener.handleHeldPaused` on each listener added with `addStartRefusalListener`. `CompetingConsumerSubscriptionModel` answers by pausing the subscription on that node and giving up the lease, and the node doesn't compete for it again until the subscription is resumed.
+
+`CompetingConsumerSubscriptionModel` can't resume a subscription at a position, and its `cancelSubscription(id)` acts only on the node you call it on. With checkpoint storage, every node that gets the lease refuses the same stored checkpoint. To recover, stop every instance of the application and delete or replace that stored checkpoint, as the `ERROR` the competing consumer logs says. Without checkpoint storage, cancel the subscription on every instance and subscribe it again from the beginning or from a checkpoint you kept.
 
 Make the oplog big enough to cover the longest rebuild, and the longest time a catch-up can be stopped in the middle of a replay.
 
@@ -158,7 +172,7 @@ For a replay that started at position 0, the catch-up then replays again from th
 
 `SpringMongoSubscriptionModel`, `NativeMongoSubscriptionModel` and `ReactorMongoSubscriptionModel` ask the catch-up this way, also with a `DurableSubscriptionModel` or `ReactorDurableSubscriptionModel` between them and the catch-up. A subscription model of your own gets the same handling when it implements both `HistoryLossReportingSubscriptions` and `RepositionableSubscriptions`. Otherwise it handles a lost live start as it would without the catch-up.
 
-The replay after a takeover has no caller to throw to when it fails. The blocking catch-up logs the failure at `ERROR` and replays again after up to 2 seconds. The reactor catch-up logs it at `ERROR`, and a subscription the MongoDB model holds paused stays paused until you resume it, which replays again.
+The replay after a takeover has no caller to throw to when it fails. The blocking catch-up logs the failure at `ERROR` and replays again after up to 2 seconds. A takeover replay that loses its live start is held paused instead, as a replay `subscribe(..)` started is. The reactor catch-up logs the failure at `ERROR`, and a subscription the MongoDB model holds paused stays paused until you resume it. The resume replays again when the replay started at position 0, and throws `CatchupCannotResumeException` when it started above position 0.
 
 On the reactor stack the checkpoint from the replay stays stored after the catch-up goes live, until `ReactorDurableSubscriptionModel` stores the position of a live event or saves a quiet position. A restart before that replays up to the same head again and goes live from the stored live start.
 
@@ -195,7 +209,7 @@ On an event store that writes no positions, a blocking stream catch-up replays `
 
 A replay that loses its live start fails only after its handler has received the events the replay delivered, in this run or before a restart, and after any checkpoint storage it uses has kept the progress. So the exception doesn't mean that nothing reached the handler.
 
-The blocking catch-up throws the exception from `subscribe(..)` or from `waitUntilStarted()`, and holds a replay that a resume or a takeover started, as for a lost live start. The reactor catch-up fails its `Flux` with it. The message names the subscription and what to do.
+The blocking catch-up throws the exception from `subscribe(..)` or from `waitUntilStarted()`, and holds a replay that a resume or a takeover started. The reactor catch-up fails its `Flux` with it. The message names the subscription and what to do.
 
 To resume after an event, keep the checkpoint the subscription delivers with it, as [Resuming from a Checkpoint You Store](#resuming-from-a-checkpoint-you-store) describes. That checkpoint holds the live start, so a start from it isn't refused while the change stream history still reaches back to that live start. Once it no longer does, a start from it is refused when the replay that delivered the event started at a specific time, or is a 0.34 replay that started above position 0. A checkpoint from a replay that started at position 0 or at the beginning replays again from there instead.
 
