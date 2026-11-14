@@ -148,7 +148,11 @@ When `canResumeFrom` returns `false` for a replay that started above position 0,
 
 For a replay that started at position 0, the catch-up logs a warning and reads a new live start. It then replays again from position 0, which delivers that part of the history a second time. When the live start is gone after 4 replays in a row, the catch-up fails with `CatchupCannotResumeException`, an `IllegalStateException`, and nothing reaches live delivery. The message names the subscription and the longest replay, from reading its live start to checking it. Size the change stream history to reach back at least that far. On MongoDB that's the oplog, which you can keep for a minimum time with the `oplogMinRetentionHours` setting.
 
-A blocking catch-up whose replay a resume or a takeover started then holds the replay and logs the failure once, and runs it again when the subscription is resumed or `start(true)` is called. A replay that `subscribe(..)` started ends with the exception, which `waitUntilStarted()` throws.
+A blocking catch-up holds a replay that fails this way paused, whichever call started it, and logs the failure once. For a replay that `subscribe(..)` started, `waitUntilStarted()` throws the exception, and the subscription id stays taken until you cancel the subscription.
+
+When the replay started above position 0, `resumeSubscription(id)` and `start(true)` throw `CatchupCannotResumeException` until you cancel the subscription or resume it at a position with `resumeSubscription(id, startAt)`, since a replay again from where it started would skip events.
+
+A replay that started at position 0 runs again when the subscription is resumed or `start(true)` is called.
 
 Make the oplog big enough to cover the longest rebuild, and the longest time a catch-up can be stopped in the middle of a replay.
 
