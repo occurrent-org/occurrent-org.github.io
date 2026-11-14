@@ -347,9 +347,13 @@ If the proxy can't reach a handler method, Spring Boot startup fails with `Subsc
 | Declared only on the class, on a bean behind a JDK interface proxy | The proxy implements only the interfaces | Declare the method on an interface, or set `spring.aop.proxy-target-class=true` |
 | `private`, on a bean behind a CGLIB proxy | A CGLIB proxy can't override a private method | Make the method non-private |
 | `final`, on a bean behind a CGLIB proxy | A CGLIB proxy can't override a final method | Remove `final` |
+| Package-private and declared in another package than the bean's class, on a bean behind a CGLIB proxy | A CGLIB proxy is generated in the package of the class it subclasses, so it can't override a package-private method of another package | Make the method public or protected |
+| Package-private, on a bean behind a CGLIB proxy, when a class between it and the bean's class declares a public or protected method of the same name and parameter types without overriding it | The proxy overrides that other method, so calling the handler on the proxy runs the other method's body | Rename one of the two methods |
 | `static` | Calling it never goes through any proxy | Make it an instance method |
 
 A private or final handler on a bean that isn't proxied at all still runs, since there's no advice to lose.
+
+Startup fails with an `IllegalStateException` when a method gets a handler annotation from a method it doesn't override. Spring's annotation search ignores packages, so a subclass method gets the annotation of a package-private method of the same name and parameter types in a superclass of another package, though it doesn't override it. A static method gets the annotation of a static method it hides the same way. Nothing says which of the two bodies is the handler, so the error names both methods. To keep the superclass method as the handler, rename the other one. For a package-private method you can instead make both methods protected or public, so the subclass method overrides it and runs as the handler.
 
 ## When Annotations Register
 
