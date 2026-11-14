@@ -17,6 +17,7 @@ This page lists every `occurrent.*` property the starters read. Your IDE can als
 | `occurrent.event-store.capabilities` | `[STREAM]` | Which capabilities the event store has, `STREAM`, `DCB` or both. Adding `DCB` turns on the [Dynamic Consistency Boundary](/docs/layer-0/dcb-event-store/#enabling-dcb) beans. The set can't be empty. |
 | `occurrent.event-store.mongodb.collection` | `events` | The MongoDB collection events are stored in. |
 | `occurrent.event-store.mongodb.time-representation` | `DATE` | How time is stored in the CloudEvents, `DATE` or `RFC_3339_STRING`. |
+| `occurrent.event-store.mongodb.spread-type-marker-writes` | `false` | Whether a DCB append increments one of the eight marker documents of each of its types, picked per append, instead of the first one. Two appends of one type with different tags then share a document only about one time in eight. Turn it on only once no Occurrent 0.34.0 node appends to or reads from the store, as [Spreading the DCB appends of one type](/docs/stores/mongodb-event-stores/#spreading-the-dcb-appends-of-one-type) says. |
 | `occurrent.event-store.stream.position` | on | Whether events written to a stream carry a global [`position`](/docs/layer-0/cloudevents/#occurrent-cloudevent-extensions). Unset means on, unless the store finds an existing collection without positions and turns it off. `true` keeps it on even then, and `false` turns it off for a store without `DCB`. A store with `DCB` always writes it. |
 
 ## Application service and CloudEvent conversion
