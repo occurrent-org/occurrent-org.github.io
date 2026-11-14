@@ -234,6 +234,8 @@ A subscription registered on a model created this way comes back paused, the sam
 
 `subscribe(..)` asks MongoDB for its current operation time on the model's executor, without waiting for the answer. A subscription from `StartAt.now()`, or with no `StartAt`, starts at that time. So it receives the events written from shortly after `subscribe(..)` returns, including those written before `start()`.
 
+On a MongoDB server that sends no operation time, the model reads the change stream once instead and records the position that read returns. When the read returns neither an event nor a resume token, the subscription is refused. `subscribe(..)` still returns, the subscription is removed, and `waitUntilStarted(..)` and `start(true)` throw an `UnsupportedStartAtException`. On such a server, subscribe at a checkpoint instead.
+
 Use `autoStartup(false)` to bring subscriptions up under your own control, behind a leader election or a health check for example, or in a test that wants to choose which subscriptions actually run before the context finishes starting.
 
 ## Tuning the MongoDB change stream<HeadingBadge text="Added in 0.31.0" />
