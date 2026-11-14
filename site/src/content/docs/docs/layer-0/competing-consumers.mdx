@@ -83,15 +83,37 @@ A released competing consumer no longer reports it still holds the lock. `hasLoc
 
 Before `CompetingConsumerSubscriptionModel` hands an event of a competing subscription to the handler, it calls the strategy's `hasLock(subscriptionId, subscriberId)`. While that returns `false`, the event is held back. A `hasLock` that throws counts as `false`.
 
-A held-back event is never dropped. It goes to the handler once `hasLock` returns `true`, or without the lease in the cases the javadoc of `CompetingConsumerSubscriptionModel` lists, such as when the model pauses the subscription after losing its lease. So the same event can reach the handler on two nodes.
+A held-back event is never dropped. It goes to the handler once `hasLock` returns `true`. When the model pauses or cancels the subscription in the wrapped model while the event waits, as it does after losing the lease, or stops or shuts the wrapped model down, the event is withdrawn instead. The action throws `AttemptNotMade`, the wrapped model keeps its position before the event, and the node that holds the lease delivers it.
+
+Withdrawing needs a wrapped model that declares `RedeliveringSubscriptions`. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` declare it, and `DurableSubscriptionModel`, the blocking catch-up models and `ManualStartSubscriptionModel` answer what the model they wrap answers. Over any other wrapped model, the event goes to the handler without the lease in those cases, and the model logs a WARN naming `RedeliveringSubscriptions` the first time it does that. So the same event can reach the handler on two nodes.
+
+On a stack with a `DurableSubscriptionModel`, which the Spring Boot starter always uses, the node that gets the lease delivers the withdrawn event from the stored checkpoint. Over a bare `NativeMongoSubscriptionModel` or `SpringMongoSubscriptionModel`, a node resumes from its own position in memory, so when it gets the lease back it delivers again what the other node delivered meanwhile.
+
+Even over a model that declares `RedeliveringSubscriptions`, the event goes to the handler without the lease in three rare cases, each with a WARN in the log. One is when the thread that delivers it is inside a call the model makes into the wrapped model, one when the model has forgotten the subscription, and one when the thread is interrupted before `shutdown()` has begun.
+
+Delivery also stays at-least-once in these cases:
+
+* A node that stalls after `hasLock` returned `true`, for example in a long GC pause, runs the handler once it wakes up, also when its lease expired meanwhile.
+* A handler still running when the lease is given up runs on, since the pause of a MongoDB subscription waits at most a second for it. See [#1513](https://github.com/johanhaleby/occurrent/issues/1513).
+* A catch-up replay that runs again after a withdrawn event starts from the last position this node stored, not the stored checkpoint, so after a failover it delivers again what another node delivered meanwhile. See [#1514](https://github.com/johanhaleby/occurrent/issues/1514). Without a failover, it delivers again the events it replayed since it last stored a position, up to 999 with the Spring Boot starter, which stores one every 1,000 events. A replay built with `dontUseCheckpointStorage()` starts again from where the subscription asked to start.
+* A catch-up replay that a subscribe started and that loses the lease while it reads history hands the next event to the handler after the pause has returned, and that event runs once the node gets the lease back. See [#1528](https://github.com/johanhaleby/occurrent/issues/1528).
 
 With both MongoDB strategies, `hasLock` returns `false` once three quarters of the lease time have passed since the strategy sent the request that last set the lease. With the default lease time of 20 seconds, that is 15 seconds, even when every refresh since has failed.
 
 The strategy measures that time on the node's own clock, while MongoDB expires the lease on the server's clock. After a failover to a primary whose clock is more than a quarter of the lease time ahead, `hasLock` can return `true` after another node has taken the lease.
 
-A `CompetingConsumerStrategy` of your own has its `hasLock` called on every event, so it should answer from what it keeps in memory rather than by asking a database, and answer `false` once the lock could have expired.
+A `CompetingConsumerStrategy` of your own has its `hasLock` called on every event, so it should answer from what it keeps in memory rather than by asking a database, and answer `false` once the lock could have expired. It also has to answer `false` while it still owes its listeners an `onConsumeProhibited` for a lock the subscriber lost, also when the subscriber holds the lock again by then. A strategy that answers `true` then lets the held event run under the new lock, although another node may have delivered it in between. A `true` from `registerCompetingConsumer` only says that the subscriber holds the lock, so leave the question of whether to consume to `hasLock`.
 
 If you write the wrapped subscription model yourself, don't hold a lock while it hands an event to the handler. An event that waits for the lease keeps that lock. Every call that needs the lock, `isRunning(id)` among them, then waits until this node holds the lease again or the model lets the event through.
+
+To have a held event withdrawn instead of let through, implement `RedeliveringSubscriptions` on that model and answer `true` from `redeliversAnAttemptNotMade()` only when the model does all of this:
+
+* When the action throws `AttemptNotMade`, it moves no position past the event, doesn't retry it or report it as a failure, and delivers it again when the subscription is resumed or started.
+* It waits for the thread that delivers an event only in a pause, cancel, stop or shutdown, and there only for a limited time. It never waits for it in any other call, a subscribe, a resume and a start included, since `CompetingConsumerSubscriptionModel` waits for such a call to return before it shuts the model down.
+
+A wrapper of your own around such a model implements `RedeliveringSubscriptions` too and answers what the model beneath answers, as long as it stores no position past an event whose action threw `AttemptNotMade`. `findIn` doesn't look past a wrapper for this capability, so without it the competing consumer treats the whole stack as one that doesn't deliver the event again.
+
+`AttemptNotMade` is meant for subscription models, not for an event handler. Thrown from the handler of a subscription that is still open, it ends that subscription's run on the MongoDB subscription models, which deliver nothing more for it until it is paused and resumed.
 
 These models hold no such lock:
 

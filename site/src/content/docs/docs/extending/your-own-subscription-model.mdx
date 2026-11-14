@@ -101,6 +101,8 @@ It also asserts the contract both ways Occurrent uses it:
 * `CompetingConsumerSubscriptionModel` registers a listener and reacts to being told it gained or lost the lock. It also calls `hasLock(subscriptionId, subscriberId)` before it hands each event to the handler.
 * `SagaRunner` registers a consumer, never adds a listener, and calls `hasLock` on every poll instead.
 
+It also asserts that `hasLock` doesn't answer `true` while a listener is being told that the consumer lost the lock, even once the consumer holds the lock again by then.
+
 A strategy that reports lock changes only through its listener, or that only answers correctly when `hasLock` is called directly, fails half of what the suite checks.
 
 ## The Reactive Bridge
