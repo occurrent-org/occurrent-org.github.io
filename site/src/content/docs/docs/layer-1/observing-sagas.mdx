@@ -87,7 +87,7 @@ Quarantine can end that once the instance has been failing for a length of time 
 
 When an instance is quarantined, this happens:
 
-* The instance never applies the event it failed on, or any later event addressed to it. Those events still reach the saga, which skips them for this instance without recording them as handled. From 0.35.0 the instance records the key of each event it skips, so a release can replay them.
+* The instance never applies the event it failed on, or any later event addressed to it. Those events still reach the saga, which skips them for this instance without recording them as handled. From 0.35.0 the instance records the key of each event it skips, as a record of its own outside the instance's document, so a release can replay them.
 * Its timers stay armed but never fire, so a timeout it relies on to cancel or compensate never runs.
 * The other instances of the saga keep getting their events.
 * Nothing is deleted. The events stay in the event store, and the instance's state stays in the state store.
@@ -120,6 +120,8 @@ This lists the quarantined instances of a saga and what each one stopped on:
     ```
   </TabItem>
 </Tabs>
+
+`SpringMongoSagaStateStore` stores an instance that 0.35.0 quarantined with the status `QUARANTINED_RECORDING`, and one that 0.34.0 quarantined with `QUARANTINED`. Both read back as `SagaStatus.QUARANTINED`, and `findByStatus` matches both. A MongoDB query you write by hand has to match both strings, `{ status: { $in: ["QUARANTINED", "QUARANTINED_RECORDING"] } }`.
 
 ### The failure record and the quarantine budget
 
@@ -217,13 +219,15 @@ Pass another budget to `withQuarantineAfter`, or turn quarantine off with `disab
 
 With quarantine off, the saga keeps refusing a failing instance's event for as long as your subscription model offers it again. On the MongoDB subscription models the saga's other instances wait behind that event the whole time.
 
-While an instance is quarantined it records the key of every event it skips, up to `SagaRunnerConfig.quarantineRecordLimit()`, 1000 by default. `withQuarantineRecordLimit(int)` sets another limit, and a limit below 1 throws. An instance that skips more can't be released. The keys are stored on the instance, so the limit bounds how much a quarantine can grow it.
+On a model that keeps every event, `SagaRunner.run` throws an `IllegalStateException` when quarantine is on and the runner has no `EventStoreQueries`, since a release reads the skipped events back with it. That holds for the defaults and for a budget you set yourself. The message says to pass the event store with `SagaRunner.eventStoreQueries(..)`, since every blocking event store Occurrent ships implements `EventStoreQueries`, or to turn quarantine off with `disableQuarantine()`.
 
-A cluster upgrading from 0.34.0 one node at a time takes two deploys, one with quarantine off and one that turns it on. A 0.34.0 node skips an event for a quarantined instance without recording it, so a release can't replay that event. The [0.35.0 upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.35.0.md) has the steps.
+While an instance is quarantined it records the key of every event it skips, as a record of its own outside the instance's document, so a quarantine can record any number of events. On MongoDB the records are documents in a collection named after the saga collection with `_skipped_inputs` appended, one per skipped event, each with `sagaId`, `quarantineId`, `seq` and `key`.
 
 ### Releasing a quarantined instance<HeadingBadge text="Added in 0.35.0" />
 
-`SagaSubscription.release(sagaId)` reads the event the instance stopped on from the event store and applies it the way a delivery is applied, and then does the same for each event the instance skipped, in the order they arrived. The instance stays `QUARANTINED` while that runs and becomes `ACTIVE` in the write that applies the last one, so an event that arrives during the release is recorded and replayed too. A release dispatches the commands those events produce.
+`SagaSubscription.release(sagaId)` reads the event the instance stopped on from the event store and applies it the way a delivery is applied, and then does the same for each event the instance skipped, in the order they arrived. The instance stays `QUARANTINED` while that runs and becomes `ACTIVE` once no recorded event is left, so an event that arrives during the release is recorded and replayed too. A release dispatches the commands those events produce.
+
+A timer that came due while the instance was quarantined fires after every recorded event has been replayed, including events that arrived after its deadline. For a saga that uses a timer as a deadline, a replayed event from after the deadline that cancels or re-arms the timer means the timeout never fires, where live delivery would have fired it before that event.
 
 <Tabs syncKey="lang">
   <TabItem label="Java">
@@ -243,18 +247,18 @@ It takes no lease and pauses nothing, so you can call it on any node. It returns
 
 * `RELEASED`. The instance replayed every event and is `ACTIVE`, or `COMPLETED` when one of them completed it.
 * `STILL_RELEASING`. An event failed again, and the instance stays releasing.
-* `QUARANTINED_AGAIN`. An event kept failing during the release until its budget ran out. The instance is quarantined on that event, and the events after it stay recorded, so a later release replays it first.
-* `QUARANTINED_EVENT_MISSING`. The event store no longer has one of the events. The instance is quarantined on it at once, with `EventMissingFromStore` as its `failureType()`. Restore the event and release again, or delete the instance.
+* `QUARANTINED_AGAIN`. An event kept failing during the release until its budget ran out, or the event store handed back an event without a stream id and stream version, which only an `EventStoreQueries` other than Occurrent's own event stores can do. The instance is quarantined on that event, which stays recorded with the events after it, so a later release starts from it.
+* `QUARANTINED_EVENT_MISSING`. The event store no longer has one of the events. The instance is quarantined on it at once, with `EventMissingFromStore` as its `failureType()`, and the event stays recorded, so the next release starts from it. Restore the event and release again, or delete the instance.
 * `NOT_QUARANTINED` or `NOT_FOUND`. There was nothing to release.
 
-The timer poller goes on with every instance that is releasing after each poll, so it retries an event that failed during a release and resumes a release a crash interrupted. With a competing-consumer strategy only the node holding the saga's timer lease does that. Calling `release` again goes on where the release stands too. The event the instance stopped on gets a full quarantine budget again, measured from the start of the release.
+The timer poller goes on with every instance that is releasing after each poll, so it retries an event that failed during a release and resumes a release a crash interrupted. With a competing-consumer strategy only the node holding the saga's timer lease does that. Calling `release` again goes on where the release stands too. One poll replays at most `timerBatchLimit` events, 100 by default, shared evenly among the releasing instances it lists, at least one each, and the next poll goes on where the last one stopped. A `release` call has no such bound. The event the instance stopped on gets a full quarantine budget again, measured from the start of the release.
 
-A release reads the events with an `EventStoreQueries`, which you give the runner with `SagaRunner.eventStoreQueries(..)`. Without one, `release` throws an `IllegalStateException`. It also throws one for an instance that 0.34.0 quarantined, since that instance has no record of what it skipped, and for an instance that skipped more events than its record limit. Deleting the instance with `SagaStateStore.delete(sagaId)` is what's left for those two.
+A release reads the events with an `EventStoreQueries`, which you give the runner with `SagaRunner.eventStoreQueries(..)`. Without one, `release` throws an `IllegalStateException`. It also throws one for an instance that 0.34.0 quarantined, since that instance has no record of what it skipped, and deleting it with `SagaStateStore.delete(sagaId)` is what's left. It throws one for an instance whose state no longer decodes too, with a message that names the decoding failure. Fix how the state decodes and release it again, or delete it. An instance whose state stops decoding while it is releasing stays releasing, and each poll logs a `WARN` and tries again.
 
-A `SagaStateStore` of your own has to persist `SagaFailure.releasedAt()`, `SagaEnvelope.quarantineSkipped()` and `SagaEnvelope.quarantineSkippedOverflow()`, or `release` throws, and implement `findReleasingSagaIds(int)` for the poller to go on with a release. Without that method the poller logs a `WARN` once and a release goes on only when you call `release` again.
+A `SagaStateStore` of your own has to persist `SagaFailure.releasedAt()`, `SagaFailure.quarantineId()` and `SagaEnvelope.quarantineSkipCount()`, or `release` throws. It also has to keep the skipped events with `recordSkippedInput`, `findSkippedInputs`, `deleteSkippedInput` and `deleteSkippedInputs`, delete them in `delete(sagaId)`, and implement `findReleasingSagaIds(int)` for the poller to go on with a release. Without that method the poller logs a `WARN` once and a release goes on only when you call `release` again.
 
 The design is in [ADR 0134](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0134-a-saga-instance-that-keeps-failing-is-quarantined-at-its-own-position.md) and [ADR 0178](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0178-a-quarantined-saga-instance-records-what-it-skips-and-is-released-by-replaying-it.md). The [quarantined saga instance runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/quarantined-saga-instance.md) walks through a release step by step.
 
 :::tip[Using Spring Boot?]
-The `@Saga` registrar publishes a `SagaInstancesRegistry` bean, and each saga's `SagaSubscription` as `sagaSubscription-<id>`, which is what you call `release` on. `occurrent.saga.quarantine-after` sets the budget, and `occurrent.saga.quarantine-enabled=false` turns quarantine off. See [Observing @Saga instances](/docs/spring-boot/saga-annotation/#observing-saga-instances).
+The `@Saga` registrar publishes a `SagaInstancesRegistry` bean, and each saga's `SagaSubscription` as `sagaSubscription-<id>`, which is what you call `release` on. `occurrent.saga.quarantine-after` sets the budget, which is 5 minutes when it is left out or blank, and `occurrent.saga.quarantine-enabled=false` turns quarantine off. With quarantine on, several `EventStoreQueries` beans and none of them `@Primary` fail at startup. See [Observing @Saga instances](/docs/spring-boot/saga-annotation/#observing-saga-instances).
 :::

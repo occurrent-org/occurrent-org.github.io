@@ -286,7 +286,7 @@ occurrent.saga.quarantine-after=30m
 occurrent.saga.quarantine-enabled=false
 ```
 
-`occurrent.saga.quarantine-record-limit` caps how many skipped events a quarantined instance records, 1000 by default. With quarantine on, a value below 1 stops an application with at least one `@Saga` from starting.
+With quarantine on and a subscription model that keeps every event, a context with several `EventStoreQueries` beans and none of them `@Primary` fails at startup. The message names the `@Saga` id and the beans, and says to mark the one the saga reads from `@Primary` or to set `occurrent.saga.quarantine-enabled=false`.
 
 To [release a quarantined instance](/docs/layer-1/observing-sagas/#releasing-a-quarantined-instance), call `release` on the saga's `sagaSubscription-<id>` bean. The starter gives the runner its `EventStoreQueries` bean to read the skipped events back with, when the context has exactly one or one of several is primary. Without it, `release` throws.
 
