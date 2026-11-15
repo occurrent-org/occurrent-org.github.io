@@ -144,6 +144,8 @@ A resume can deliver some events a second time, because live delivery starts fro
 
 MongoDB keeps a limited oplog, so a stored live start can be gone. The catch-up calls `canResumeFrom(checkpoint)` on the wrapped model, the subscription model it delivers live events through. It calls it when it resumes, and again once its replay is done, before it goes live.
 
+While MongoDB can't be reached, the MongoDB subscription models retry `canResumeFrom` until MongoDB answers or the retry strategy gives up. From 0.35.0, on the blocking stack, cancelling the subscription or stopping the catch-up subscription model ends that retry for the calls the catch-up makes on its replay thread. A cancelled replay then ends without logging an error, and a stopped one runs again on `start(true)`. The calls a subscribe makes on your own thread, before its replay starts, still retry until MongoDB answers or the retry strategy gives up.
+
 When `canResumeFrom` returns `false`, the catch-up logs a warning and reads a new live start. It then replays again from the position its replay first started from, which delivers that part of the history a second time. When the live start is gone after 4 replays in a row, the catch-up fails with an `IllegalStateException` that names the subscription, and nothing reaches live delivery.
 
 Make the oplog big enough to cover the longest rebuild, and the longest time a catch-up can be stopped in the middle of a replay.
