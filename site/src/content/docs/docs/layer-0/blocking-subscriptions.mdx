@@ -143,7 +143,7 @@ Redis acknowledges a write before its replicas have it, and `SpringRedisCheckpoi
 
 - A lost `save` means the stored checkpoint is older than the position the subscription had reached. After a restart the subscription resumes from that older position and gets events it already handled, which a subscription already has to cope with.
 - A lost `delete` brings the checkpoint back. The next start of that subscription id resumes from the old checkpoint instead of from the start position it was given.
-- A lost conditional `save` can roll back the stored version too, see [checkpoint fencing](/docs/layer-0/checkpoint-fencing/).
+- A failover can also undo what a conditional `save` decided, see [checkpoint fencing](/docs/layer-0/checkpoint-fencing/).
 - For a short while after the failover, the old primary can still answer a `read` or `exists` with a value the new primary doesn't have.
 
 4\. **InMemoryCheckpointStorage**\
