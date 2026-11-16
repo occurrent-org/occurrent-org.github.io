@@ -84,7 +84,7 @@ A failed catch-up also refuses the events that other callers fed while the repla
 
 To recover, cancel the subscription and subscribe again. Once the marker is gone, its catch-up replays from the beginning.
 
-If deleting the marker still fails after 3 retries, the subscription logs an error naming the subscription id. The cancel deletes the marker again, and its `Mono` errors when that delete fails too. Then delete the marker from the `CheckpointStorage` by hand before subscribing again, or the catch-up resumes after it and doesn't apply a failed event at or below it again.
+If deleting the marker still fails after 3 retries, the subscription logs an error naming the subscription id. The cancel deletes the marker again, and its `Mono` errors when that delete fails too. A subscribe of the id in the same process then tries the delete again and replays from the beginning. Delete the marker from the `CheckpointStorage` by hand before the application restarts, or the catch-up after the restart resumes after it and doesn't apply a failed event at or below it again.
 
 An event that no replay can bring back is lost only when applying it failed.
 

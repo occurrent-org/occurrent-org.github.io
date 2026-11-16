@@ -210,7 +210,7 @@ The model's `cancelSubscription(id)` deletes the marker, so subscribing the same
 
 On the blocking stack `cancelSubscription(id)` deletes the marker before it cancels anything else. If the delete throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
 
-On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the marker is deleted. Wait for it when the next start must replay from the beginning, and call `cancelSubscription(id)` again if it fails. A failed delete leaves the marker stored, so the next subscribe resumes after it.
+On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the marker is deleted. Wait for it when the next start must replay from the beginning, and call `cancelSubscription(id)` again if it fails. When the delete fails, the marker stays stored. The next subscribe of the id in the same process tries the delete again and replays from the beginning, but a subscribe after a restart resumes after the marker.
 
 Your own code starts the catch-up, so it also sees how it ends. On the blocking stack `CatchupProjectionFeed.catchUp()` returns when the replay has finished and throws when it fails. On the reactor stack the `Mono` it returns completes or errors instead. The blocking `DomainEventFeed` can also be asked at any time:
 
