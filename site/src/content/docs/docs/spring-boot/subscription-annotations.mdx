@@ -353,7 +353,33 @@ A private or final handler on a bean that isn't proxied at all still runs, since
 
 ## When Annotations Register
 
-Every `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, `@SynchronousSubscription`, `@Projection`, `@Snapshot` and `@Saga` registers after all singleton beans have been created and before any `ApplicationRunner` or `CommandLineRunner` runs. A subscription that only receives new events therefore sees an event written by an `ApplicationRunner`, but misses one written while the beans are still being created, from a `@PostConstruct` method for example.
+Every `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, `@SynchronousSubscription`, `@Projection`, `@Snapshot` and `@Saga` registers after all singleton beans have been created and before any `ApplicationRunner` or `CommandLineRunner` runs. The synchronous handlers, `@SynchronousSubscription` and a synchronous `@Projection` or `@Snapshot`, register first, so they get a write that a saga or another handler's replay makes while the rest register.
+
+A `@Subscription`, `@StreamSubscription` or `@DcbSubscription` that starts live, at `NOW` or at `DEFAULT` with nothing stored, begins where the event store was when the event store bean was created. So it gets an event that a `@PostConstruct` method writes directly to the event store.
+
+### Writing While the Application Starts
+
+A synchronous handler runs only on the thread that writes through the application service, and nothing replays a write to it. So until the synchronous handlers have registered, the `ApplicationService` and `DcbApplicationService` that the starter creates refuse a write with `WriteRefusedException`, and nothing is stored. A write from a `@PostConstruct` method, an `InitializingBean` or a `@Bean` method fails startup with that exception. Write from an `ApplicationRunner` or an `ApplicationReadyEvent` listener instead:
+
+```java
+@Component
+class OpenDefaultAccount implements ApplicationRunner {
+    private final ApplicationService<DomainEvent> applicationService;
+
+    OpenDefaultAccount(ApplicationService<DomainEvent> applicationService) {
+        this.applicationService = applicationService;
+    }
+
+    @Override
+    public void run(ApplicationArguments args) {
+        applicationService.execute("account-1", events -> Account.open(events, "account-1"));
+    }
+}
+```
+
+The write is refused also when the application declares no synchronous handler. A write made directly with `EventStore.write` or `DcbEventStore.append` is not refused, and no synchronous handler ever sees it.
+
+### Beans Built After Startup
 
 A `@Lazy` bean whose declared type shows one of these annotations is built at that point too, so it registers with the others.
 
@@ -374,6 +400,10 @@ public class NotifierConfig {
 A `FactoryBean` registers the same way when nothing has asked for its object yet. A bean that nothing ever builds never registers its handlers.
 
 A `@Subscription`, `@StreamSubscription` or `@DcbSubscription` registered this way doesn't wait for its replay, whatever `startupMode` says, since the application is already running. On the reactor stack, the same goes for a `@Projection` or `@Snapshot`.
+
+A subscription registered this way that starts live begins where the event store was when its bean was built. A synchronous handler registered this way gets only the writes made after it registered.
+
+With `spring.main.lazy-initialization=true` these rules cover every bean. A write through the application service before the synchronous handlers have registered is refused as above. A handler on a bean whose declared type shows the annotation registers at startup, and one on a bean whose declared type doesn't registers when something first builds it and runs from then on.
 
 ### A Bean Built on a Reactor Non-Blocking Thread
 
