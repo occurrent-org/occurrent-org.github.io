@@ -40,9 +40,7 @@ An event the projection fed itself is the only one that can be lost. Nothing sto
 
 ## Recovering from a failed feed
 
-A failed feed stays failed until you replace it with a new feed that has the same id.
-
-On the blocking stack a failed catch-up writes no catch-up marker, so the new feed replays the events after the marker an earlier catch-up stored, or from the beginning when there is none. On the reactor stack the failed feed deleted its marker, so the new feed replays from the beginning.
+A failed feed stays failed until you replace it with a new feed that has the same id. The new feed replays the history, since the failed one either never wrote a catch-up marker or deleted it.
 
 Restarting the application is the simplest way to do that, and the first thing to try. A restart only helps once the cause is gone, though. If the projection fails on an event because of a bug, the replay reaches the same event and fails the same way, so fix the bug first. If the feed logged that it couldn't delete its marker, delete the marker from the `CheckpointStorage` before you restart.
 
@@ -126,7 +124,7 @@ Call it right after you create the feed, on both `CatchupProjectionFeed` and `Do
 feed.goLive();
 ```
 
-It skips the replay and starts delivering the held and future live events directly. It writes no catch-up marker, so a later `catchUp()` on the same feed replays the events after the marker stored before, or the full history when none was stored. While that replay runs, live events wait. They are delivered when it ends, whether it finishes or is stopped.
+It skips the replay and starts delivering the held and future live events directly. It writes no catch-up marker, so a later `catchUp()` on the same feed replays the full history when no marker was stored before. With a stored marker, the blocking feed skips the replay and the reactor feed replays the events after the marker. While that replay runs, live events wait. They are delivered when it ends, whether it finishes or is stopped.
 
 If you call `goLive()` after a stop, it also delivers the live copy of an event the stopped replay already delivered. A view that holds events back until the replay finishes discarded them when the replay stopped, so it needs that copy. A view that saved each event as it arrived gets it twice.
 

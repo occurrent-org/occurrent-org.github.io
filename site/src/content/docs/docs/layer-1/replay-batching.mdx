@@ -9,7 +9,7 @@ addedIn: "0.33.0"
 
 Without batching, a catch-up replay costs one store read and one store write per event. `CatchupProjectionFeed`, and a `DomainEventFeed` built on it (see [Feeding domain events instead of CloudEvents](/docs/layer-0/push-subscription/#feeding-domain-events-instead-of-cloudevents)), buffer replayed events per view instance instead and write them in batches. A history of N events over K view instances then costs about 2K store round trips rather than 2N, and about two per batch when the repository also implements the bulk operations described below. Batching is on by default.
 
-Only a replay from the beginning is batched, which is the replay a feed runs when it has no [catch-up marker](/docs/layer-0/push-subscription/#replaying-the-event-store-before-going-live) stored. A replay after a stored marker applies each event the way a live event is applied.
+Only a replay from the beginning is batched, which is the replay a feed runs when it has no [catch-up marker](/docs/layer-0/push-subscription/#replaying-the-event-store-before-going-live) stored. A reactor feed's replay after a stored marker applies each event the way a live event is applied.
 
 Batching only reaches a projection fed that way. `ProjectionRunner`, `DcbProjectionRunner`, and the default `@Projection(source = Source.EVENT_STORE)` path register the projection on a `SubscriptionModel` instead, and so does `@Projection(source = Source.PUSH)` bound to a `PushSubscriptionModel` rather than a `DomainEventFeed`. All of those still pay one read and one write per replayed event, because the subscription model owns that catch-up and doesn't yet tell the view where a replay begins or ends.
 
