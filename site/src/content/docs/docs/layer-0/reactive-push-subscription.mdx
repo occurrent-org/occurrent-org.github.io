@@ -65,7 +65,7 @@ A handler or filter error propagates through the `Mono`, so the caller decides w
 
 The store calls that listener on the writing thread, after it has stored the events, so write from a thread that is allowed to block. On a Reactor non-blocking thread, such as a WebFlux event loop, `block()` throws, and the write call fails even though the events are already stored. Occurrent ships no reactive `PositionOrderedReader` over the in-memory event store for a reactive `CatchupThenPushSubscriptionModel` in front to replay.
 
-Behind a reactive `CatchupThenPushSubscriptionModel`, a handler that writes an event its own subscription takes does not wait for that event. The model hands the subscription one event at a time, so it cannot apply the new event before the handler returns, and the write returns once the event is queued. The handler gets the events it wrote in the order it wrote them, after it has returned. For a write made during the replay, it gets them once the subscription has gone live. A replay that ends before that writes no catch-up marker, the record that the catch-up finished, so the next replay hands the handler the same history again.
+Behind a reactive `CatchupThenPushSubscriptionModel`, a handler that writes an event its own subscription takes does not wait for that event. The model hands the subscription one event at a time, so it cannot apply the new event before the handler returns, and the write returns once the event is queued. The handler gets the events it wrote in the order it wrote them, after it has returned. For a write made during the replay, it gets them once the subscription has gone live. A replay that ends before that writes no catch-up marker, so the next replay hands the handler the same history again.
 
 When the handler calls `acceptOrDefer(..)` on the model that feeds it, the model refuses the call for this subscription, whether it has gone live or not. The `Mono` completes with `NOT_DELIVERABLE` and the model never applies the event, because it could only report the event as queued behind the handler, not as applied. Write the event from the handler through `accept(..)` instead, the way the previous paragraph describes.
 
@@ -82,7 +82,9 @@ When it starts failing, the subscription:
 
 A failed catch-up also refuses the events that other callers fed while the replay ran, and doesn't apply them.
 
-To recover, cancel the subscription and subscribe again. Once the marker is gone, its catch-up replays the history. If deleting the marker still fails after 3 retries, the subscription logs an error naming the subscription id, and you have to delete the marker from the `CheckpointStorage` by hand before subscribing again.
+To recover, cancel the subscription and subscribe again. Once the marker is gone, its catch-up replays from the beginning.
+
+If deleting the marker still fails after 3 retries, the subscription logs an error naming the subscription id. The cancel deletes the marker again, and its `Mono` errors when that delete fails too. Then delete the marker from the `CheckpointStorage` by hand before subscribing again, or the catch-up resumes after it and doesn't apply a failed event at or below it again.
 
 An event that no replay can bring back is lost only when applying it failed.
 
@@ -107,7 +109,7 @@ The same limits apply as on the blocking side. A push subscription only ever see
 
 The reactive `CatchupThenPushSubscriptionModel` automates that catch-up, the same way as the [blocking one](/docs/layer-0/push-subscription/). Wrap it around the reactive `PushSubscriptionModel` with the reactive event store as the replay source, and register it through `ReactiveProjectionRunner`.
 
-It replays the history first, then hands over to the live feed. That switch is the handover. It de-duplicates the overlap by each event's id and source. It also records that the catch-up finished, so a restart skips the replay. Live-resume stays the broker's job.
+It replays the history first, then hands over to the live feed. That switch is the handover. It de-duplicates the overlap by each event's id and source. It also stores a catch-up marker, so a restart replays only the events written since the previous start. Live-resume stays the broker's job.
 
 Delivery is at-least-once, so the projection must tolerate seeing the same event twice. Rebuild the projection if the consumer is offline longer than the broker retains the backlog. The tunables and the handler-concurrency contract are documented on the [blocking one](/docs/layer-0/push-subscription/) and apply the same way here.
 

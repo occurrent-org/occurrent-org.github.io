@@ -80,7 +80,7 @@ The annotation and the DSL class share the name `Saga`, so a Java factory method
 | `store` / `storeName` | Select the `SagaStateStore` bean by type or name. With both unset the store resolves by convention, the unique `SagaStateStore` bean, otherwise a zero-config MongoDB store in a `saga-<id>` collection. |
 | `commandDispatcher` / `commandDispatcherName` | Select the `CommandDispatcher` bean by type or name, otherwise the unique `CommandDispatcher` bean. There is no default dispatcher, since it is usually a lambda over your `ApplicationService`. |
 | `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the saga from a `PushSubscriptionModel` bean instead, see [Fed from a broker](/docs/spring-boot/saga-annotation/#fed-from-a-broker). |
-| `catchup` | For a push saga only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
+| `catchup` | For a push saga only. `FROM_EVENT_STORE` (the default) replays the event store at every start before going live, `NONE` takes live events only and needs no event store. |
 | `subscriptionModel` / `subscriptionModelName` | Select the `PushSubscriptionModel` bean by type or name when `source = PUSH`. |
 | `redeliveryDetection` | `REQUIRED` (the default) refuses an event the saga cannot recognize a redelivery of. `BEST_EFFORT` takes it anyway with one warning, see [Forward the Occurrent extensions](/docs/spring-boot/saga-annotation/#fed-from-a-broker). |
 
@@ -207,7 +207,11 @@ This is also why a `@Saga` accepts only a `PushSubscriptionModel` and not a [`Do
 
 ### What a push saga cannot set
 
-`startAt`, `startAtGlobalPosition` and `resumeBehavior` are rejected rather than quietly ignored. A replay always starts at the beginning, and where the live feed resumes after a restart is the broker's business. Occurrent only records that the catch-up finished, so a restart skips the replay and the broker redelivers whatever the consumer had not acknowledged.
+`startAt`, `startAtGlobalPosition` and `resumeBehavior` are rejected rather than quietly ignored. Occurrent decides where the replay starts, and where the live feed resumes after a restart is the broker's business.
+
+Before each replay, Occurrent reads the position of the newest event in the event store. Once the replay is done, it stores that position as the catch-up marker, under the saga's `id`. A start with no marker replays from the beginning, and a start that finds one replays only the events after it. So a restart replays the events written since the previous start, and the broker delivers again whatever the consumer hadn't acknowledged.
+
+0.34.0 stored the marker only when it replayed, so the first start on 0.35.0 replays every event written since that replay. The [push subscription page](/docs/layer-0/push-subscription/#replaying-the-event-store-before-going-live) has the rest of what the marker does.
 
 `startupMode` does apply, under the default `catchup`, because that replay is real work on the startup path. Use `StartupMode.BACKGROUND` to keep a long history from holding up startup. It is rejected together with `Catchup.NONE`, where there is no replay to wait for. Setting `catchup` on an event-store saga is rejected too, since ignoring it would leave the saga reading the whole history it was asked to skip.
 

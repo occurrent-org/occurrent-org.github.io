@@ -161,7 +161,7 @@ A push subscription only ever sees the live tail. A broker is not a log, so a ne
 
 `CatchupThenPushSubscriptionModel` automates that catch-up. Wrap it around the `PushSubscriptionModel` and give it the event store as the replay source.
 
-On the first subscribe it replays the projection's history in position order. Then it hands over to the live feed, and that switch from replay to live delivery is the handover. During the replay, `acceptOrDefer(..)` returns `DEFERRED`, so the broker delivers the event again, and `accept(..)` buffers it.
+When you subscribe, it replays the projection's history in position order. Then it hands over to the live feed, and that switch from replay to live delivery is the handover. During the replay, `acceptOrDefer(..)` returns `DEFERRED`, so the broker delivers the event again, and `accept(..)` buffers it.
 
 The handover de-duplicates the overlap by event id and source together. So nothing is lost or delivered twice across it, within the two limits described below:
 
@@ -194,17 +194,23 @@ Once the handover is live, the handler can be called concurrently. Handler calls
 
 The default projection materializer has no locking of its own, so once the handler can run concurrently, two threads handling different events for the same projection key can both read the same state, and the second save then overwrites the first without telling you. Pass a `RetryStrategy` to `Projections.materializedView(..)`, or to `Projections.domainEventFeed(..)` for the domain-event variant below, so a losing write re-reads and re-applies instead of being overwritten. That only helps once your store detects the conflict and throws, an optimistic-locking failure or a unique-key violation, since a retry that never sees an exception has nothing to retry. Keeping the delivering side single-threaded, the default, is the other way to avoid this.
 
-Live-resume stays the broker's job. The model persists no live position watermark. It only records that the catch-up finished, in the `checkpointStorage` you pass. That record is the catch-up marker. A restart that finds it skips the replay and lets the broker redeliver whatever the consumer had not yet acknowledged. Pass `null` and it records nothing, so every restart replays the history.
+Live-resume stays the broker's job. The model persists no live position watermark. It stores only the catch-up marker, in the `checkpointStorage` you pass. Before each replay it reads the position of the newest event in the event store, and once the replay is done it stores that position as the marker.
 
-Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. Correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection.
+Each subscribe replays only the events after the stored marker, or the whole history when there is none. So a restart replays the events written since the previous start, and the broker delivers again whatever the consumer hadn't acknowledged. Pass `null` and nothing is stored, so every start replays the whole history.
+
+0.34.0 stored the marker only when it replayed, so the first start on 0.35.0 replays every event written since that replay. Under the default `startupMode`, a push `@Projection` or `@Saga` holds up application startup until that replay is done, and `startupMode = BACKGROUND` doesn't.
+
+Delivery is therefore at-least-once, so the projection must tolerate seeing the same event twice. Correctness across a restart depends on the broker retaining the backlog for an offline consumer (a durable queue with a preserved offset). If the consumer is offline longer than the broker retains, rebuild the projection under a new subscription id.
 
 Only stream and capability-agnostic subscriptions can catch up this way.
 
-The catch-up marker is kept per subscription id. The model's `cancelSubscription(id)` deletes it, so subscribing the same id again replays the history.
+The catch-up marker is stored under the subscription id alone. When you change the filter or the projection, subscribe under a new id. A subscribe under the old id replays only the events after the stored marker, so it skips the events at or below the marker that only the new filter matches.
+
+The model's `cancelSubscription(id)` deletes the marker, so subscribing the same id again replays from the beginning when the delete holds. A delete that the store loses in a failover, or a marker write that the store applies after the delete, makes that subscribe resume after the old marker instead. To rebuild a projection for certain, subscribe under a new subscription id.
 
 On the blocking stack `cancelSubscription(id)` deletes the marker before it cancels anything else. If the delete throws, the subscription stays as it was, paused or running, and you can call `cancelSubscription(id)` again.
 
-On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the marker is deleted. Wait for it when a restart must not skip the history, and call `cancelSubscription(id)` again if it fails.
+On the reactor stack the subscription is cancelled right away, and the `Mono<Void>` that `cancelSubscription(id)` returns completes once the marker is deleted. Wait for it when the next start must replay from the beginning, and call `cancelSubscription(id)` again if it fails. A failed delete leaves the marker stored, so the next subscribe resumes after it.
 
 Your own code starts the catch-up, so it also sees how it ends. On the blocking stack `CatchupProjectionFeed.catchUp()` returns when the replay has finished and throws when it fails. On the reactor stack the `Mono` it returns completes or errors instead. The blocking `DomainEventFeed` can also be asked at any time:
 
@@ -223,7 +229,7 @@ boolean readyToServe() {
 
 Like every other subscription model, a `PushSubscriptionModel` can be stopped, started, paused per subscription, cancelled and shut down. There's no feed behind it holding events back, so an event handed to `accept(..)` while the model is stopped, or a subscription is paused, never reaches that handler, and resuming does not replay it. That's dropped, not deferred. `shutdown()` is one-way. A model that's been shut down stays that way. This is the same contract [`SynchronousSubscriptionModel` runs on](/docs/layer-1/synchronous-subscriptions/#life-cycle), and it's what lets a test [stop every subscription model in the application and opt back in per test](/docs/testing/integration-testing/#stopping-every-subscription-then-opting-in), a `PushSubscriptionModel` included.
 
-`CatchupThenPushSubscriptionModel` gained the same full life cycle in 0.32.0, on both stacks, and stopping it now also interrupts a catch-up replay that's already running rather than only the live feed behind it. Starting it again replays the interrupted history from the beginning, and `start(false)` leaves that replay for `resumeSubscription(..)` to pick up on its own.
+`CatchupThenPushSubscriptionModel` gained the same full life cycle in 0.32.0, on both stacks, and stopping it now also interrupts a catch-up replay that's already running rather than only the live feed behind it. Starting it again repeats the interrupted replay, after the stored catch-up marker or from the beginning when there is none, and `start(false)` leaves that replay for `resumeSubscription(..)` to pick up on its own.
 
 ## Feeding domain events instead of CloudEvents<HeadingBadge text="Layer 1" variant="tip" />
 
@@ -240,9 +246,9 @@ public void onMessage(OrderEvent event) {
 }
 ```
 
-For a new or rebuilt projection that also needs to catch up, use `CatchupProjectionFeed`. Live events are still applied as domain events, and only the one-time catch-up reads the event store and converts each replayed event once.
+For a new or rebuilt projection that also needs to catch up, use `CatchupProjectionFeed`. Live events are still applied as domain events, and only the catch-up reads the event store and converts each replayed event once.
 
-`CatchupProjectionFeed.create(...)` takes the feed's id, the projection, its repository, the event store, the CloudEvent converter, a function that returns an event's id, and the `CheckpointStorage` that records that the catch-up finished. Your listener passes each event to `acceptAndWait(event)`, called `accept(event)` before 0.34.0, or to `acceptAndWait(metadata, event)` when the message also includes the stream id, version or position. `catchUp()` replays the projection's history and then goes live, or goes live right away when the `CheckpointStorage` records that an earlier catch-up finished. On the blocking stack it runs on the thread that calls it, so call it from a thread other than the listener's:
+`CatchupProjectionFeed.create(...)` takes the feed's id, the projection, its repository, the event store, the CloudEvent converter, a function that returns an event's id, and the `CheckpointStorage` for its catch-up marker. Your listener passes each event to `acceptAndWait(event)`, called `accept(event)` before 0.34.0, or to `acceptAndWait(metadata, event)` when the message also includes the stream id, version or position. `catchUp()` replays the events after the stored catch-up marker, or the projection's whole history when there is none, and then goes live. The marker works the same way as on [`CatchupThenPushSubscriptionModel`](/docs/layer-0/push-subscription/#replaying-the-event-store-before-going-live), stored under the feed's id. On the blocking stack it runs on the thread that calls it, so call it from a thread other than the listener's:
 
 <Tabs syncKey="lang">
   <TabItem label="Java">
@@ -376,10 +382,10 @@ If you do call the feed from the projection, the two stacks behave differently.
 
 On the blocking stack, once the feed is live, the event is applied on the same thread before `acceptAndWait(...)` returns. During a replay, `acceptAndWait(...)` throws an `IllegalStateException` instead:
 
-* If the exception leaves the projection, the catch-up fails. A failed catch-up writes no catch-up marker, the record that the catch-up finished, so the next start replays the same history and fails the same way.
+* If the exception leaves the projection, the catch-up fails. A failed catch-up writes no catch-up marker, so the next start replays the same events and fails the same way.
 * If the projection catches the exception, the event isn't applied.
 
-The projection can't ask the feed whether a replay is running. A view that implements `ReplayAware` is told when a replay starts and ends, so it can skip the call during a replay, but then a read model rebuilt by a replay lacks every event it skipped.
+The projection can't ask the feed whether a replay is running. A view that implements `ReplayAware` is told when a replay from the beginning starts and ends, so it can skip the call during that replay, but then a read model rebuilt by a replay lacks every event it skipped. A replay after a stored catch-up marker doesn't tell the view, so the call still throws there.
 
 On the reactor stack, `acceptAndWait(...)` called from inside the projection, or from a callback such as `replayStarted()`, isn't refused. Its `Mono` completes once the event is queued rather than once it's applied. The feed applies one event at a time, so the new event is applied after the projection or the callback returns, in the order it was fed. An event fed during the replay is applied after the replayed history, before the catch-up marker is written.
 

@@ -84,7 +84,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | `storeName` | Select the store bean by name, on its own or together with `store` to disambiguate when several beans share that type. Empty, the default, leaves the name unset. |
 | `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the projection from a `PushSubscriptionModel` or `DomainEventFeed` bean instead, see [Push Subscription](/docs/layer-0/push-subscription/). |
 | `subscriptionModel` / `subscriptionModelName` | Select the feed bean by type or name when `source = PUSH`. |
-| `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
+| `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays the event store at every start before going live, `NONE` takes live events only and needs no event store. |
 
 `startAt`, `startAtGlobalPosition`, `resumeBehavior` and `startupMode` can't be combined with `mode = SYNCHRONOUS`, and startup fails when a synchronous projection sets any of them. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
 
@@ -274,6 +274,8 @@ A projection that replays stops recording when its catch-up begins. Its old reco
 Once the catch-up has read the history that was already there, the projection starts recording again. The catch-up then delivers whatever was written while it was reading, and those events are recorded.
 
 So a write issued right after your application starts is recorded even though the projection is still catching up. This applies to `CatchupThenPushSubscriptionModel`, `CatchupProjectionFeed` and `DomainEventFeed` on both stacks.
+
+On `CatchupProjectionFeed` and `DomainEventFeed`, only a replay from the beginning stops the recording. A replay after a stored [catch-up marker](/docs/layer-0/push-subscription/#replaying-the-event-store-before-going-live) records each append it applies, the same way live delivery does.
 
 The stream and DCB catch-up models behave differently. When they read the history, they can pick up a write that was still being committed when the catch-up began, and the projection doesn't record that delivery.
 

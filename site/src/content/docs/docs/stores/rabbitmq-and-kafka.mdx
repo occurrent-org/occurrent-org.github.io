@@ -147,7 +147,7 @@ A projection or saga reached through either path therefore has to tolerate seein
 
 After a restart, the broker redelivers whatever the source hadn't acknowledged.
 
-The event store is replayed again only when the `checkpointStorage` you passed has no record that the catch-up finished. With `null` in its place, every restart replays it.
+A restart replays the events written to the event store since the previous start, after the [catch-up marker](/docs/layer-0/push-subscription/#replaying-the-event-store-before-going-live) in the `checkpointStorage` you passed. With no marker stored, or with `null` in its place, it replays the whole event store.
 
 ## A runnable example
 
