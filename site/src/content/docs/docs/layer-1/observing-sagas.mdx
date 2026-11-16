@@ -151,15 +151,15 @@ An event the saga cannot route to an instance stops no instance at all. [Deliver
 
 ### Quarantine on a `SagaStateStore` of your own
 
-Writing your own `SagaStateStore` takes two more members before quarantine works on an instance whose state can no longer be decoded, which is what a renamed event class or a changed converter produces. That instance is very often the one you most want quarantined, since it fails on every event addressed to it.
+A `SagaStateStore` never sees a `SagaEnvelope`. `SagaCodec` turns each instance into a `StoredSaga`, which holds the saga id, the version, the encoded fields and a `SagaIndex` with the values the store queries on, and the store persists it as it is. A store decides only how a core saga's state is represented, and returns that as a `SagaStateCodec` from `stateCodec()`.
 
-`findWithoutState(sagaId)` reads an instance without decoding its state, returning an envelope whose `state()` is `null` and whose other members are all filled in, the way `findByStatus` already does. `compareAndSaveWithoutState(sagaId, envelope, expectedVersion)` writes one back under the same compare-and-set rule as `compareAndSave`, leaving the stored state where it is, so the state the instance stopped on is still there for whoever repairs the converter.
+Two of its members let the runner quarantine an instance whose state can no longer be decoded, which is what a renamed event class or a changed converter produces. That instance is very often the one you most want quarantined, since it fails on every event addressed to it.
 
-Both are `default` methods that call `find` and `compareAndSave`, so a store that does not override them compiles and runs sagas exactly as before. It just never quarantines an instance it cannot decode, because the runner's own read throws on that instance for the same reason yours does.
+`findWithoutState(sagaId)` reads an instance without its state. It needs only the fields in `SagaCodec.fieldsWithoutState()`, and the runner ignores the state when the read returns one.
 
-Override both or neither. The runner saves the envelope it read, so a store that reads without the state and then writes the whole envelope back replaces the stored state with `null`.
+`compareAndSaveWithoutState(saga, expectedVersion)` writes an instance back under the same compare-and-set rule as `compareAndSave`. It sets the fields in `SagaCodec.fieldsExceptState()` from the `StoredSaga`, removes the ones the `StoredSaga` has no value for, and keeps the stored state as it is, so the state the instance stopped on is still there for whoever repairs the converter. It throws an `IllegalArgumentException` for an `expectedVersion` of 0, since the runner inserts with `compareAndSave`.
 
-`SpringMongoSagaStateStore` overrides both. `SagaStateStore.inMemory()` does not and does not need to, since it holds each envelope as an object rather than a document, so nothing there can fail to decode. `SagaInstances.find(sagaId)` uses `findWithoutState` too, so looking one instance up by id costs the same as enumerating them and also works for an instance whose state no longer decodes.
+Neither has a default. `SagaStateStore.inMemory()` and `SpringMongoSagaStateStore` implement both, and the [0.35.0 upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.35.0.md#a-sagastatestore-stores-an-encoded-saga) walks through porting a store of your own. `SagaInstances.find(sagaId)` uses `findWithoutState` too, so looking one instance up by id costs the same as enumerating them and also works for an instance whose state no longer decodes.
 
 ### What else has to be true
 
@@ -255,7 +255,7 @@ The timer poller goes on with every instance that is releasing after each poll, 
 
 A release reads the events with an `EventStoreQueries`, which you give the runner with `SagaRunner.eventStoreQueries(..)`. Without one, `release` throws an `IllegalStateException`. It also throws one for an instance that 0.34.0 quarantined, since that instance has no record of what it skipped, and deleting it with `SagaStateStore.delete(sagaId)` is what's left. It throws one for an instance whose state no longer decodes too, with a message that names the decoding failure. Fix how the state decodes and release it again, or delete it. An instance whose state stops decoding while it is releasing stays releasing, and each poll logs a `WARN` and tries again.
 
-A `SagaStateStore` of your own has to persist `SagaFailure.releasedAt()`, `SagaFailure.quarantineId()` and `SagaEnvelope.quarantineSkipCount()`, or `release` throws. It also has to keep the skipped events with `recordSkippedInput`, `findSkippedInputs`, `deleteSkippedInput`, `deleteSkippedInputByKey` and `deleteSkippedInputs(sagaId, quarantineId)`, delete the records of the removed instance's quarantine id in `delete(sagaId)`, and implement `findReleasingSagaIds(after, limit)` for the poller to go on with a release.
+A `SagaStateStore` of your own implements `SagaStateStoreSkippedInputs` for a release. It keeps the skipped events with `recordSkippedInput`, `findSkippedInputs`, `deleteSkippedInput`, `deleteSkippedInputByKey` and `deleteSkippedInputs(sagaId, quarantineId)`, deletes the records of the removed instance's quarantine id in `delete(sagaId)`, and implements `findReleasingSagaIds(after, limit)` for the poller to go on with a release.
 
 The design is in [ADR 0134](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0134-a-saga-instance-that-keeps-failing-is-quarantined-at-its-own-position.md) and [ADR 0178](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0178-a-quarantined-saga-instance-records-what-it-skips-and-is-released-by-replaying-it.md). The [quarantined saga instance runbook](https://github.com/johanhaleby/occurrent/blob/main/doc/runbooks/quarantined-saga-instance.md) walks through a release step by step.
 

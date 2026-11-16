@@ -114,7 +114,7 @@ A step condition still completes on the same event it would have without the cap
 
 A step that only receives events of types no step declares keeps growing with no limit from `stepWindow`, since none of those events count toward the cap.
 
-`SpringMongoSagaStateStore` logs a warning when an instance's retained events reach 1,000. It doesn't warn again until the count has dropped below 1,000 and reached it once more. A saga running on a state store of your own gets no such warning.
+A flow saga logs a warning when an instance's retained events reach 1,000, whatever its state store. It doesn't warn again until the count has dropped below 1,000 and reached it once more.
 
 Two things stay true at any cap of 1 or more. `received.initiating<T>()` reaches the start event, which is kept as the first retained event and never counts against the cap, and the event that fired a branch is the last element of `received.asList()`.
 

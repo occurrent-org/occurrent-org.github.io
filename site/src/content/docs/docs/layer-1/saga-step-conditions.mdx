@@ -302,7 +302,7 @@ on(event<ReadingTaken>(2), then = end)
 
 is worked out from how many `ReadingTaken` events the step has received, and the step counts them again on every delivery. It can do that because it keeps every event it receives for as long as the instance stays in it, however many arrive.
 
-But sometimes a step receives far more events than the two it is waiting for. A sensor reporting every second fills `monitoring` with thousands of readings, and all of them are stored with the instance. The Spring MongoDB store warns once a waiting instance's retained events cross 1,000, since that is the count that starts pushing the saga document towards MongoDB's 16 MB limit. `stepWindow` is the limit on how many events each step records. There is no cap unless you set one, and the smallest you can set is 1:
+But sometimes a step receives far more events than the two it is waiting for. A sensor reporting every second fills `monitoring` with thousands of readings, and all of them are stored with the instance. Occurrent warns once a waiting instance's retained events reach 1,000, since that is the count that starts pushing the saga document towards MongoDB's 16 MB limit. `stepWindow` is the limit on how many events each step records. There is no cap unless you set one, and the smallest you can set is 1:
 
 <Tabs syncKey="lang">
   <TabItem label="Java">
