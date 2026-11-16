@@ -401,7 +401,7 @@ A `FactoryBean` registers the same way when nothing has asked for its object yet
 
 A `@Subscription`, `@StreamSubscription` or `@DcbSubscription` registered this way doesn't wait for its replay, whatever `startupMode` says, since the application is already running. On the reactor stack, the same goes for a `@Projection` or `@Snapshot`.
 
-A subscription registered this way that starts live begins where the event store was when its bean was built. A synchronous handler registered this way gets only the writes made after it registered.
+A subscription registered this way that starts live begins where the event store was when its bean was built, so it gets what the bean's own `@PostConstruct` method writes. For a `FactoryBean`'s product that is where the event store was when the factory was built, so the product's handler also gets what the factory writes while it builds the product. A synchronous handler registered this way gets only the writes made after it registered. It registers once the bean's `@PostConstruct` method has run, so a write that method makes through the application service is stored, and that bean's own synchronous handler never gets it.
 
 With `spring.main.lazy-initialization=true` these rules cover every bean. A write through the application service before the synchronous handlers have registered is refused as above. A handler on a bean whose declared type shows the annotation registers at startup, and one on a bean whose declared type doesn't registers when something first builds it and runs from then on.
 
