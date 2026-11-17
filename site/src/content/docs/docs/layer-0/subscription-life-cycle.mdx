@@ -72,7 +72,7 @@ Use it in a readiness probe when you run a catch-up model directly. Note that a 
 
 The second method, `listenForCatchup(subscriptionId, listener)`, tells a projection which part of a catch-up it's in. A catch-up first reads the history that was already there, and then delivers whatever was written while it was reading.
 
-The model calls the listener's `catchupStarted` when a catch-up begins, and its `historyRead` once that catch-up has read the history that was already there. For a catch-up that's stopped before then, the model never calls `historyRead`.
+The model calls the listener's `catchupStarted` when a catch-up begins, and its `historyRead` once that catch-up has read the history that was already there. For a catch-up that's stopped before then, the model never calls `historyRead`. On the reactor stack only a catch-up that replays from the beginning calls the listener. One that resumes after a stored marker delivers its events like live ones and calls none of the listener's methods.
 
 A projection that [records the appends it has applied](/docs/spring-boot/projection-annotation/#read-your-writes-for-an-asynchronous-projection) stops recording at `catchupStarted` and starts again at `historyRead`, so it still records the events written while the catch-up was reading.
 

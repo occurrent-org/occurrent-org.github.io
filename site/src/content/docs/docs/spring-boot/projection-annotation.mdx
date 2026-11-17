@@ -84,7 +84,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | `storeName` | Select the store bean by name, on its own or together with `store` to disambiguate when several beans share that type. Empty, the default, leaves the name unset. |
 | `source` | `EVENT_STORE` (the default) reads the event store. `PUSH` feeds the projection from a `PushSubscriptionModel` or `DomainEventFeed` bean instead, see [Push Subscription](/docs/layer-0/push-subscription/). |
 | `subscriptionModel` / `subscriptionModelName` | Select the feed bean by type or name when `source = PUSH`. |
-| `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history before going live, once on the blocking stack and at every start on the reactor stack, `NONE` takes live events only and needs no event store. |
+| `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history before going live, once on the blocking stack and at every start on the reactor stack, from after the stored marker, `NONE` takes live events only and needs no event store. |
 
 `startAt`, `startAtGlobalPosition`, `resumeBehavior` and `startupMode` can't be combined with `mode = SYNCHRONOUS`, and startup fails when a synchronous projection sets any of them. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
 
