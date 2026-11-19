@@ -165,6 +165,8 @@ Declaring the bean also does not replace the default subscription model the star
 
 By default the starter puts a [replay in front of the feed](/docs/layer-0/push-subscription/), so a saga that has never run works through the event store's history first and only then starts taking live events. That is what you want when this application wrote the events and the broker is only how they reach the saga.
 
+The replay's marker is stored under the saga's `id`, so a saga under a new `id` replays the whole history again. Every instance that its TTL removed is then recreated from its start event and dispatches its commands again. Give a push saga a new `id` only when its completed instances are kept for as long as the history it replays. With `catchup = Catchup.NONE`, below, nothing replays under a new `id`.
+
 ### When the events are not in your event store
 
 If another application writes the events, your event store does not hold them, so there is nothing to replay. A replay would either find nothing or, worse, apply unrelated events that happen to live in the same store. Say so with `catchup = Catchup.NONE`:
