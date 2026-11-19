@@ -49,6 +49,19 @@ Once every singleton exists, the fencing check also asks [`evaluatesWriteConditi
 
 That check belongs to the blocking stack only and has no reactor equivalent. `ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position instead, where a `false` answer keeps the unconditional write and gets a `WARN` saying so.
 
+### Health
+
+With `spring-boot-health` on the classpath, which Spring Boot Actuator brings, the MongoDB starter adds two health contributors:
+
+| Contributor | Components | Down when |
+| --- | --- | --- |
+| `competingConsumers` | One per competing subscription, named after its id. | The [status](/docs/layer-0/competing-consumers/#status) of the subscription has a failure. That is a subscription the wrapped model refused to start, and one whose call to the lease strategy or the wrapped model has failed with no success since. |
+| `competingConsumerLeases` | One per `SpringMongoLeaseCompetingConsumerStrategy` bean, named after the bean. | `leaseRefreshFailure()` returns a failure, for example while MongoDB refuses writes. Spring Boot's MongoDB health indicator reads, so it reports up in that case. |
+
+A node on standby, a subscription you paused and a stopped model are up. A component's details include the state, the subscriber id, the failure and since when.
+
+Spring Boot reports `/actuator/health` as down when one of them is. Neither is in the liveness or readiness group, so a probe on `/actuator/health/liveness` or `/actuator/health/readiness` isn't affected. Turn them off with `management.health.competingconsumers.enabled=false` and `management.health.competingconsumerleases.enabled=false`, or replace one with your own `HealthContributor` bean named `competingConsumers` or `competingConsumerLeases`.
+
 ### Manual start
 
 `occurrent.subscription.mode=manual` wraps the subscription model in a [`ManualStartSubscriptionModel`](/docs/layer-0/subscription-life-cycle/#starting-subscriptions-manually), so subscribing only registers a subscription and nothing runs until you start it. A health check or leader election can then call `start()`. The starter uses the three-argument `stoppedByDefault(SubscriptionModel, GlobalCheckpointSource, CheckpointStorage)` overload, which records a registration's start position at registration instead of at start.

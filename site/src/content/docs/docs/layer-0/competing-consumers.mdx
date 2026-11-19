@@ -135,3 +135,47 @@ Pause a competing subscription with `pauseSubscription(..)` on the `CompetingCon
 `shutdown()` shuts the `CompetingConsumerStrategy` down, then the wrapped model, and then makes one attempt to give up each lease, waiting at most 5 seconds for all of them. The MongoDB strategies stop refreshing their leases once they are shut down, so a lease that isn't given up expires after the lease time.
 
 When the wrapped model's own `shutdown()` throws, the competing consumer model's `shutdown()` throws that failure and gives up no lease, since the wrapped model may still deliver. Each event the wrapped model hands over after that waits for `hasLock` again, so this node stops delivering once the strategy stops reporting that this node holds the lease. Once the wrapped model can shut down, call `shutdown()` again, which then tries to give the leases up.
+
+## Status
+
+`competingConsumerStatus(subscriptionId)` returns where a competing subscription is on this node, and what is wrong with it, if anything is:
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+
+```java
+competingConsumerSubscriptionModel.competingConsumerStatus("orders").ifPresent(status -> {
+    if (status.isFailing()) {
+        log.warn("{} is {} since {}", status.subscriptionId(), status.state(), status.failure().since(), status.failure().cause());
+    }
+});
+```
+
+  </TabItem>
+  <TabItem label="Kotlin">
+
+```kotlin
+competingConsumerSubscriptionModel.competingConsumerStatus("orders").ifPresent { status ->
+    val failure = status.failure()
+    if (failure != null) {
+        log.warn("{} is {} since {}", status.subscriptionId(), status.state(), failure.since(), failure.cause())
+    }
+}
+```
+
+  </TabItem>
+</Tabs>
+
+The status is empty for an id the model doesn't know, for a subscription that opted out of competing consumption, and once the model is shut down. `competingConsumerStatuses()` returns every status, ordered by subscription id.
+
+| State | When |
+| --- | --- |
+| `LEASE_HELD` | The wrapped model runs the subscription and `hasLock` answers `true`. |
+| `STANDBY` | The subscription competes for the lease and this node doesn't run it. A node that lost the lease is on standby, although `isPaused(id)` returns `true` for it. |
+| `PAUSED` | You paused the subscription, or the model holds it paused because the wrapped model refused to start or resume it from its position. |
+| `STOPPED` | The model is stopped, and you haven't resumed the subscription since. |
+| `GIVEN_UP` | The wrapped model refused to start the subscription after `subscribe` returned, so the model forgot it and its id is free. The status stays until you subscribe the id again or cancel it. |
+
+`failure()` returns the cause and since when the subscription has been failing, or `null` when nothing is wrong. A subscription given up, and one held paused after a refusal, have the refusal as the failure. A call to the `CompetingConsumerStrategy` or the wrapped model that throws, and that the model tries again, has that failure until a try succeeds. A subscription that keeps failing keeps the `since` of its first failure.
+
+The two MongoDB strategies have `leaseRefreshFailure()`, which returns the failure of the latest lease refresh and since when the refreshes have been failing, or empty once a refresh renewed every lease. A refresh that fails on every node, for example because MongoDB answers reads and refuses writes, keeps every node on standby, so no subscription runs anywhere.
