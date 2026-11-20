@@ -47,7 +47,7 @@ A `CheckpointStorage` of your own that can't evaluate a write condition answers 
 
 Once every singleton exists, the fencing check also asks [`evaluatesWriteConditionsFor`](/docs/layer-0/checkpoint-fencing/), the per-id version, for the subscription ids you've registered, and throws `CheckpointStorageCannotFenceSubscriptionException`, naming the storage and every refused id, when the answer is `false` for at least one of them.
 
-That check belongs to the blocking stack only and has no reactor equivalent. `ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position instead, where a `false` answer keeps the unconditional write and gets a `WARN` saying so.
+That check belongs to the blocking stack only and has no reactor equivalent. `ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position instead, and refuses the subscription when the answer is `false`. Both starters ask the same before they store a live start as a subscription's first checkpoint, and the application then fails to start. Set `occurrent.subscription.start-when-first-position-can-be-overwritten=true` to write that first position unconditionally instead, with a `WARN`, and accept that two nodes starting the subscription at the same moment can lose the events between their two positions.
 
 ### Manual start
 
