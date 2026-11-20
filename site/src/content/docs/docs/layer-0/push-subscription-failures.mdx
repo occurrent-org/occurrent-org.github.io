@@ -28,7 +28,7 @@ A listener's event that fails while the reactor feed is live doesn't make the fe
 
 Once the reactor feed starts failing, it:
 
-1. deletes its catch-up marker, so a new feed replays the history
+1. deletes its catch-up marker, so a new feed replays from the beginning
 2. refuses every later `acceptAndWait(...)` that doesn't come from the projection, with an `IllegalStateException`
 3. refuses each event a listener fed that was still waiting for the replay, without applying it
 4. applies the events it had already taken in, and those the projection feeds it meanwhile
@@ -91,7 +91,7 @@ A `DomainEventFeed` takes a projection only once, so you have to replace the who
 
 `stopCatchUp()` stops a running replay, for example when the application shuts down in the middle of one. Without it, the shutdown waits until the whole history has been applied.
 
-A stopped replay isn't a failure. It writes no catch-up marker, so the next `catchUp()` replays the whole history again. Both `catchUp()` and `goLive()` work again after a stop.
+A stopped replay isn't a failure. It writes no catch-up marker, so the next `catchUp()` replays again from where the stopped one started. Both `catchUp()` and `goLive()` work again after a stop.
 
 On a feed that's already live, `stopCatchUp()` has no effect.
 
@@ -124,7 +124,7 @@ Call it right after you create the feed, on both `CatchupProjectionFeed` and `Do
 feed.goLive();
 ```
 
-It skips the replay and starts delivering the held and future live events directly. It writes no catch-up marker, so a later real `catchUp()` on the same feed still replays the full history rather than treating it as already done. While that replay runs, live events wait. They are delivered when it ends, whether it finishes or is stopped.
+It skips the replay and starts delivering the held and future live events directly. It writes no catch-up marker, so a later `catchUp()` on the same feed replays the full history when no marker was stored before. With a stored marker, the blocking feed skips the replay and the reactor feed replays the events after the marker. While that replay runs, live events wait. They are delivered when it ends, whether it finishes or is stopped.
 
 If you call `goLive()` after a stop, it also delivers the live copy of an event the stopped replay already delivered. A view that holds events back until the replay finishes discarded them when the replay stopped, so it needs that copy. A view that saved each event as it arrived gets it twice.
 
