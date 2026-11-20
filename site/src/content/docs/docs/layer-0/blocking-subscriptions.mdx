@@ -139,6 +139,13 @@ Uses the Spring RedisTemplate to store `Checkpoint`'s in Redis.
 
 <Dependency artifact="occurrent-subscription-redis-spring-blocking-checkpoint-storage" />
 
+Redis acknowledges a write before its replicas have it, and `SpringRedisCheckpointStorage` doesn't wait for a replica to catch up. So a failover, where a replica takes over from a primary that went down, can undo a checkpoint write the storage already acknowledged:
+
+- A lost `save` means the stored checkpoint is older than the position the subscription had reached. After a restart the subscription resumes from that older position and gets events it already handled, which a subscription already has to cope with.
+- A lost `delete` brings the checkpoint back. The next start of that subscription id resumes from the old checkpoint instead of from the start position it was given.
+- A failover can also undo what a conditional `save` decided, see [checkpoint fencing](/docs/layer-0/checkpoint-fencing/).
+- For a short while after the failover, the old primary can still answer a `read` or `exists` with a value the new primary doesn't have.
+
 4\. **InMemoryCheckpointStorage**\
 Keeps `Checkpoint` instances in a `ConcurrentHashMap`, so they are gone once the process stops. Useful in tests, and in an application that can replay from the start after a restart.
 
