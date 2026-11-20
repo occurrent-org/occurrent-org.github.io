@@ -7,6 +7,7 @@ modules: [occurrent-eventstore-mongodb-native, occurrent-eventstore-mongodb-spri
 ---
 
 import Dependency from "../../../../components/Dependency.astro";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 import { TabItem, Tabs } from "@astrojs/starlight/components";
 
 There are three different MongoDB EventStore implementations to choose from:
@@ -383,3 +384,41 @@ Now you can start reading and writing events to the EventStore:
 | Name | Description |
 | :- | :- |
 | [Custom Aggregation View](https://github.com/johanhaleby/occurrent/tree/occurrent-%OCCURRENT_VERSION%/example/projection/spring-adhoc-eventstore-mongodb-queries/src/main/java/org/occurrent/example/eventstore/mongodb/spring/projections/adhoc) | Example demonstrating that you can query a MongoDB event store using custom MongoDB aggregations. It uses the blocking `SpringMongoEventStore`. There is no reactive version of this example. |
+
+## Spreading the DCB appends of one type<HeadingBadge text="Added in 0.35.0" />
+
+With [DCB](/docs/layer-0/dcb-event-store/) turned on, every append increments a marker document for each type of its events. So two appends of one type can't commit at the same time, even when their tags differ. Each type has eight marker documents, and by default an append increments the first one, the document Occurrent 0.34.0 uses.
+
+To spread the writes, call `spreadTypeMarkerWrites(true)` on the `EventStoreConfig.Builder` of the native, Spring blocking or Spring reactive store. An append then increments one of the eight documents for each type of its events, picked from its `AppendId`. Two appends of one type with different tags share a document only when they pick the same one, about one time in eight.
+
+<Tabs syncKey="lang">
+  <TabItem label="Java">
+    ```java
+    EventStoreConfig eventStoreConfig = new EventStoreConfig.Builder()
+                                                            .eventStoreCollectionName("events")
+                                                            .transactionConfig(mongoTransactionManager)
+                                                            .eventStoreCapabilities(EventStoreCapability.DCB)
+                                                            .spreadTypeMarkerWrites(true)
+                                                            .build();
+    ```
+  </TabItem>
+
+  <TabItem label="Kotlin">
+    ```kotlin
+    val eventStoreConfig = EventStoreConfig.Builder()
+                                           .eventStoreCollectionName("events")
+                                           .transactionConfig(mongoTransactionManager)
+                                           .eventStoreCapabilities(EventStoreCapability.DCB)
+                                           .spreadTypeMarkerWrites(true)
+                                           .build()
+    ```
+  </TabItem>
+</Tabs>
+
+With the [Spring Boot starter](/docs/spring-boot/configuration-properties/#event-store), set `occurrent.event-store.mongodb.spread-type-marker-writes=true` instead.
+
+:::caution
+Turn it on only once no Occurrent 0.34.0 node appends to or reads from the store. A 0.34.0 node reads only the first document of a type, so a condition it checks on that type can miss a matching event appended to another document, and nothing warns about it. To go back to 0.34.0 after turning it on, turn it off and restart every process that appends to the store, then downgrade.
+:::
+
+Whatever the setting, a read or a conditional append on a criteria item without tags, such as `DcbCriteria.type("TicketSold")`, uses all eight documents of each of its types. Such a conditional append still conflicts with every append of the type. Every node from 0.35.0 on reads all eight documents whatever its own setting, so a rolling restart that turns the setting on or off is safe.
