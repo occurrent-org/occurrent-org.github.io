@@ -37,7 +37,7 @@ When the saga throws a `RuntimeException` or an `AssertionError`, the Kafka sour
 
 Anything else the saga throws, any other `Error` or a checked exception from Kotlin, stops either source.
 
-An instance that keeps failing can be quarantined, so the saga's other instances keep getting their events. Quarantine is off by default. [Quarantined Instances](/docs/layer-1/observing-sagas/#quarantined-instances) says what happens to a quarantined instance, what has to be true before one is quarantined, how to turn quarantine on for both `SagaRunnerConfig` and `@Saga`, and why it's off by default.
+An instance that keeps failing can be quarantined, so the saga's other instances keep getting their events. From 0.35.0 quarantine is on by default, after 5 minutes. [Quarantined Instances](/docs/layer-1/observing-sagas/#quarantined-instances) says what happens to a quarantined instance, what has to be true before one is quarantined, how to configure quarantine for both `SagaRunnerConfig` and `@Saga`, and how to release a quarantined instance.
 
 An instance that isn't quarantined keeps failing for as long as the model keeps offering the event. That ends when:
 
@@ -114,7 +114,7 @@ A step condition still completes on the same event it would have without the cap
 
 A step that only receives events of types no step declares keeps growing with no limit from `stepWindow`, since none of those events count toward the cap.
 
-`SpringMongoSagaStateStore` logs a warning when an instance's retained events reach 1,000. It doesn't warn again until the count has dropped below 1,000 and reached it once more. A saga running on a state store of your own gets no such warning.
+A flow saga logs a warning when an instance's retained events reach 1,000, whatever its state store. It doesn't warn again until the count has dropped below 1,000 and reached it once more.
 
 Two things stay true at any cap of 1 or more. `received.initiating<T>()` reaches the start event, which is kept as the first retained event and never counts against the cap, and the event that fired a branch is the last element of `received.asList()`.
 

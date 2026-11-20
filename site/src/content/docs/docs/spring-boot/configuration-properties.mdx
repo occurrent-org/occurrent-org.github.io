@@ -64,7 +64,8 @@ All of these are **blocking only**.
 | :- | :- | :- |
 | `occurrent.saga.timer-poll-interval` | `15s` | How often a saga's timer poller looks for timeouts that are due. See [Running across multiple instances](/docs/layer-1/saga-delivery/#running-across-multiple-instances). |
 | `occurrent.saga.competing-consumer.enabled` | `true` | Whether only one instance of the application polls for due timers, using the shared competing-consumer lease. See [Several instances of a `@Saga`](/docs/spring-boot/saga-annotation/#several-instances-of-a-saga). |
-| `occurrent.saga.quarantine-after` | none | How long one saga instance may keep failing before it can be quarantined. Unset means quarantine is off. Zero or a negative duration stops the application from starting when it has a `@Saga`. See [Observing `@Saga` instances](/docs/spring-boot/saga-annotation/#observing-saga-instances). |
+| `occurrent.saga.quarantine-after` | `5m` | How long one saga instance may keep failing before it can be quarantined. Unset means the default. A blank value stops the application from starting, so set `occurrent.saga.quarantine-enabled=false` to turn quarantine off. Zero or a negative duration stops the application from starting when it has a `@Saga`. See [Observing `@Saga` instances](/docs/spring-boot/saga-annotation/#observing-saga-instances). |
+| `occurrent.saga.quarantine-enabled` | `true` | Whether a saga instance that keeps failing can be quarantined. `false` turns quarantine off for every `@Saga`. |
 
 ## Kafka broker starter
 
