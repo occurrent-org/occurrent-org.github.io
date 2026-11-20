@@ -86,7 +86,7 @@ The `@Configuration` plus `@Bean` form still works, and is handy for grouping se
 | `subscriptionModel` / `subscriptionModelName` | Select the feed bean by type or name when `source = PUSH`. |
 | `catchup` | For a push projection only. `FROM_EVENT_STORE` (the default) replays history once before going live, `NONE` takes live events only and needs no event store. |
 
-`startAt`, `startAtGlobalPosition`, `resumeBehavior` and `startupMode` can't be combined with `mode = SYNCHRONOUS`, and startup fails when a synchronous projection sets any of them. A synchronous projection has no catch-up or checkpoint to configure since it never falls behind in the first place.
+`startAt`, `startAtGlobalPosition`, `resumeBehavior` and `startupMode` can't be combined with `mode = SYNCHRONOUS`, and startup fails when a synchronous projection sets any of them. A synchronous projection has no catch-up or checkpoint to configure, and no replay either, so [it gets only some writes](/docs/spring-boot/projection-annotation/#what-a-synchronous-projection-gets).
 
 With both `store` and `storeName` unset, the store resolves by convention: the unique `MaterializedView` bean, then `ViewStateRepository`, then `CrudRepository`, then the Mongo default on the blocking stack. The reactive stack has no Mongo default, so an unset pair only resolves there if a unique `MaterializedView` or `ViewStateRepository` bean exists. Naming a `store` type or a `storeName` with no matching bean is an error, not a silent fall-through to convention.
 
@@ -137,7 +137,32 @@ On the MongoDB starter, leaving `store` and `storeName` unset with no matching b
 
 ## Read-your-writes (synchronous mode)
 
-`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](/docs/layer-1/projections/#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. The projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. A synchronous projection has no subscription to catch up or resume, so startup fails if you set any of the start attributes listed under [The `@Projection` annotation](/docs/spring-boot/projection-annotation/).
+`mode = Mode.SYNCHRONOUS` runs the projection's fold [in the write transaction](/docs/layer-1/projections/#read-your-writes) instead of on a subscription, reusing the synchronous subscription model the application service dispatches to after a successful write. For a write that [reaches the projection](/docs/spring-boot/projection-annotation/#what-a-synchronous-projection-gets), the projected state is visible the moment `execute(...)` returns, at the cost of doing that fold on every write. A synchronous projection has no subscription to catch up or resume, so startup fails if you set any of the start attributes listed under [The `@Projection` annotation](/docs/spring-boot/projection-annotation/).
+
+### What a synchronous projection gets
+
+A synchronous projection gets the events written through the application service of the process it runs in, from the moment it registers. Any other event reaches it only if your code passes the event to the `SynchronousSubscriptionModel` while the projection is running, with `dispatch` on either stack or `accept` on the blocking one. Without that, these don't reach it:
+
+* The events stored before it registered. A synchronous projection added to an application whose event store already has events starts empty, and it never reads those events.
+* A write made directly with `EventStore.write` or `DcbEventStore.append`.
+* A write from another process, including one still running the previous version during a rolling deploy. Every process that writes through an application service has to run the same synchronous projections, so adding or removing one needs every process stopped.
+* Without a transaction executor, a write whose projection update failed after the write committed. The update is best-effort then.
+* A write while the synchronous subscription model is stopped, or while the projection's subscription is paused. A resume doesn't deliver it later.
+
+To read your own writes over the events already stored, use an asynchronous projection with `startAt = StartPosition.BEGINNING` and `recordAppliedAppends = true`, and call `waitUntilApplied` after the write, as [the next section](/docs/spring-boot/projection-annotation/#read-your-writes-for-an-asynchronous-projection) shows.
+
+### The switch from `ASYNC` to `SYNCHRONOUS`
+
+A synchronous projection continues from the state the asynchronous one left in the store, so that state has to include every stored event before you switch:
+
+1. Stop every process that writes to the event store, and keep them stopped until the last step.
+2. Delete the checkpoint stored under the projection's id, and start a single process with the projection still `ASYNC`, `startAt = StartPosition.BEGINNING` and `startupMode = StartupMode.WAIT_UNTIL_STARTED`. The projection then rebuilds its read model from every stored event, and the application finishes starting only once that replay has reached the end of the stored events. Make sure nothing writes through this process while it runs.
+3. Stop that process and delete the checkpoint stored under the projection's id again.
+4. Set `mode = Mode.SYNCHRONOUS`, remove the start attributes, and start every process.
+
+Step 2 needs the rebuild. A projection that resumes from a stored checkpoint can finish starting before it has applied the events written since that checkpoint, so `WAIT_UNTIL_STARTED` alone doesn't show that it has applied them all.
+
+Step 3 matters if you ever switch back. The synchronous projection never moves that checkpoint, so a switch back to `ASYNC` would resume from the old position and apply the events written since then a second time. To switch back, stop every process and switch with `startAt = StartPosition.BEGINNING`, which rebuilds the read model from every stored event.
 
 ## Read-your-writes for an asynchronous projection<HeadingBadge text="Added in 0.34.0" />
 
@@ -196,7 +221,7 @@ This works on both the blocking and the reactor stack, and for a `DcbProjection`
 
 Startup fails when there is no `AppliedAppendStore` bean.
 
-It also fails when you combine `recordAppliedAppends = true` with `mode = SYNCHRONOUS`, because a synchronous projection already gives you read-your-writes and there is nothing to wait for.
+It also fails when you combine `recordAppliedAppends = true` with `mode = SYNCHRONOUS`. A synchronous projection applies a write that reaches it before `execute(...)` returns, so there is nothing to wait for.
 
 The MongoDB starters configure a store for you, one document per projection id and append id pair, so `recordAppliedAppends = true` needs no store of your own.
 
