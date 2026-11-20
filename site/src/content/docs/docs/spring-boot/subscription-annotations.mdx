@@ -353,7 +353,56 @@ A private or final handler on a bean that isn't proxied at all still runs, since
 
 ## When Annotations Register
 
-Every `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, `@SynchronousSubscription`, `@Projection`, `@Snapshot` and `@Saga` registers after all singleton beans have been created and before any `ApplicationRunner` or `CommandLineRunner` runs. A subscription that only receives new events therefore sees an event written by an `ApplicationRunner`, but misses one written while the beans are still being created, from a `@PostConstruct` method for example.
+Every `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, `@SynchronousSubscription`, `@Projection`, `@Snapshot` and `@Saga` registers after all singleton beans have been created and before any `ApplicationRunner` or `CommandLineRunner` runs. The synchronous handlers, `@SynchronousSubscription` and a synchronous `@Projection` or `@Snapshot`, register first, so they get a write that a saga or another handler's replay makes while the rest register.
+
+A `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, `@Projection` or `@Snapshot`, or a `@Saga` on the blocking starter, that starts live, at `NOW` or at `DEFAULT` with nothing stored, begins where the event store was when the event store bean was created. So it gets an event that a `@PostConstruct` method writes directly to the event store. A `@Projection` and a `@Saga` start at `DEFAULT` unless they set `startAt`, so a default `@Saga` acts on, and sends commands for, such an event.
+
+The starter stores that position as the handler's first checkpoint with `CheckpointWriteCondition.ifAbsent()`. A `CheckpointStorage` of your own that answers `false` from `evaluatesWriteConditionsFor` gets an unconditional write instead, with a warning, as `DurableSubscriptionModel` gives it.
+
+That position is a time in MongoDB's oplog, so it lasts only as long as the oplog window. When the application takes longer than that to start, a handler the starter runs through a catch-up subscription, which both starters do by default, refuses to start instead of skipping the events since that position. The blocking starter throws `CatchupCannotResumeException` and the application doesn't start. With `startupMode = BACKGROUND`, and on the reactor starter, the handler is paused with an error in the log. Delete or replace its stored checkpoint and restart the application, as the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.35.0.md#a-subscription-whose-resume-token-is-gone-stops-instead-of-restarting-from-now) describes. A handler at `NOW` with `resumeBehavior = SAME_AS_START_AT` stores no checkpoint, so it is paused, and the next start of the application reads a new position. Without a catch-up subscription, `occurrent.subscription.mongodb.restart-on-change-stream-history-lost` decides. At `true`, its default, the handler restarts from now and the events written in between are never delivered, and at `false` the subscription ends with an error in the log.
+
+Except where a `SubscriptionResumePoints` bean answers for the subscription, a handler starts where the event store is when it subscribes, as in 0.34.0, in these cases:
+
+* Its bean is built on a Reactor non-blocking thread, as [described below](#a-bean-built-on-a-reactor-non-blocking-thread).
+* The event store bean is a Spring AOP proxy without a single target. The starter logs a warning naming the bean. An event store behind a proxy with a single target is read through that target.
+* The application uses neither MongoDB starter. Only those two turn where the event store is into a checkpoint.
+* It would store that position as its first checkpoint, which every live start but `NOW` with `resumeBehavior = SAME_AS_START_AT` does, and the context doesn't have exactly one `CheckpointStorage` bean.
+
+### Writing While the Application Starts
+
+A synchronous handler runs only on the thread that writes through the application service, and nothing replays a write to it. So until the synchronous handlers have registered, the `ApplicationService` and `DcbApplicationService` that the starter creates refuse a write with `WriteRefusedException`, and nothing is stored. A write from a `@PostConstruct` method, an `InitializingBean` or a `@Bean` method fails startup with that exception. Write from an `ApplicationRunner` or an `ApplicationReadyEvent` listener instead:
+
+```java
+@Component
+class OpenDefaultAccount implements ApplicationRunner {
+    private final ApplicationService<DomainEvent> applicationService;
+
+    OpenDefaultAccount(ApplicationService<DomainEvent> applicationService) {
+        this.applicationService = applicationService;
+    }
+
+    @Override
+    public void run(ApplicationArguments args) {
+        applicationService.execute("account-1", events -> Account.open(events, "account-1"));
+    }
+}
+```
+
+On the reactor stack the refusal is an error signal on the `Mono` that `execute` returns. A `@PostConstruct` method that blocks on it fails startup the same way, but one that calls `subscribe()` without an error consumer stores nothing, and the application starts with only Reactor's log line about a dropped error. The `Mono` asks whether to refuse each time it is subscribed, so a `Mono` built while the application starts and subscribed once it runs is not refused.
+
+A write from a `SmartInitializingSingleton` may or may not be refused, depending on whether Spring calls it before or after the starter's own `SmartInitializingSingleton`, which follows the order the beans were registered in. Write from an `ApplicationRunner` there too.
+
+The write is refused also when the application declares no synchronous handler. A write made directly with `EventStore.write` or `DcbEventStore.append` is not refused, and no synchronous handler ever sees it.
+
+### Writing While a Synchronous Handler Is Stopped or Paused
+
+The application service also refuses a write with `WriteRefusedException` while the synchronous subscription model is stopped and has a handler registered, and a write whose events match a paused synchronous subscription. That holds with or without a starter, for any `GenericApplicationService` or `GenericDcbApplicationService` built with `synchronousSubscriptions(..)`. In 0.34.0 that write was stored and the stopped or paused handler never got its events. The match uses the stream id and the stream version that the write gives the events, so a filter on either one works. A filter on the position or on the append id can't match before the event store writes the events, so a paused subscription with such a filter doesn't stop the write.
+
+A `pauseSubscription(id)` or `stop()` on the synchronous subscription model waits for the writes the model has already let through, so their handlers still get their events, and `pauseSubscription(id)` returns once the subscription is paused. A write that starts while the pause waits is refused when the pausing subscription matches it, and a write that starts while the stop waits is refused. A handler that pauses or stops its own model doesn't wait, since its own write is one of those, and the pause or stop applies once the last of those writes ends. Until then `isPaused(id)` answers `false`. On the reactor stack a pause or stop doesn't wait either when it comes on a non-blocking thread, or while the model routes the events of a write, whichever thread it comes from, and it applies the same way. A long write holds a pause or stop back for as long as it runs.
+
+Resume a paused synchronous subscription before writing events it matches, or cancel it. In a test, `@EnableOccurrentTesting` lets those writes through once a test autowires its `OccurrentSubscriptionsExtension`, as the [upgrade guide](https://github.com/johanhaleby/occurrent/blob/main/doc/migration/upgrading-to-0.35.0.md#a-write-through-the-application-service-is-refused-while-the-application-starts) describes.
+
+### Beans Built After Startup
 
 A `@Lazy` bean whose declared type shows one of these annotations is built at that point too, so it registers with the others.
 
@@ -373,7 +422,13 @@ public class NotifierConfig {
 
 A `FactoryBean` registers the same way when nothing has asked for its object yet. A bean that nothing ever builds never registers its handlers.
 
+A synchronous handler, a `@SynchronousSubscription` or a `@Projection` or `@Snapshot` with `mode = SYNCHRONOUS`, doesn't register this way, since it would miss every write made before it registered. Creating its bean throws `IllegalStateException` instead, when that happens after startup, or while the application starts after a write through the application service already went through. The message names the fixes. Declare the annotated class as the `@Bean` method's return type, remove `@Lazy`, or make the handler asynchronous. A new instance of a prototype bean, or of a scoped bean's target, whose handler registered at startup is created as before.
+
 A `@Subscription`, `@StreamSubscription` or `@DcbSubscription` registered this way doesn't wait for its replay, whatever `startupMode` says, since the application is already running. On the reactor stack, the same goes for a `@Projection` or `@Snapshot`.
+
+A subscription registered this way that starts live begins where the event store was when its bean was built, so it gets what the bean's own `@PostConstruct` method writes. For a `FactoryBean` built after startup that is where the event store was when the factory was built, so its product's handler also gets what the factory writes while it builds the product. When the factory was built while the application started and its product only later, the product's handler starts from where the event store is once the product exists, and misses what the factory writes while it builds the product. Either way, in the [cases listed above](#when-annotations-register) the handler starts where the event store is when it subscribes.
+
+With `spring.main.lazy-initialization=true` these rules cover every bean. A write through the application service before the synchronous handlers have registered is refused as above. A handler on a bean whose declared type shows the annotation registers at startup, and an asynchronous one on a bean whose declared type doesn't registers when something first builds it and runs from then on. A synchronous one on such a bean fails the creation of its bean, as above.
 
 ### A Bean Built on a Reactor Non-Blocking Thread
 
@@ -391,7 +446,7 @@ Reactor doesn't allow blocking on such a thread. Subscribing a handler that star
 | The beginning, or an explicit position | Subscribes on `Schedulers.boundedElastic()`. |
 | `NOW` or `DEFAULT` | Subscribes on the thread that builds the bean, which works on the model the starter builds. |
 
-A handler that starts at `NOW` or `DEFAULT` subscribes on the calling thread because it starts from wherever the event feed is when it subscribes. Subscribing it later could skip what the caller writes in between. A handler that starts at the beginning or at an explicit position receives the same events no matter when it subscribes.
+Reading where the event store is can block too, so on a non-blocking thread the starter doesn't read it when the bean is built. A handler that starts at `NOW` or `DEFAULT` then starts from wherever the event feed is when it subscribes, as in 0.34.0, and it subscribes on the calling thread for that reason. Subscribing it later could skip what the caller writes in between. A handler that starts at the beginning or at an explicit position receives the same events no matter when it subscribes.
 
 When a subscription model other than the one the starter builds blocks while subscribing a `NOW` or `DEFAULT` handler, the bean fails to build instead, and the exception message says what to do. To fix it, build the bean on a thread that may block, with `Schedulers.boundedElastic()` instead of `Schedulers.parallel()` above, or start the handler at the beginning or at an explicit position.
 
