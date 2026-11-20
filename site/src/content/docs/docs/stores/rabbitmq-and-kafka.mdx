@@ -25,6 +25,8 @@ Occurrent never declares an exchange. `orders-exchange` has to exist before anyt
 
 A confirm alone only proves the broker took the message, not that a queue was bound to receive it. So the sink also watches for `basic.return`, and treats a returned message as a failed publish even though a confirm follows it.
 
+That failure stops a subscription that forwards stored events at the first event type no queue is bound for, since it tries the same event again until someone binds a queue. On an exchange where an event nobody consumes is normal, build the sink with `onUnroutable(RabbitMqUnroutablePolicy.LOG_AND_CONTINUE)`. The sink then logs a warning with the exchange, the routing key and the id and type of the event, and returns, so the broker drops that one event and the sink goes on with the next. The sink never publishes that event again, so a queue bound later doesn't receive it. The policy covers every routing key the sink publishes to, so a typo in a routing key or a binding key is logged and dropped the same way. `FAIL` is the default.
+
 Every CloudEvent attribute, the Occurrent extensions included, becomes a message header under a `cloudEvents_` prefix, since there's no official CloudEvents binding for AMQP 0-9-1 to reuse. `datacontenttype` is the one exception, written to `BasicProperties.contentType` instead.
 
 An application header using the `cloudEvents_` prefix is refused when the destination is built, so it can't collide with that mapping.
@@ -75,6 +77,89 @@ The RabbitMQ client calls every consumer on a connection from one pool of thread
 It never creates or reconnects the `Connection` you gave it. A source keeps consuming after that connection recovers automatically, and a delivery that was being handled when it dropped is delivered again. On a `Connection` with automatic recovery turned off, the source stops instead.
 
 `RabbitMqDomainEventSource<E>` and `RabbitMqDomainEventSink<E>` are the domain-level counterparts. The source is built with `RabbitMqDomainEventSource.builder(connection, feed, queue)`, and the sink with `RabbitMqDomainEventSink.using(cloudEventSink, cloudEventConverter)`.
+
+## A RabbitMQ wire format of your own
+
+When the other side of an exchange isn't Occurrent, set a mapper on the builder. A `RabbitMqOutboundMapper` turns a `CloudEvent` into the `RabbitMqMessage`, the properties and body, that the sink publishes:
+
+```java
+RabbitMqOutboundMapper outbound = (cloudEvent, destination) -> new RabbitMqMessage(
+        new BasicProperties.Builder()
+                .messageId(cloudEvent.getId())
+                .type(cloudEvent.getType())
+                .contentType("application/json")
+                .headers(Map.of("streamVersion", cloudEvent.getExtension("streamversion")))
+                .build(),
+        cloudEvent.getData().toBytes());
+
+RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, resolver)
+        .outboundMapper(outbound)
+        .build();
+```
+
+The sink still does the publisher confirm, the return handling and the retries around the mapper, and calls the mapper again on each attempt. It sets `deliveryMode` to 2, persistent, when the mapper doesn't set it, and it adds the header `x-occurrent-rabbitmq-confirm-publisher-return-token` to every message, which it needs to match a `basic.return` to its publish. The headers of the destination reach the message only if the mapper puts them there.
+
+A message the RabbitMQ client can't encode fails the publish with the client's own exception, usually an `IllegalArgumentException`, and the sink doesn't retry it. A header value of a type AMQP has no field type for, such as a `UUID`, does that, and so does a property over 255 bytes, such as a long `messageId`.
+
+An `IOException` from encoding a header, for example from a custom `LongString`, is different. The sink retries it, and its default retry has no cap on attempts, so a header that fails every time keeps the publish retrying until the sink is closed. Give the sink a `retryStrategy(..)` with `maxAttempts(..)` when your mapper can produce one. The Spring Boot starter's sink has no setting for that, so declare a `CloudEventSink` bean of your own.
+
+A `RabbitMqInboundMapper` does the reverse for `RabbitMqCloudEventSource` and `RabbitMqDomainEventSource`. To give a handler the stream id and version, set the `streamid` and `streamversion` extensions from the message:
+
+```java
+RabbitMqInboundMapper inbound = (properties, body) -> CloudEventBuilder.v1()
+        .withId(properties.getMessageId())
+        .withSource(URI.create("urn:billing"))
+        .withType(properties.getType())
+        .withData("application/json", body)
+        .withExtension("streamid", properties.getHeaders().get("orderId").toString())
+        .withExtension("streamversion", ((Number) properties.getHeaders().get("streamVersion")).longValue())
+        .build();
+
+RabbitMqCloudEventSource source = RabbitMqCloudEventSource.builder(rabbitConnection, pushModel, "order-status-queue")
+        .resolver(resolver)
+        .inboundMapper(inbound)
+        .build();
+```
+
+A handler that reads `@StreamId`, `@StreamVersion` or `EventMetadata` fails on every message when the mapper doesn't set those extensions. In `RabbitMqDomainEventSource` the `CloudEventConverter` has to resolve the `type` the mapper sets.
+
+When the inbound mapper throws or returns `null`, the source treats the message as one it can't rebuild into a `CloudEvent` and hands it to the delivery failure policy. That includes a checked exception and an `AssertionError`. The mapper mustn't change the properties or the body it's given, since a parked message is published from them. A source calls its mapper from its own delivery thread, and each mapper can be shared between sources, so it has to be safe to call from several threads.
+
+Without a mapper, both directions use the `cloudEvents_` headers above. See [ADR 170](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0170-a-rabbitmq-source-and-sink-take-a-mapper-for-the-wire-format.md).
+
+## Metrics and health for RabbitMQ
+
+A sink and a source tell a listener what happened to each message. Set one on the builder:
+
+```java
+RabbitMqCloudEventSink sink = RabbitMqCloudEventSink.builder(rabbitConnection, resolver)
+        .listener(new RabbitMqSinkListener() {
+            @Override
+            public void unroutable(RabbitMqDestination destination) {
+                unroutableEvents.increment();
+            }
+        })
+        .build();
+```
+
+| Listener | Method | Called when |
+| - | - | - |
+| `RabbitMqSinkListener` | `published` | The broker confirmed a publish attempt and didn't return it. `publishTime` runs from the start of the attempt to the confirm. |
+| | `unroutable` | The broker returned a publish attempt, under both unroutable policies. |
+| | `unresolved` | A publish attempt failed before the sink knew where the event goes, because the destination resolver threw or returned `null`. |
+| | `failed` | A publish attempt to a resolved destination threw for any other reason, the outbound mapper included. |
+| `RabbitMqSourceListener` | `delivered` | The source handed the client the acknowledgement of a delivery its subscriber took or filtered out. |
+| | `failed` | A delivery went to the delivery failure policy. The failure is `null` when the subscription model couldn't deliver it. |
+| | `parked` | The parking destination confirmed a parked copy and the source handed the client the acknowledgement of the original. |
+| | `redelivered` | The source handed a failed delivery back to the queue, under `REDELIVER` or after a park that failed. |
+
+The sink reports every attempt of a publish it retries. The client drops the acknowledgement of a delivery from before an automatic connection recovery, and the broker delivers it again, so `delivered` and `parked` can count it twice.
+
+A listener that throws is logged and ignored, so it never fails a publish or a delivery. That includes an `Error`, apart from a `VirtualMachineError` such as an `OutOfMemoryError`. `RabbitMqCloudEventSource.Builder#listener` and `RabbitMqDomainEventSource.Builder#listener` take a `RabbitMqSourceListener`.
+
+To ask whether they still work, `RabbitMqCloudEventSink#isOpen()` is `false` once the sink is closed or its connection is. `status()` on both sources returns `OPEN`, `STOPPED` after a failure the source can't recover from, or `CLOSED`, and `isConnected()` says whether the connection is open. `OPEN` doesn't mean a consumer is registered, since a source has none while what it delivers to is paused or not ready.
+
+The Spring Boot starter turns both into metrics and health, see [Brokers](/docs/spring-boot/brokers/). See [ADR 171](https://github.com/johanhaleby/occurrent/blob/main/doc/architecture/decisions/0171-a-rabbitmq-sink-and-source-report-to-a-listener-for-metrics-and-health.md).
 
 ## Kafka
 

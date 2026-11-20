@@ -96,6 +96,7 @@ All of these are **blocking only**.
 | :- | :- | :- |
 | `occurrent.broker.rabbitmq.exchange` | none | The exchange the auto-configured `RabbitMqTopicExchangeDestinationResolver` publishes to and binds against. You don't need it when you declare your own `DestinationResolver<RabbitMqDestination>`. |
 | `occurrent.broker.rabbitmq.sink.acknowledgement-timeout` | `5s` | How long the sink waits for RabbitMQ to confirm a publish. |
+| `occurrent.broker.rabbitmq.sink.on-unroutable` | `FAIL` | The `RabbitMqUnroutablePolicy` of the sink when no queue is bound for an event, `FAIL` or `LOG_AND_CONTINUE`. |
 | `occurrent.broker.rabbitmq.sink.retry.initial` | `100ms` | The first delay when the sink retries a publish. |
 | `occurrent.broker.rabbitmq.sink.retry.max` | `2s` | The longest delay between two retries. |
 | `occurrent.broker.rabbitmq.sink.retry.multiplier` | `2.0` | What the delay is multiplied by after each retry. |
