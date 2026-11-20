@@ -57,7 +57,17 @@ The dispatcher is a `CommandDispatcher`, usually just a lambda over an `Applicat
 
 The store's type parameter follows the saga's state, so it is `SagaStateStore<OrderSagaState>` for the core-DSL saga above and `SagaStateStore<FlowState<OrderEvent>>` for the flow one. The `SagaStateStore` persists each instance. `SagaStateStore.inMemory()` is for tests and single-node use, and `SpringMongoSagaStateStore` (in the blocking MongoDB starter) is the durable one. Unlike a read-model store it supports a compare-and-set save, because an event and a timer can touch the same instance concurrently, so the runner detects a lost update and retries instead of overwriting. Timers live in the same stored instance as the state, not in an external scheduler. A timer poller inside the runner periodically reads instances with a due timer and re-enters them through the same pipeline a live event uses. That means no deadline or JobRunr infrastructure to run, at the cost of firing precision bounded by the poll interval, which does not matter at the minutes-to-days timescale sagas work on.
 
+A timer is due by the clock of the node whose poller finds it, and the time recorded in an event plays no part. `startTimeout(name, Duration)` is due that long after the runner applies the reaction that armed it, and `startTimeoutAt(name, Instant)` is due at that instant.
+
+A [quarantined instance](/docs/layer-1/observing-sagas/#quarantined-instances) fires none of its timers until it's `ACTIVE` again. So when it's released, it applies every event it kept before a timer that came due in the meantime fires, and a `startTimeout` armed by one of those events counts from the release rather than from when the event arrived.
+
+Take a saga that arms a 30-minute payment timeout and cancels the timer when the payment arrives. The instance is quarantined at minute 10, the payment arrives at minute 40, and the instance is released at minute 90. The release applies the payment first, the timer is cancelled, and the timeout never fires, although it would have fired at minute 30 had the instance not been quarantined.
+
+When a deadline has to be compared with events by the time they happened, put the deadline in the event data and arm the timer with `startTimeoutAt`, or with `timeout(at = ...)` in a flow saga. The reaction to a later event then compares the time in that event's data with the deadline kept in the saga's state, and treats an event past the deadline as late, whether the timer has fired or not.
+
 Building a `SpringMongoSagaStateStore` by hand for a flow saga means passing the application's `CloudEventConverter` alongside the state type. That converter marks the store as a flow saga's store. The runner's own converter writes the `FlowState`'s retained events, by their stable CloudEvent type rather than a Java class name, so an event class can move to another package. Passing `null`, or using a constructor that takes no converter, throws `IllegalArgumentException`. A core saga has no such requirement, since the store writes its state with the application's own `MongoConverter`.
+
+`SpringMongoSagaStateStore` works on a standalone MongoDB server for a saga with quarantine off. With quarantine on, the saga refuses to start there, because quarantine needs a replica set, which can have a single member, or a sharded cluster. [Configuring quarantine](/docs/layer-1/observing-sagas/#configuring-quarantine) says how to turn it off.
 
 ## Sagas Without Command Types<HeadingBadge text="Added in 0.32.0" />
 

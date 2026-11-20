@@ -286,9 +286,9 @@ occurrent.saga.quarantine-after=30m
 occurrent.saga.quarantine-enabled=false
 ```
 
-With quarantine on and a subscription model that keeps every event, a context with several `EventStoreQueries` beans and none of them `@Primary` fails at startup. The message names the `@Saga` id and the beans, and says to mark the one the saga reads from `@Primary` or to set `occurrent.saga.quarantine-enabled=false`.
+Quarantine applies to every `@Saga`, whichever subscription model feeds it, a push feed included. With quarantine on, a `@Saga` refuses to start when its `SagaStateStore` bean doesn't implement `SagaStateStoreSkippedInputs`, or when it runs on a standalone MongoDB server, since `SpringMongoSagaStateStore` needs a replica set or a sharded cluster for quarantine. Both messages name `occurrent.saga.quarantine-enabled=false`.
 
-To [release a quarantined instance](/docs/layer-1/observing-sagas/#releasing-a-quarantined-instance), call `release` on the saga's `sagaSubscription-<id>` bean. The starter gives the runner its `EventStoreQueries` bean to read the skipped events back with, when the context has exactly one or one of several is primary. Without it, `release` throws.
+To [release a quarantined instance](/docs/layer-1/observing-sagas/#releasing-a-quarantined-instance), call `release` on the saga's `sagaSubscription-<id>` bean. The release applies the events the quarantined instance kept, so it needs no event store bean.
 
 ```java
 SagaSubscription subscription = applicationContext.getBean("sagaSubscription-order-fulfilment", SagaSubscription.class);
