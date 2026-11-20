@@ -182,7 +182,7 @@ On the blocking stack, `resumeSubscription(id)` and `start(true)` on `CatchupSub
 
 The catch-up replays from the stored position and then resumes the subscription in the wrapped model. Events the other node had already delivered after that position arrive again.
 
-The wrapped model has to resume a subscription from a given position, so it implements `RepositionableSubscriptions` or wraps a model that does. `DurableSubscriptionModel` over either MongoDB model does. Over any other wrapped model, a resume that would replay throws an `IllegalStateException`. `resumeSubscription(id, startAt)` resumes at `startAt` and never replays.
+The wrapped model has to resume a subscription from a given position, so it implements `RepositionableSubscriptions` itself. A wrapper around a model that implements it isn't enough, since `RepositionableSubscriptions.findIn(..)` doesn't look beneath a wrapper. `DurableSubscriptionModel` over either MongoDB model implements it. Over any other wrapped model, a resume that would replay throws an `IllegalStateException`. `resumeSubscription(id, startAt)` resumes at `startAt` and never replays.
 
 ## Catch-up Subscription Usage
 
