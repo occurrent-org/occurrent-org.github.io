@@ -158,7 +158,7 @@ A storage that can only ever evaluate `any()` refuses any other condition with `
 
 The default implementations evaluate no condition. The default `delete(subscriptionId, condition)` deletes for `any()` and signals `UnsupportedOperationException` for any other condition. The default `evaluatesDeleteConditions()` returns `false`. Both reactive storages Occurrent ships evaluate the conditions.
 
-`ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position. When it returns `false`, that write is unconditional, and the model logs a `WARN` rather than refusing to start.
+`ReactorDurableSubscriptionModel` reads `evaluatesWriteConditionsFor` before recording a subscription's first position. When it returns `false`, the storage could only write that position unconditionally, and two nodes recording one at the same moment could overwrite each other's and lose the events between the two positions. So the subscription is refused with `IllegalStateException` on `waitUntilStarted()`, before anything is written for it. `ReactorDurableSubscriptionModelConfig.startWhenFirstPositionCanBeOverwritten(true)` writes it unconditionally instead, with a `WARN`, accepting that loss. A subscription with a checkpoint already stored, or with a `StartAt` that doesn't resolve to the model default, records no first position and isn't refused.
 
 A `save` for that first position that completes without emitting a checkpoint is refused with `IllegalStateException`, naming the storage and the position it tried to record. Nothing then shows whether the write reached storage.
 

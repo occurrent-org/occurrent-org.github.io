@@ -78,7 +78,7 @@ public OptionalLong writeVersion(String subscriptionId) {
 }
 ```
 
-Leave that exactly as generated. It is the right permanent answer for a store that genuinely cannot evaluate a condition, not something to come back and finish later. Such a store also leaves `evaluatesWriteConditions()` alone, because the default already answers `false` for it.
+Leave that exactly as generated for a store that genuinely cannot evaluate a condition. Such a store doesn't override `evaluatesWriteConditions()` either, because the default already answers `false` for it. From 0.35.0 a durable subscription that would record its first position in such a store is refused, since two nodes recording one at the same moment could overwrite each other's and lose the events between the two positions. `startWhenFirstPositionCanBeOverwritten(true)` on the durable model's config, or `occurrent.subscription.start-when-first-position-can-be-overwritten=true` with a starter, accepts that loss. Making the store evaluate `ifAbsent()` closes it.
 
 Occurrent's own Mongo and Redis checkpoint storages do not need this recipe. They already evaluate every condition for real, Redis Cluster included, covered below. If your store can too, the conformance suite in `occurrent-tck-subscription-blocking` checks the two rules that matter for it. `any()` has to leave whatever version is stored untouched, rather than clearing it or working one out from the write. `notOlderThan(version)` has to accept when nothing is stored, since that is a checkpoint written before this condition existed, and every checkpoint saved by an earlier release has to stay readable.
 
