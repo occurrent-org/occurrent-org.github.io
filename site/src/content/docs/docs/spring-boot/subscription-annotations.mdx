@@ -9,6 +9,7 @@ addedIn: "0.18.0"
 ---
 
 import { TabItem, Tabs } from "@astrojs/starlight/components";
+import HeadingBadge from "../../../../components/HeadingBadge.astro";
 
 If using the [Spring Boot Starter](/docs/spring-boot/starter/) you have the option to start subscriptions using the `@Subscription` annotation (`org.occurrent.annotation.Subscription`). For example if you have a domain event like this:
 
@@ -132,17 +133,36 @@ Resume behavior:
 | ResumeBehavior | Description |
 | - | - |
 | `DEFAULT` | Use the default resume behavior of the underlying subscription model. For example, if the `StartPosition` is set to `StartPosition.BEGINNING`, and `ResumeBehavior` is set to `ResumeBehavior.DEFAULT`, then the subscription will _start_ from the beginning of time the first time it's run. Then, on application restart, it'll continue from the last received event (the checkpoint for the subscription) on restart. |
-| `SAME_AS_START_AT` | Always start at the same position as specified by the `StartPosition`. I.e., even if there's a checkpoint stored for the subscription, it'll be ignored on application restart and the subscription will resume from the specified `StartPosition`. |
+| `SAME_AS_START_AT` | Always start at the same position as specified by the `StartPosition`. I.e., even if there's a checkpoint stored for the subscription, it'll be ignored on application restart and the subscription will resume from the specified `StartPosition`. A [`SubscriptionResumePoints` bean](#resuming-from-a-checkpoint-you-store) that answers for the subscription moves where it starts. |
 
 The combination of start and resume behavior can enable various use cases. For example:
 
 | StartPosition | ResumeBehavior | Use Case |
 | - | - | - |
 | `BEGINNING` | `DEFAULT` | Start a new subscription from "beginning of time", but when the app is restarted, continue from the last processed event (i.e. don't replay all historic events again). |
-| `BEGINNING` | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to all historic events, effectively making this an in-memory subscription. Note that this subscription will be called on each instance of the application even though competing consumer behavior is configured. |
-| `NOW` | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to events from "now", ignoring the historic events. This will effectively make this an in-memory subscription. Note that this subscription will be called on each instance of the application even though competing consumer behavior is configured. |
+| `BEGINNING` | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to all historic events, effectively making this an in-memory subscription. Note that this subscription will be called on each instance of the application even though competing consumer behavior is configured. A `SubscriptionResumePoints` answer moves where the replay starts, and the subscription still keeps no checkpoint once it's live. |
+| `NOW` | `SAME_AS_START_AT` | The subscription will always (even on restart) subscribe to events from "now", ignoring the historic events. Unlike `BEGINNING`, it isn't kept away from the competing consumer and the checkpoint storage, so it competes when a competing consumer is configured, and stores its checkpoint. |
 | `NOW` | `DEFAULT` | The subscription start subscribing to events from "now" when created, but continue (resume) from the last received event on restart. |
 | `DEFAULT` | `DEFAULT` | Same as above (this is the default behavior if start position and resume behavior is not specified). |
+
+## Resuming from a Checkpoint You Store<HeadingBadge text="Added in 0.35.0" />
+
+An application that keeps a read model in its own database can store the checkpoint of each event it handles in the same transaction as its state. Declare a `SubscriptionResumePoints` bean, and Spring Boot asks it where each `@Subscription`, `@StreamSubscription`, `@DcbSubscription`, `@Projection`, `@Saga` and `@Snapshot` subscription resumes, whatever `startAt` the annotation gives, `NOW` and `DEFAULT` included. It never asks about a subscription that reads a push feed or runs synchronously.
+
+```java
+@Bean
+SubscriptionResumePoints subscriptionResumePoints(MyReadModelRepository repository) {
+    return subscriptionId -> repository.findCheckpoint(subscriptionId).orElse(null);
+}
+```
+
+Return the checkpoint stored with the state. A handler reads it with `EventMetadata.getCheckpoint()`, or with `DcbEventMetadata.checkpoint()` in the DCB DSL. [Resuming from a checkpoint you store](/docs/layer-0/catch-up-subscription/#resuming-from-a-checkpoint-you-store) on the catch-up page says where the subscription resumes from each kind of checkpoint.
+
+A non-null answer goes ahead of the checkpoint Spring Boot's `CheckpointStorage` holds for the subscription. When that stored checkpoint is newer than the answer, the events between the two are delivered again. `null` starts the subscription from the annotation, as it starts without the bean. Spring Boot asks each time a subscription model reads the start, so return the same answer each time. Under a competing consumer, that's when a node first gets the lease. A node that gets the lease back after losing it resumes from where it last ran, which can deliver events again.
+
+With `resumeBehavior = SAME_AS_START_AT` on a start that replays, `BEGINNING`, an explicit position or a time, the answer only moves where the replay starts. The subscription keeps no checkpoint in `CheckpointStorage` once it's live, and the competing consumer doesn't compete for it. A catch-up that stores checkpoints during its replay still does, and deletes the last one when the replay goes live.
+
+Whether startup waits for the subscription is decided from the annotation, not from the answer, see [Subscription Startup Mode](#subscription-startup-mode).
 
 ## Selective Events
 
@@ -316,7 +336,7 @@ Here's a summary of the different startup modes:
 
 | StartupMode | Description |
 | - | - |
-| `DEFAULT` | Determine the startup mode based on the properties of the subscription (such as `startAt()` and `resumeBehavior()`). It'll use `BACKGROUND` if the subscription needs to replay historic events before subscribing to new ones (e.g. if `startAt()` is `StartPosition.BEGINNING_OF_TIME`), otherwise `WAIT_UNTIL_STARTED` will be used. |
+| `DEFAULT` | Determine the startup mode based on the properties of the subscription (such as `startAt()` and `resumeBehavior()`). It'll use `BACKGROUND` if the subscription needs to replay historic events before subscribing to new ones (e.g. if `startAt()` is `StartPosition.BEGINNING_OF_TIME`), otherwise `WAIT_UNTIL_STARTED` will be used. It decides from the annotation, not from a `SubscriptionResumePoints` answer, so a `NOW` or `DEFAULT` subscription that a `SubscriptionResumePoints` bean makes replay still waits, and a `BEGINNING` one that the bean makes go live still starts in the background. When `occurrent.subscription.mode` is `manual`, no subscription waits, whatever its startup mode, since none starts until the application starts it. |
 | `WAIT_UNTIL_STARTED` | The subscription will wait until it's started up fully before Spring continues starting the rest of the application. Most of the time this is recommended because otherwise there could be a small chance that a request is received by your application before the subscription has bootstrapped completely. This can lead to the subscription missing this event. This is only true if the subscription is brand new. As soon as the subscription has received an event that is stored in a `org.occurrent.subscription.api.blocking.CheckpointStorage`, it'll never miss an event during startup. |
 | `BACKGROUND` | The subscription will NOT wait until it's started up fully before Spring continues starting the rest of the application; instead, it will be started in the background. Typically, this is useful if you instruct the subscription to start at an earlier date (such as the beginning of time), and you have a lot of events to read before the subscription has caught up. In this case, you may wish to start the Spring application before the subscription has fully started (i.e., before all historic events have been replayed) because waiting for all events to replay takes too long. The subscription will then replay all historic events in the background before switching to continuous mode. |
 
