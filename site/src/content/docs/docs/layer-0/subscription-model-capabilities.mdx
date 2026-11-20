@@ -67,6 +67,8 @@ That asymmetry is why the two stacks reach an optional capability differently. O
 
 `canResumeFrom(checkpoint)` returns `false` when the model no longer has the history back to that checkpoint, for example a MongoDB change-stream position older than the oldest entry in the oplog. It returns a `boolean` on blocking and a `Mono<Boolean>` on reactor, and returns `true` unless the model overrides it. A position catch-up, and the blocking time-based catch-up, call it when they resume from a stored checkpoint that holds a live start, before the resumed replay, and again once the replay is done, before it goes live.
 
+From 0.35.0, the blocking `CheckpointAwareSubscriptionModel` also has `canResumeFrom(checkpoint, stillWanted)` and `globalCheckpoint(stillWanted)`, where `stillWanted` is a `BooleanSupplier`. By default they call the methods without it. `NativeMongoSubscriptionModel` and `SpringMongoSubscriptionModel` retry `canResumeFrom` while MongoDB can't be reached, and stop once `stillWanted` returns `false`, throwing the last failure. `DurableSubscriptionModel` passes both methods on to the model it wraps. If you write a model that wraps another one, pass them on too, or the wrapped model never sees `stillWanted`.
+
 `CheckpointAwareSubscriptionModel` and `Pushable` aren't reachable through a wrapper-unwrapping probe the way the mixins reached with `findIn(model)` are. Nothing wraps a model and re-exposes checkpoint-awareness on demand. You get it because the concrete model you constructed implements it directly, so keep hold of that static type or cast to it. Those models are `NativeMongoSubscriptionModel`, `SpringMongoSubscriptionModel`, `DurableSubscriptionModel`, and their reactor equivalents.
 
 ## Typed views
