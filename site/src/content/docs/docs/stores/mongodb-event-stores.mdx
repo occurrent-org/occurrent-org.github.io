@@ -153,7 +153,7 @@ For example:
   <TabItem label="Java">
     ```java
     MongoClient mongoClient = MongoClients.create("mongodb://localhost:27017");
-    MongoTransactionManager mongoTransactionManager = new MongoTransactionManager(new SimpleMongoClientDatabaseFactory(mongoClient, "database"));
+    CommitRetryingMongoTransactionManager mongoTransactionManager = new CommitRetryingMongoTransactionManager(new SimpleMongoClientDatabaseFactory(mongoClient, "database"));
 
     MongoTemplate mongoTemplate = new MongoTemplate(mongoClient, "database");
     EventStoreConfig eventStoreConfig = new EventStoreConfig.Builder()
@@ -171,7 +171,7 @@ For example:
   <TabItem label="Kotlin">
     ```kotlin
     val mongoClient = MongoClients.create("mongodb://localhost:27017")
-    val mongoTransactionManager = MongoTransactionManager(SimpleMongoClientDatabaseFactory(mongoClient, "database"))
+    val mongoTransactionManager = CommitRetryingMongoTransactionManager(SimpleMongoClientDatabaseFactory(mongoClient, "database"))
 
     val mongoTemplate = MongoTemplate(mongoClient, "database")
     val eventStoreConfig = EventStoreConfig.Builder()
@@ -186,6 +186,8 @@ For example:
     ```
   </TabItem>
 </Tabs>
+
+Use `CommitRetryingMongoTransactionManager`, which extends Spring's `MongoTransactionManager`, and not the plain one. The plain manager sends a commit once. When MongoDB can't say whether that commit succeeded it labels the error `UnknownTransactionCommitResult`, and the append may have been saved. A caller that sends it again can then write its events twice. `CommitRetryingMongoTransactionManager` sends the commit again for up to two minutes, as the MongoDB driver's own `withTransaction` does. `SpringMongoEventStore` logs a warning when it is created with any other manager. The Spring Boot starter creates this manager for you unless you define your own.
 
 This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.blocking.ReadEventStreamWithFilter`. See [Stream Filtering](/docs/layer-0/stream-filtering/) for when and how to use it.
 
@@ -283,9 +285,9 @@ For example:
   <TabItem label="Java">
     ```java
     MongoClient mongoClient = MongoClients.create("mongodb://localhost:27017");
-    MongoTransactionManager mongoTransactionManager = new MongoTransactionManager(new SimpleMongoClientDatabaseFactory(mongoClient, "database"));
+    CommitRetryingReactiveMongoTransactionManager mongoTransactionManager = new CommitRetryingReactiveMongoTransactionManager(new SimpleReactiveMongoDatabaseFactory(mongoClient, "database"));
 
-    MongoTemplate mongoTemplate = new MongoTemplate(mongoClient, "database");
+    ReactiveMongoTemplate mongoTemplate = new ReactiveMongoTemplate(mongoClient, "database");
     EventStoreConfig eventStoreConfig = new EventStoreConfig.Builder()
                                                              // The collection where all events will be stored
                                                             .eventStoreCollectionName("events")
@@ -301,9 +303,9 @@ For example:
   <TabItem label="Kotlin">
     ```kotlin
     val mongoClient = MongoClients.create("mongodb://localhost:27017")
-    val mongoTransactionManager = MongoTransactionManager(SimpleMongoClientDatabaseFactory(mongoClient, "database"))
+    val mongoTransactionManager = CommitRetryingReactiveMongoTransactionManager(SimpleReactiveMongoDatabaseFactory(mongoClient, "database"))
 
-    val mongoTemplate = MongoTemplate(mongoClient, "database")
+    val mongoTemplate = ReactiveMongoTemplate(mongoClient, "database")
     val eventStoreConfig = EventStoreConfig.Builder()
                                             // The collection where all events will be stored
                                            .eventStoreCollectionName("events")
@@ -316,6 +318,8 @@ For example:
     ```
   </TabItem>
 </Tabs>
+
+Use `CommitRetryingReactiveMongoTransactionManager` here, for the reason given in the [blocking section](/docs/stores/mongodb-event-stores/#eventstore-with-spring-mongotemplate-blocking). The Spring Boot starter creates it for you unless you define your own.
 
 This implementation also supports filtered stream reads via `org.occurrent.eventstore.api.reactor.ReadEventStreamWithFilter`. See [Stream Filtering](/docs/layer-0/stream-filtering/) for when and how to use it.
 
